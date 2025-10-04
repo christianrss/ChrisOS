@@ -44,6 +44,6 @@ int rgb(int r, int g, int b);
 void Draw(int x, int y, int r, int g, int b);
 void ClearScreen(int r, int g, int b);
 void DrawRect(int x, int y, int width, int height, int r, int g, int b);
-void DrawCharacter();
+void DrawCharacter(int (*f)(int, int), int font_width, int font_height, char character, int x, int y, int r, int g, int b);
 
 #endif
