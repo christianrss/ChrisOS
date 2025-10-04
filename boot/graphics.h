@@ -35,9 +35,15 @@ typedef struct VBEInfoBlockStruct {
 
 #define VBEInfoAddress 0x8000
 
+extern const int font_arial_width;
+extern const int font_arial_height;
+
+int getArialCharacter(int index, int y);
+
 int rgb(int r, int g, int b);
 void Draw(int x, int y, int r, int g, int b);
 void ClearScreen(int r, int g, int b);
 void DrawRect(int x, int y, int width, int height, int r, int g, int b);
+void DrawCharacter();
 
 #endif
