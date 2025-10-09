@@ -3,8 +3,8 @@
 int start() {
     VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
 
-    x = VBE->x_resolution / 2;
-    y = VBE->y_resolution / 2;
+    mx = VBE->x_resolution / 2;
+    my = VBE->y_resolution / 2;
 
     char characterBuffer[1000] = "\0";
     char* characterBufferPointer = characterBuffer;
@@ -25,11 +25,20 @@ int start() {
     TasksLength++;
 
     tasks[TasksLength].priority = 0;
-    tasks[TasksLength].function = &DrawMouseTask;
+    tasks[TasksLength].taskId = TasksLength;
+    tasks[TasksLength].function = &TestGraphicalElementsTask;
+    iparams[TasksLength * task_params_length + 0] = 10;
+    iparams[TasksLength * task_params_length + 1] = 10;
+    iparams[TasksLength * task_params_length + 2] = 300;
+    iparams[TasksLength * task_params_length + 3] = 300;
     TasksLength++;
 
     tasks[TasksLength].priority = 0;
     tasks[TasksLength].function = &HandleKeyboardTask;
+    TasksLength++;
+
+    tasks[TasksLength].priority = 0;
+    tasks[TasksLength].function = &DrawMouseTask;
     TasksLength++;
 
     while(1) {
