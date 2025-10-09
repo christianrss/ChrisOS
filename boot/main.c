@@ -9,7 +9,7 @@ int start() {
     char str1[] = "Welcome to ChrisOS! \n\nText rendered by custom library.";
     char *p = str1;
 
-    char characterBuffer[] = "\0";
+    char characterBuffer[1000] = "\0";
     char* characterBufferPointer = characterBuffer;
     int characterBufferLength = 0;
 
