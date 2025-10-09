@@ -4,7 +4,7 @@ int x, y;
 int left_clicked, right_clicked, middle_clicked;
 int current_byte = 0;
 uint8_t bytes[4] = { 0 };
-int mouse_speed = 3;
+int mouse_speed = 7;
 
 #define pic1_command 0x20
 #define pic1_data 0x21
@@ -188,6 +188,8 @@ void HandleMouseInterrupt() {
 }
 
 void HandleMousePacket() {
+    VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
+
     uint8_t status = bytes[0];
     int32_t change_x = (int32_t) bytes[1];
     int32_t change_y = (int32_t) bytes[2];
@@ -214,4 +216,15 @@ void HandleMousePacket() {
         y -= 2;
     else if (change_y < 0)
         y += 2;
+
+    if (x < 0)
+        x = 0;
+    else if (x > VBE->x_resolution)
+        x = VBE->x_resolution;
+    
+    if (y < 0)
+        y = 0;
+    else if (y > VBE->y_resolution)
+        y = VBE->y_resolution;
+    
 }

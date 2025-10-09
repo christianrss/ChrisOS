@@ -64,6 +64,37 @@ void DrawString(int (*f)(int, int), int font_width, int font_height, char* strin
     }
 }
 
+void DrawMouse(int x, int y, int r, int g, int b) {
+    int mouse[] = {
+        0b11111111111,
+        0b11111111110,
+        0b11111111100,
+        0b11111111000,
+        0b11111110000,
+        0b11111100000,
+        0b11111000000,
+        0b11110000000,
+        0b11100000000,
+        0b11000000000,
+        0b10000000000
+    };
+
+    int mouse_width = 10, mouse_height = 10;
+    for (int j = 0; j < mouse_height; j++) {
+        unsigned int row = mouse[j];
+        int shift = mouse_width - 1;
+        int bit_val = 0;
+
+        for (int i = 0; i < mouse_width; i++) {
+            bit_val = (row >> shift) & 0b00000000000000000000000000000001;
+            if (bit_val == 1)
+                Draw(x + i, y + j, r, g, b);
+
+            shift -= 1;
+        }
+    }
+}
+
 void Flush() {
     VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
     unsigned short* buffer = (unsigned short*) ScreenBufferAddress;

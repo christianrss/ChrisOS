@@ -1,0 +1,1 @@
+qemu-system-x86_64.exe -L "C:/qemu19" -drive format=raw,file=os.img
