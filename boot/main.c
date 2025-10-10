@@ -25,18 +25,16 @@ int start() {
     TasksLength++;
 
     tasks[TasksLength].priority = 0;
+    tasks[TasksLength].function = &TaskbarTask;
     tasks[TasksLength].taskId = TasksLength;
-    tasks[TasksLength].function = &TestGraphicalElementsTask;
-    iparams[TasksLength * task_params_length + 0] = 10;
-    iparams[TasksLength * task_params_length + 1] = 10;
-    iparams[TasksLength * task_params_length + 2] = 300;
-    iparams[TasksLength * task_params_length + 3] = 300;
-    iparams[TasksLength * task_params_length + 4] = 0;
-    iparams[TasksLength * task_params_length + 5] = 0;
-    iparams[TasksLength * task_params_length + 6] = 0;
+    iparams[TasksLength * task_params_length + 0] = 0;
+    iparams[TasksLength * task_params_length + 1] = 0;
+    iparams[TasksLength * task_params_length + 2] = VBE->x_resolution;
+    iparams[TasksLength * task_params_length + 3] = 40;
+    iparams[TasksLength * task_params_length + 4] = 1;
     TasksLength++;
 
-    tasks[TasksLength].priority = 0;
+    /*tasks[TasksLength].priority = 0;
     tasks[TasksLength].taskId = TasksLength;
     tasks[TasksLength].function = &TestGraphicalElementsTask;
     iparams[TasksLength * task_params_length + 0] = 50;
@@ -46,7 +44,7 @@ int start() {
     iparams[TasksLength * task_params_length + 4] = 0;
     iparams[TasksLength * task_params_length + 5] = 0;
     iparams[TasksLength * task_params_length + 6] = 0;
-    TasksLength++;
+    TasksLength++;*/
 
     tasks[TasksLength].priority = 0;
     tasks[TasksLength].function = &HandleKeyboardTask;
