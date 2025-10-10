@@ -52,7 +52,7 @@ int start() {
     tasks[TasksLength].function = &HandleKeyboardTask;
     TasksLength++;
 
-    tasks[TasksLength].priority = 0;
+    tasks[TasksLength].priority = 5;
     tasks[TasksLength].function = &DrawMouseTask;
     TasksLength++;
 

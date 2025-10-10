@@ -20,16 +20,30 @@ int iparams[100] = {10};
 
 void ProcessTasks() {
     int priority;
+    int i =0;
 
     priority = 5;
     while (priority >= 0) {
-        for (int i = 0; i < TasksLength; i++) {
+        i = mouse_possessed_task_id;
+        if (left_clicked == TRUE &&
+            mx > iparams[i * task_params_length + 0] &&
+            mx < iparams[i * task_params_length + 0] + iparams[i * task_params_length + 2] &&
+            my > iparams[i * task_params_length + 1] &&
+            my < iparams[i * task_params_length + 1] + iparams[i * task_params_length + 3])
+            break;
+
+        for (i = 0; i < TasksLength; i++) {
             if (left_clicked == TRUE &&
                 mx > iparams[i * task_params_length + 0] &&
                 mx < iparams[i * task_params_length + 0] + iparams[i * task_params_length + 2] &&
                 my > iparams[i * task_params_length + 1] &&
-                my < iparams[i * task_params_length + 1] + iparams[i * task_params_length + 3])
-                mouse_possessed_task_id = i; 
+                my < iparams[i * task_params_length + 1] + iparams[i * task_params_length + 3]) {
+                    tasks[mouse_possessed_task_id].priority = 0;
+                    mouse_possessed_task_id = i;
+                    tasks[i].priority = 2;
+                    left_clicked = FALSE;
+                }
+                
         }
 
         priority--;
