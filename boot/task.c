@@ -64,7 +64,7 @@ int WelcomeTask(int taskId) {
     // String literals cannot be more than 61 characters.
     char str1[] = "**** CHRISTIAN OS 64 ****\n\n";
     char *p = str1;
-    DrawString(getArialCharacter, font_arial_width, font_arial_height, p, 100, 0, 0, 0, 0);
+    DrawString(getArialCharacter, font_arial_width, font_arial_height, p, 100, 100, 0, 0, 0);
     return 0;
 }
 
@@ -110,7 +110,7 @@ int HandleKeyboardTask(int taskId) {
         Scancode = -1;
     }
 
-    DrawString(getArialCharacter, font_arial_width, font_arial_height, characterBuffer, 30, 30, 16, 32, 16);
+    DrawString(getArialCharacter, font_arial_width, font_arial_height, characterBuffer, 30, 150, 16, 32, 16);
     
     return 0;
 }
@@ -183,6 +183,40 @@ int ShellTask(int taskId) {
     return 0;
 }
 
+int BallTask(int taskId) {
+    int closeClicked = DrawWindow(
+        &iparams[taskId * task_params_length + 0],
+        &iparams[taskId * task_params_length + 1],
+        &iparams[taskId * task_params_length + 2],
+        &iparams[taskId * task_params_length + 3],
+        0,
+        0,
+        0,
+        &iparams[taskId * task_params_length + 9],
+        taskId);
+
+    if (closeClicked == TRUE)
+        CloseTask(taskId);
+
+    int x = iparams[taskId * task_params_length + 0];
+    int y = iparams[taskId * task_params_length + 1];
+    int width = iparams[taskId * task_params_length + 2];
+    int height = iparams[taskId * task_params_length + 3];
+
+    iparams[taskId * task_params_length + 5] += iparams[taskId * task_params_length + 7];
+    iparams[taskId * task_params_length + 6] += iparams[taskId * task_params_length + 8];
+
+    if (iparams[taskId * task_params_length + 5] + 10 > iparams[taskId * task_params_length + 2] ||
+        iparams[taskId * task_params_length + 5] - 10 < 0)
+        iparams[taskId * task_params_length + 7] = -iparams[taskId * task_params_length + 7];
+    
+    if (iparams[taskId * task_params_length + 6] + 10 > iparams[taskId * task_params_length + 3] ||
+        iparams[taskId * task_params_length + 6] - 10 < 20)
+        iparams[taskId * task_params_length + 8] = -iparams[taskId * task_params_length + 8];
+
+    DrawCircle(x + iparams[taskId * task_params_length + 5], y + iparams[taskId * task_params_length + 6], 10, 16, 32, 16);
+}
+
 int TaskbarTask(int taskId) {
     VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
     DrawRect(0, 0, VBE->x_resolution, 40, 16, 32, 16);
@@ -190,7 +224,7 @@ int TaskbarTask(int taskId) {
     int i = iparams[taskId * task_params_length + 4];
 
     char text[] = "Shell\0";
-    if (DrawButton(0, 0, 40, 40, 0, 10, 16, text, 16, 32, 16, taskId) == TRUE) {
+    if (DrawButton(0, 0, 50, 40, 0, 10, 16, text, 16, 32, 16, taskId) == TRUE) {
         tasks[TasksLength].priority = 0;
         tasks[TasksLength].taskId = TasksLength;
         tasks[TasksLength].function = &ShellTask;
@@ -203,5 +237,22 @@ int TaskbarTask(int taskId) {
         iparams[TasksLength * task_params_length + 6] = 0;
         TasksLength++;
         iparams[taskId * task_params_length + 4]++;
+    }
+
+    char text2[] = "Ball\0";
+    if (DrawButton(50, 0, 50, 40, 16, 10, 0, text2, 16, 32, 16, taskId) == TRUE) {
+        tasks[TasksLength].priority = 0;
+        tasks[TasksLength].taskId = TasksLength;
+        tasks[TasksLength].function = &BallTask;
+        iparams[TasksLength * task_params_length + 0] = i * 40;
+        iparams[TasksLength * task_params_length + 1] = i * 40;
+        iparams[TasksLength * task_params_length + 2] = 300;
+        iparams[TasksLength * task_params_length + 3] = 300;
+        iparams[TasksLength * task_params_length + 4] = 0;
+        iparams[TasksLength * task_params_length + 5] = 20;
+        iparams[TasksLength * task_params_length + 6] = 30;
+        iparams[TasksLength * task_params_length + 7] = 5;
+        iparams[TasksLength * task_params_length + 8] = 5;
+        TasksLength++;
     }
 }
