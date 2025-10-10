@@ -68,11 +68,17 @@ int WelcomeTask(int taskId) {
     return 0;
 }
 
+int NullTask(int taskId)
+{
+    return 0;
+}
+
 void CloseTask(int taskId) {
-    for (int i = taskId; i < TasksLength-1; i++) {
-        tasks[i] = tasks[i + 1];
-    }
-    TasksLength--;
+    tasks[taskId].function = &NullTask;
+    iparams[taskId * task_params_length + 0] = 0;
+    iparams[taskId * task_params_length + 1] = 0;
+    iparams[taskId * task_params_length + 2] = 0;
+    iparams[taskId * task_params_length + 3] = 0;
 }
 
 int ClearScreenTask(int taskId) {
@@ -114,7 +120,7 @@ int TestGraphicalElementsTask(int taskId) {
     int* g = &iparams[taskId * task_params_length + 5];
     int* b = &iparams[taskId * task_params_length + 6];
 
-    if (DrawWindow(
+    int closeClicked = DrawWindow(
         &iparams[taskId * task_params_length + 0],
         &iparams[taskId * task_params_length + 1],
         &iparams[taskId * task_params_length + 2],
@@ -123,16 +129,22 @@ int TestGraphicalElementsTask(int taskId) {
         *g,
         *b,
         &iparams[taskId * task_params_length + 9],
-        taskId
-    ) == 1)
+        taskId);
+    
+    int x = iparams[taskId * task_params_length + 0];
+    int y = iparams[taskId * task_params_length + 1];
+    int width = iparams[taskId * task_params_length + 2];
+    int height = iparams[taskId * task_params_length + 3];
+
+    if (closeClicked == TRUE)
         CloseTask(taskId);
 
     char text[] = "Dark\0";
     char text1[] = "Light\0";
 
     if (DrawButton(
-        iparams[taskId * task_params_length + 0] + 20,
-        iparams[taskId * task_params_length + 1] + 20,
+        x + 20,
+        y + 20,
         50,
         20,
         0,
@@ -150,8 +162,8 @@ int TestGraphicalElementsTask(int taskId) {
     }
 
     if (DrawButton(
-        iparams[taskId * task_params_length + 0] + 100,
-        iparams[taskId * task_params_length + 1] + 20,
+        x + 100,
+        y + 20,
         50,
         20,
         0,
