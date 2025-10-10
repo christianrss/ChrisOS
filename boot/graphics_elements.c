@@ -13,8 +13,8 @@ int DrawCircleButton(int x, int y, int radius, int r, int g, int b) {
     return 0;
 }
 
-int DrawButton(int x, int y, int width, int height, int r, int g, int b, char* text, int r1, int g1, int b1) {
-    if (mx > x && mx < x + width && my > y && my < my + height) {
+int DrawButton(int x, int y, int width, int height, int r, int g, int b, char* text, int r1, int g1, int b1, int taskId) {
+    if (mouse_possessed_task_id == taskId && mx > x && mx < x + width && my > y && my < y + height) {
         DrawRect(x, y, width, height, r, g, b);
 
         if (left_clicked == TRUE) {
@@ -27,7 +27,7 @@ int DrawButton(int x, int y, int width, int height, int r, int g, int b, char* t
     DrawString(getArialCharacter, font_arial_width, font_arial_height, text, x + width /10, y + height/ 10, r1, g1, b1);
 }
 
-int DrawWindow(int* x, int* y, int* width, int* height, int r, int g, int b, int* mouse_held) {
+int DrawWindow(int* x, int* y, int* width, int* height, int r, int g, int b, int* mouse_held, int taskId) {
     if (left_clicked == FALSE)
         *mouse_held = FALSE;
 
@@ -36,11 +36,11 @@ int DrawWindow(int* x, int* y, int* width, int* height, int r, int g, int b, int
     // iparams 2 - width
     // iparams 3 - height
     // iparams 9 - mouse click held down flag
-    if (*mouse_held == TRUE ||
+    if (mouse_possessed_task_id == taskId && (*mouse_held == TRUE ||
         (left_clicked == TRUE && mx > *x &&
         mx < *x + *width - 30 &&
         my > *y &&
-        my < *y + 20)) {
+        my < *y + 20))) {
         left_clicked = FALSE;
         *mouse_held = TRUE;
         *x = mx - (*width / 2);

@@ -19,7 +19,23 @@ struct Task tasks[256];
 int iparams[100] = {10};
 
 void ProcessTasks() {
-    int priority = 0;
+    int priority;
+
+    priority = 5;
+    while (priority >= 0) {
+        for (int i = 0; i < TasksLength; i++) {
+            if (left_clicked == TRUE &&
+                mx > iparams[i * task_params_length + 0] &&
+                mx < iparams[i * task_params_length + 0] + iparams[i * task_params_length + 2] &&
+                my > iparams[i * task_params_length + 1] &&
+                my < iparams[i * task_params_length + 1] + iparams[i * task_params_length + 3])
+                mouse_possessed_task_id = i; 
+        }
+
+        priority--;
+    }
+
+    priority = 0;
     while (priority <= 5) {
         for (int i = 0; i < TasksLength; i++) {
             if (tasks[i].priority == priority) {
@@ -92,7 +108,8 @@ int TestGraphicalElementsTask(int taskId) {
         *r,
         *g,
         *b,
-        &iparams[taskId * task_params_length + 9]
+        &iparams[taskId * task_params_length + 9],
+        taskId
     ) == 1)
         CloseTask(taskId);
 
@@ -110,7 +127,8 @@ int TestGraphicalElementsTask(int taskId) {
         text,
         16,
         32,
-        16
+        16,
+        taskId
     ) == TRUE) {
         *r = 0;
         *g = 0;
@@ -128,7 +146,8 @@ int TestGraphicalElementsTask(int taskId) {
         text1,
         16,
         32,
-        16
+        16,
+        taskId
     ) == TRUE) {
         *r = 16;
         *g = 31;
