@@ -1,1 +1,0 @@
-On Windows use qemu-w64-setup-20190815.exe or qemu-w64-setup-20210203.exe to avoid mouse/keyboard issues.
