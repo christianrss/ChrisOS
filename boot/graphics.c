@@ -95,6 +95,17 @@ void DrawMouse(int x, int y, int r, int g, int b) {
     }
 }
 
+void DrawCircle(int x, int y, int radius, int r, int g, int b) {
+    int rr = radius * radius;
+
+    for (int j = -radius; j < radius; j++) {
+        for (int i = -radius; i < radius; i++) {
+            if ((i * i + j * j) <= rr)
+                Draw(x + i, y + j, r, g, b);
+        }
+    }
+}
+
 void Flush() {
     VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
     unsigned short* buffer = (unsigned short*) ScreenBufferAddress;
