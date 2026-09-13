@@ -4,6 +4,11 @@ int TasksLength = 0;
 #define task_type_string_buffer 1
 #define task_params_length 10
 
+/* LEARN:P11 */
+Editor g_editor;
+int g_editor_inited = 0;
+int g_editor_task_id = -1;
+
 struct Task {
     // 0 to 5 with zero being the highest priority
     int priority;
@@ -223,6 +228,61 @@ int BallTask(int taskId) {
     }
 
     DrawCircle(x + iparams[taskId * task_params_length + 5], y + iparams[taskId * task_params_length + 6], 10, 16, 32, 16);
+}
+
+int CodeEditorTask(int taskId) {
+    int closeClicked;
+    int x, y, width, height;
+    int row;
+    char linebuff[4];
+
+    if (!g_editor_inited) {
+        ed_init(&g_editor);
+        g_editor_inited = 1;
+    }
+
+    closeClicked = DrawWindow(
+        &iparams[taskId * task_params_length + 0],
+        &iparams[taskId * task_params_length + 1],
+        &iparams[taskId * task_params_length + 2],
+        &iparams[taskId * task_params_length + 3],
+        16, 31, 16,
+        &iparams[taskId * task_params_length + 9],
+        taskId);
+
+    if (closeClicked == TRUE) {
+        CloseTask(taskId);
+        return 0;
+    }
+    x = iparams[taskId * task_params_length + 0];
+    y = iparams[taskId * task_params_length + 1];
+    width = iparams[taskId * task_params_length + 2];
+    height = iparams[taskId * task_params_length + 3];
+    (void) width;
+    (void) height;
+
+    if (mouse_possessed_task_id == taskId && Scancode != -1) {
+        char ch = ProcessScancode(Scancode);
+        if (backspace_pressed == TRUE) {
+            ed_handle(&g_editor, 8);
+            backspace_pressed = FALSE;
+        } else if (ch == '\n' || enter_pressed == TRUE) {
+            ed_handle(&g_editor, '\n');
+            enter_pressed = FALSE;
+        } else if (ch != '\0') {
+            ed_handle(&g_editor, (int)ch);
+        }
+        Scancode = -1;
+    }
+
+    for (row = 0; row < g_editor.nlines && row < 12; row++) {
+        DrawString(getArialCharacter, font_arial_width, font_arial_height,
+            g_editor.lines[row],
+            x + 8, y + 24 + row * font_arial_height,
+            0, 0, 0);
+    }
+    (void)linebuff;
+    return 0;
 }
 
 int TaskbarTask(int taskId) {

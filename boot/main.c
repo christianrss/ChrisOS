@@ -35,6 +35,17 @@ int start() {
     iparams[TasksLength * task_params_length + 4] = 1;
     TasksLength++;
 
+    /* LEARN:P11 — remove no PASSO 14 quando o botão existir */
+    tasks[TasksLength].priority = 0;
+    tasks[TasksLength].taskId = TasksLength;
+    tasks[TasksLength].function = &CodeEditorTask;
+    iparams[TasksLength * task_params_length + 0] = 80;
+    iparams[TasksLength * task_params_length + 1] = 60;
+    iparams[TasksLength * task_params_length + 2] = 400;
+    iparams[TasksLength * task_params_length + 3] = 280;
+    g_editor_task_id = TasksLength;
+    TasksLength++;
+
     /*tasks[TasksLength].priority = 0;
     tasks[TasksLength].taskId = TasksLength;
     tasks[TasksLength].function = &TestGraphicalElementsTask;
@@ -47,9 +58,9 @@ int start() {
     iparams[TasksLength * task_params_length + 6] = 0;
     TasksLength++;*/
 
-    tasks[TasksLength].priority = 0;
-    tasks[TasksLength].function = &HandleKeyboardTask;
-    TasksLength++;
+    // tasks[TasksLength].priority = 0;
+    // tasks[TasksLength].function = &HandleKeyboardTask;
+    // TasksLength++;
 
     tasks[TasksLength].priority = 5;
     tasks[TasksLength].function = &DrawMouseTask;

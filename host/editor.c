@@ -1,4 +1,4 @@
-#include "editor.h"
+#include "../host/editor.h"
 
 static void ed_clear_line(char *line) {
     int i;
