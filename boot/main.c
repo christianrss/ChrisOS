@@ -16,6 +16,7 @@ int start() {
 
     InitialiseMouse();
     InitialiseIDT();
+    fs_init();
 
     tasks[TasksLength].priority = 0;
     tasks[TasksLength].function = &ClearScreenTask;
