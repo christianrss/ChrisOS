@@ -60,22 +60,26 @@ void outportb(unsigned short port, unsigned char data) {
 }
 
 void InitialiseIDT() {
-    _idt[1].lower = (base & 0xffff);
-    _idt[1].higher = (base >> 16) & 0xffff;
-    _idt[1].selector = 0x08;
-    _idt[1].zero = 0;
-    _idt[1].flags = 0x8e;
+    /* LEARN:P03 teclado IRQ1 -> 0x21 */
+    _idt[0x21].lower = (base & 0xffff);
+    _idt[0x21].higher = (base >> 16) & 0xffff;
+    _idt[0x21].selector = 0x08;
+    _idt[0x21].zero = 0;
+    _idt[0x21].flags = 0x8e;
 
-    _idt[12].lower = (base12 & 0xffff);
-    _idt[12].higher = (base12 >> 16) & 0xffff;
-    _idt[12].selector = 0x08;
-    _idt[12].zero = 0;
-    _idt[12].flags = 0x8e;
+    /* LEARN:P03 mouse IRQ12 -> 0x2C */
+    _idt[0x2C].lower = (base12 & 0xffff);
+    _idt[0x2C].higher = (base12 >> 16) & 0xffff;
+    _idt[0x2C].selector = 0x08;
+    _idt[0x2C].zero = 0;
+    _idt[0x2C].flags = 0x8e;
 
     RemapPIC();
 
+    /* mascara: IRQ0 ainda off; IRQ1 teclado on; IRQ2 cascade on*/
     outportb(0x21, 0b11111001);
-    outportb(0xa1, 0x00);
+    /* slave: só precisamos IRQ12 (bit4). 0xEF = 11101111b */
+    outportb(0xa1, 0b11101111);
 
     LoadIDT();
 }
@@ -89,8 +93,8 @@ void RemapPIC() {
     outportb(pic1_command, icw1_def | icw1_icw4);
     outportb(pic2_command, icw1_def | icw1_icw4);
 
-    outportb(pic1_data, 0);
-    outportb(pic2_data, 8);
+    outportb(pic1_data, 0x20);
+    outportb(pic2_data, 0x28);
 
     outportb(pic1_data, 4);
     outportb(pic2_data, 2);
