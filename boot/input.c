@@ -46,8 +46,9 @@ struct IDTElement {
 };
 
 struct IDTElement _idt[256];
-extern unsigned int isr1, isr12;
-unsigned int base, base12;
+extern unsigned int isr1, isr12, isr32;
+unsigned int base, base12, base32;
+volatile unsigned int ticks = 0;
 
 unsigned char inportb(unsigned short port) {
     unsigned char value;
@@ -74,10 +75,18 @@ void InitialiseIDT() {
     _idt[0x2C].zero = 0;
     _idt[0x2C].flags = 0x8e;
 
+    /* LEARN:P04 IRQ0 -> 0x20 */
+    _idt[0x20].lower = (base32 & 0xffff);
+    _idt[0x20].higher = (base32 >> 16) & 0xffff;
+    _idt[0x20].selector = 0x08;
+    _idt[0x20].zero = 0;
+    _idt[0x20].flags = 0x8e;
+
     RemapPIC();
 
     /* mascara: IRQ0 ainda off; IRQ1 teclado on; IRQ2 cascade on*/
-    outportb(0x21, 0b11111001);
+    // outportb(0x21, 0b11111001);
+    outportb(0x21, 0b11111000); /* LEARN:P04 IRQ0 on, IRQ1 on, IRQ2 on*/
     /* slave: só precisamos IRQ12 (bit4). 0xEF = 11101111b */
     outportb(0xa1, 0b11101111);
 
@@ -308,6 +317,19 @@ int backspace_pressed = FALSE;
 int alt_pressed = FALSE;
 int ctrl_pressed = FALSE;
 int enter_pressed = FALSE;
+
+/* LEARN:P04 */
+void HandleISR32() {
+    ticks++;
+    outportb(0x20, 0x20);
+}
+
+void InitPIT(unsigned int hz) {
+    unsigned int divisor = 1193182u / hz;
+    outportb(0x43, 0x36);  /* canal 0, lo/hi, modo 3 */
+    outportb(0x40, (unsigned char)(divisor & 0xFF));
+    outportb(0x40, (unsigned char)((divisor >> 8) & 0xFF));
+}
 
 unsigned char ProcessScancode(int scancode) {
     if (scancode == 0x01)

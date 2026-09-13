@@ -2,6 +2,8 @@
 global START
 extern start
 extern __bss_start, __bss_end
+extern HandleISR32
+global isr32
 
 START:
     cld
@@ -31,6 +33,12 @@ isr1:
 isr12:
     pusha
     call HandleISR12
+    popa
+    iret
+
+isr32:
+    pusha
+    call HandleISR32
     popa
     iret
 

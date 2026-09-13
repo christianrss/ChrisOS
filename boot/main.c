@@ -12,6 +12,7 @@ int start() {
 
     base = (unsigned int) &isr1;
     base12 = (unsigned int) &isr12;
+    base32 = (unsigned int) &isr32;
 
     InitialiseMouse();
     InitialiseIDT();
@@ -54,9 +55,14 @@ int start() {
     tasks[TasksLength].function = &DrawMouseTask;
     TasksLength++;
 
+    /* LEARN:P04 espera 60 Hz */
+    unsigned int last = ticks;
     while(1) {
         ProcessTasks();
-
         Flush();
+        while (ticks == last) {
+            __asm__ __volatile__("hlt");
+        }
+        last = ticks;
     }
 }
