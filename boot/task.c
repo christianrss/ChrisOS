@@ -204,16 +204,23 @@ int BallTask(int taskId) {
     int width = iparams[taskId * task_params_length + 2];
     int height = iparams[taskId * task_params_length + 3];
 
-    iparams[taskId * task_params_length + 5] += iparams[taskId * task_params_length + 7];
-    iparams[taskId * task_params_length + 6] += iparams[taskId * task_params_length + 8];
 
-    if (iparams[taskId * task_params_length + 5] + 10 > iparams[taskId * task_params_length + 2] ||
-        iparams[taskId * task_params_length + 5] - 10 < 0)
-        iparams[taskId * task_params_length + 7] = -iparams[taskId * task_params_length + 7];
-    
-    if (iparams[taskId * task_params_length + 6] + 10 > iparams[taskId * task_params_length + 3] ||
-        iparams[taskId * task_params_length + 6] - 10 < 20)
-        iparams[taskId * task_params_length + 8] = -iparams[taskId * task_params_length + 8];
+ /* LEARN:P07 - iparams[4] guarda o último tick em que a bola andou */
+    if (iparams[taskId * task_params_length + 4] == (int)ticks) {
+
+    } else {
+        iparams[taskId * task_params_length + 4] = (int)ticks;
+        iparams[taskId * task_params_length + 5] += iparams[taskId * task_params_length + 7];
+        iparams[taskId * task_params_length + 6] += iparams[taskId * task_params_length + 8];
+        /* bounce: matenha os dois ifs que já existem sobre +5/+6 vs width/height */
+        if (iparams[taskId * task_params_length + 5] + 10 > iparams[taskId * task_params_length + 2] ||
+            iparams[taskId * task_params_length + 5] - 10 < 0)
+            iparams[taskId * task_params_length + 7] = -iparams[taskId * task_params_length + 7];
+
+        if (iparams[taskId * task_params_length + 6] + 10 > iparams[taskId * task_params_length + 3] + 19 ||
+            iparams[taskId * task_params_length + 6] - 10 < 20)
+            iparams[taskId * task_params_length + 8] = -iparams[taskId * task_params_length + 8];
+    }
 
     DrawCircle(x + iparams[taskId * task_params_length + 5], y + iparams[taskId * task_params_length + 6], 10, 16, 32, 16);
 }
