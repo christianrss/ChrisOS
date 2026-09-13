@@ -7,6 +7,49 @@ int rgb(int r, int g, int b) {
     return r << 11 | g << 5 | b;
 }
 
+/* LEARN:P06 - RGB565, índices estilo CGA */
+unsigned short palette16[16] = {
+    0x0000, /*  0 black   */
+    0x0010, /*  1 navy    */
+    0x0400, /*  2 green   */
+    0x0410, /*  3 teal    */
+    0x8000, /*  4 maroon  */
+    0x8010, /*  5 purple  */
+    0x8400, /*  6 olive   */
+    0xC618, /*  7 silver  */
+    0x8410, /*  8 gray    */
+    0x001F, /*  9 blue    */
+    0x07E0, /* 10 lime    */
+    0x07FF, /* 11 aqua    */
+    0xF800, /* 12 red     */
+    0xF81F, /* 13 fuchsia */
+    0xFFE0, /* 14 yellow  */
+    0xFFFF  /* 15 white   */
+};
+
+void PutPixel(int x, int y, int color) {
+    VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
+    unsigned short* buffer = (unsigned short*) ScreenBufferAddress;
+    int index;
+    if (color < 0 || color > 15) {
+        return;
+    }
+    if (x < 0 || y < 0 || x >= VBE->x_resolution || y >= VBE->y_resolution) {
+        return;
+    }
+    index = y * VBE->x_resolution + x;
+    buffer[index] = palette16[color];
+}
+
+void Fill(int x, int y, int width, int height, int color) {
+    int j, i;
+    for (j = 0; j < height; j++) {
+        for (i = 0; i < width; i++) {
+            PutPixel(x + i, y + j , color);
+        }
+    }
+}
+
 void Draw(int x, int y, int r, int g, int b) {
     VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
     unsigned short* buffer = (unsigned short*) ScreenBufferAddress;

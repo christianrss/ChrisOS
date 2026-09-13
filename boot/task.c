@@ -65,6 +65,7 @@ int WelcomeTask(int taskId) {
     char str1[] = "**** CHRISTIAN OS 64 ****\n\n";
     char *p = str1;
     DrawString(getArialCharacter, font_arial_width, font_arial_height, p, 100, 100, 0, 0, 0);
+    // Fill(100, 200, 40, 40, 12); /* LEARN:P06 quadrado vermelho */
     return 0;
 }
 
