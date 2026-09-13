@@ -261,26 +261,70 @@ int CodeEditorTask(int taskId) {
     (void) width;
     (void) height;
 
-    if (mouse_possessed_task_id == taskId && Scancode != -1) {
-        char ch = ProcessScancode(Scancode);
-        if (backspace_pressed == TRUE) {
-            ed_handle(&g_editor, 8);
-            backspace_pressed = FALSE;
-        } else if (ch == '\n' || enter_pressed == TRUE) {
-            ed_handle(&g_editor, '\n');
-            enter_pressed = FALSE;
-        } else if (ch != '\0') {
-            ed_handle(&g_editor, (int)ch);
-        }
-        Scancode = -1;
+    int vis = (height - 28) / font_arial_height;
+    int sc;
+    if (vis < 1) {
+        vis = 1;
     }
 
-    for (row = 0; row < g_editor.nlines && row < 12; row++) {
+    if (mouse_possessed_task_id == taskId && Scancode != -1) {
+        sc = Scancode;
+        if (sc & 0x80) {
+            Scancode = -1;
+        } else if (sc == 0x48) {
+            ed_handle(&g_editor, ED_UP);
+            Scancode = -1;
+        } else if (sc == 0x50) {
+            ed_handle(&g_editor, ED_DOWN);
+            Scancode = -1;
+        } else if (sc == 0x4B) {
+            ed_handle(&g_editor, ED_LEFT);
+            Scancode = -1;
+        } else if (sc == 0x4D) {
+            ed_handle(&g_editor, ED_RIGHT);
+            Scancode = -1;
+        } else if (sc == 0x47) {
+            ed_handle(&g_editor, ED_HOME);
+            Scancode = -1;
+        } else if (sc == 0x4F) {
+            ed_handle(&g_editor, ED_END);
+            Scancode = -1;
+        } else if (sc == 0x53) {
+            ed_handle(&g_editor, ED_DEL);
+            Scancode = -1;
+        } else {
+            char ch = ProcessScancode(Scancode);
+            if (backspace_pressed == TRUE) {
+                ed_handle(&g_editor, 8);
+                backspace_pressed = FALSE;
+            } else if (ch == '\n' || enter_pressed == TRUE) {
+                ed_handle(&g_editor, '\n');
+                enter_pressed = FALSE;
+            } else if (ch != '\0') {
+                ed_handle(&g_editor, (int)ch);
+            }
+            Scancode = -1;
+        }
+    }
+
+    if (g_editor.row < g_editor.scroll_row) {
+        g_editor.scroll_row = g_editor.row;
+    }
+    if (g_editor.row >= g_editor.scroll_row + vis) {
+        g_editor.scroll_row = g_editor.row - vis + 1;
+    }
+
+    for (row = 0; row < vis; row++) {
+        int src = g_editor.scroll_row + row;
+        if (src >= g_editor.nlines) {
+            break;
+        }
         DrawString(getArialCharacter, font_arial_width, font_arial_height,
-            g_editor.lines[row],
+            g_editor.lines[src],
             x + 8, y + 24 + row * font_arial_height,
             0, 0, 0);
     }
+
     (void)linebuff;
     return 0;
 }

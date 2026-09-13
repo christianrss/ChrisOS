@@ -20,6 +20,7 @@ typedef struct Editor {
     int dirty;
     char name[32];
     char status[80];
+    int scroll_row;
 } Editor;
 
 void ed_init(Editor *e);
