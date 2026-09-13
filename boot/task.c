@@ -325,6 +325,20 @@ int CodeEditorTask(int taskId) {
             0, 0, 0);
     }
 
+    /* LEARN: P13 */
+    if ((ticks / 30) % 2 == 0) {
+        int cr = g_editor.row - g_editor.scroll_row;
+        int cw = font_arial_width - (font_arial_width / 5);
+        if (cw < 1) {
+            cw = 1;
+        }
+        if (cr >= 0 && cr < vis) {
+            int cx = x + 8 + g_editor.col * cw;
+            int cy = y + 24 + cr * font_arial_height;
+            Fill(cx, cy, 2, font_arial_height, 0);
+        }
+    }
+
     (void)linebuff;
     return 0;
 }
