@@ -381,4 +381,27 @@ int TaskbarTask(int taskId) {
         iparams[TasksLength * task_params_length + 8] = 5;
         TasksLength++;
     }
+
+    char textEd[] = "Editor\0";
+    if (DrawButton(100, 0, 70, 40, 10, 0, 16, textEd, 16, 32, 16, taskId) == TRUE) {
+        int exists = 0;
+        if (g_editor_task_id >= 0 && g_editor_task_id < TasksLength) {
+            if (tasks[g_editor_task_id].function == &CodeEditorTask) {
+                exists = 1;
+                mouse_possessed_task_id = g_editor_task_id;
+                tasks[g_editor_task_id].priority = 0;
+            }
+        }
+        if (!exists) {
+            tasks[TasksLength].priority = 0;
+            tasks[TasksLength].taskId = TasksLength;
+            tasks[TasksLength].function = &CodeEditorTask;
+            iparams[TasksLength * task_params_length + 0] = 80;
+            iparams[TasksLength * task_params_length + 1] = 60;
+            iparams[TasksLength * task_params_length + 2] = 400;
+            iparams[TasksLength * task_params_length + 3] = 280;
+            g_editor_task_id = TasksLength;
+            TasksLength++;
+        }
+    }
 }
