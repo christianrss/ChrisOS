@@ -1,4 +1,19 @@
-On Windows use qemu-w64-setup-20190815.exe or qemu-w64-setup-20210203.exe to avoid mouse/keyboard issues.
+# ChrisOS
 
-https://github.com/user-attachments/assets/5cdfea72-55ff-46e9-b97a-c214d86342bd
+Hobby OS ring-0 para QEMU (VBE 640×480): desktop, editor de código no SO e evolução futura com CLVM/ChrisC.
 
+## Build
+
+Precisas de NASM, GCC i686 (`-m32`), `ld`, `objcopy`, QEMU.
+
+```text
+make
+```
+
+Windows: Git Bash ou WSL para o `makefile` (`cat`, `ld -m elf_i386`). QEMU:
+
+```text
+run.bat
+```
+
+O rato PS/2 funciona no QEMU moderno com a inicialização PS/2 correta em `boot/input.c`.

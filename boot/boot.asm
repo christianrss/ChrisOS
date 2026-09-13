@@ -22,11 +22,23 @@ section code
 
     mov bx, 0x1000          ; This is the location where the code is loaded from hard disk
     mov ah, 0x02
-    mov al, 50              ; The number of sectors to read from hard disk
+    mov al, 128             ; LEARN:P01 — 128 sectores = 64 KiB de kernel
     mov ch, 0x00
     mov dh, 0x00
     mov cl, 0x02
     int 0x13
+
+    ; LEARN:P01B - VBE info de novo (a carga pisou 0x8000)
+    mov ax, 0x4f01
+    mov cx, 0x111
+    mov bx, 0x0800
+    mov es, bx
+    mov di, 0x00
+    int 0x10
+
+    xor ax, ax
+    mov ds, ax
+    mov es, ax
 
     cli                     ; Turn of the interrupts
     lgdt [gdt_descriptor]   ; Load the GDT Table

@@ -115,68 +115,132 @@ void HandleISR12() {
     outportb(0x20, 0x20);
 }
 
-void MouseWait(unsigned char type) {
-    int time_out = 100000;
-    
-    if (type == 0) {
-        while(time_out--) {
-            if ((inportb(0x64) & 1) == 1)
-                return;
-        }
-        return;
+#define ps2_status_port 0x64
+#define ps2_command_port 0x64
+#define ps2_data_port 0x60
+#define ps2_output_full 0x01
+#define ps2_input_full 0x02
+#define ps2_mouse_data 0x20
+#define ps2_ack 0xfa
+#define ps2_resend 0xfe
+
+int PS2WaitWrite() {
+    int timeout = 100000;
+
+    while (timeout--) {
+        if ((inportb(ps2_status_port) & ps2_input_full) == 0)
+            return TRUE;
     }
-    else {
-        while(time_out--) {
-            if ((inportb(0x64) & 2) == 0)
-                return;
-        }
-        return;
-    }
+
+    return FALSE;
 }
 
-void MouseWrite(unsigned char data) {
-    MouseWait(1);
-    outportb(0x64, 0xd4);
+int PS2WaitRead(unsigned char* value) {
+    int timeout = 100000;
 
-    MouseWait(1);
-    outportb(0x60, data);
+    while (timeout--) {
+        if (inportb(ps2_status_port) & ps2_output_full) {
+            *value = inportb(ps2_data_port);
+            return TRUE;
+        }
+    }
+
+    return FALSE;
 }
 
-unsigned char MouseRead() {
-    MouseWait(0);
-    return inportb(0x60);
+int PS2WaitMouseRead(unsigned char* value) {
+    int timeout = 100000;
+
+    while (timeout--) {
+        unsigned char status = inportb(ps2_status_port);
+
+        if (status & ps2_output_full) {
+            unsigned char data = inportb(ps2_data_port);
+
+            if (status & ps2_mouse_data) {
+                *value = data;
+                return TRUE;
+            }
+        }
+    }
+
+    return FALSE;
+}
+
+void PS2FlushOutput() {
+    int timeout = 1000;
+
+    while (timeout-- && (inportb(ps2_status_port) & ps2_output_full))
+        inportb(ps2_data_port);
+}
+
+int MouseCommand(unsigned char command) {
+    unsigned char response;
+
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (!PS2WaitWrite())
+            return FALSE;
+        outportb(ps2_command_port, 0xd4);
+
+        if (!PS2WaitWrite())
+            return FALSE;
+        outportb(ps2_data_port, command);
+
+        if (!PS2WaitMouseRead(&response))
+            return FALSE;
+
+        if (response == ps2_ack)
+            return TRUE;
+        if (response != ps2_resend)
+            return FALSE;
+    }
+
+    return FALSE;
 }
 
 void InitialiseMouse() {
-    unsigned char status;
+    unsigned char controller_config;
 
-    MouseWait(1);
-    outportb(0x64, 0xd4);
+    current_byte = 0;
+    PS2FlushOutput();
 
-    MouseWait(1);
-    outportb(0x64, 0xa8);
+    /* Enable the PS/2 auxiliary port. */
+    if (!PS2WaitWrite())
+        return;
+    outportb(ps2_command_port, 0xa8);
 
-    MouseWait(1);
-    outportb(0x64, 0x20);
-    MouseWait(0);
-    status = (inportb(0x60) | 2);
-    MouseWait(1);
-    outportb(0x64, 0x60);
-    MouseWait(1);
-    outportb(0x60, status);
+    /* Enable IRQ12 and make sure the second-port clock is running. */
+    if (!PS2WaitWrite())
+        return;
+    outportb(ps2_command_port, 0x20);
+    if (!PS2WaitRead(&controller_config))
+        return;
 
-    MouseWrite(0xff);
-    MouseRead();
-    MouseWrite(0xf6);
-    MouseRead();
+    controller_config |= 0x02;
+    controller_config &= ~0x20;
 
-    MouseWrite(0xf4);
-    MouseRead();
+    if (!PS2WaitWrite())
+        return;
+    outportb(ps2_command_port, 0x60);
+    if (!PS2WaitWrite())
+        return;
+    outportb(ps2_data_port, controller_config);
+
+    /* Defaults, then streaming. Each command must be acknowledged. */
+    if (!MouseCommand(0xf6))
+        return;
+    if (!MouseCommand(0xf4))
+        return;
 }
 
 void HandleMousePacket();
 void HandleMouseInterrupt() {
-    uint8_t byte = MouseRead();
+    unsigned char status = inportb(ps2_status_port);
+
+    if (!(status & ps2_output_full) || !(status & ps2_mouse_data))
+        return;
+
+    uint8_t byte = inportb(ps2_data_port);
 
     if (current_byte == 0 && !(byte & always_set))
         return;

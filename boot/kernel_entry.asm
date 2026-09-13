@@ -1,6 +1,16 @@
 [bits 32]
+global START
+extern start
+extern __bss_start, __bss_end
+
 START:
-[extern start]
+    cld
+    mov edi, __bss_start
+    mov ecx, __bss_end
+    sub ecx, edi
+    xor eax, eax
+    rep stosb
+
     call start
     jmp $
 
