@@ -34,7 +34,8 @@ typedef struct VBEInfoBlockStruct {
 } VBEInfoBlock;
 
 #define VBEInfoAddress 0x8000
-#define ScreenBufferAddress 0xffff0
+/* LEARN:P02 - 640*480*2 = 614400 bytes. Identity-map, acima da stack 0x90000 */
+#define ScreenBufferAddress 0x2000000
 
 extern const int font_arial_width;
 extern const int font_arial_height;
