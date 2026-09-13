@@ -116,14 +116,14 @@ void DrawCircle(int x, int y, int radius, int r, int g, int b) {
 
 void Flush() {
     VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
-    unsigned short* buffer = (unsigned short*) ScreenBufferAddress;
-    int index;
+    unsigned int count = (unsigned int)VBE->x_resolution * (unsigned int)VBE->y_resolution;
+    unsigned int* dst = (unsigned int*)VBE->screen_ptr;
+    unsigned int* src = (unsigned int*)ScreenBufferAddress;
+    unsigned int i;
 
-    for (int y = 0; y < VBE->y_resolution; y++) {
-        for (int x = 0; x < VBE->x_resolution; x++) {
-            index = y * VBE->x_resolution + x;
-            *((unsigned short*)VBE->screen_ptr + index) = *(buffer + index);
-        }
+    /* LEARN:P05 - 2 pixels (4 bytes) por iteração; 640*480 é par */
+    for (i = 0; i < (count / 2); i++) {
+        dst[i] = src[i];
     }
 
 }
