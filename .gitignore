@@ -1,6 +1,7 @@
 # Local study material (not published)
 learn/
 docs/
+backup/
 
 # ChrisOS build outputs
 boot/bin/

@@ -25,6 +25,7 @@ int DrawButton(int x, int y, int width, int height, int r, int g, int b, char* t
     else
         DrawRect(x, y, width, height, r/4, g/4, b/4);
     DrawString(getArialCharacter, font_arial_width, font_arial_height, text, x + width /10, y + height/ 10, r1, g1, b1);
+    return 0;
 }
 
 int DrawWindow(int* x, int* y, int* width, int* height, int r, int g, int b, int* mouse_held, int taskId) {

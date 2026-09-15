@@ -34,18 +34,19 @@ int start() {
     iparams[TasksLength * task_params_length + 2] = VBE->x_resolution;
     iparams[TasksLength * task_params_length + 3] = 40;
     iparams[TasksLength * task_params_length + 4] = 1;
+    mouse_possessed_task_id = TasksLength;
     TasksLength++;
 
-    /* LEARN:P11 — remove no PASSO 14 quando o botão existir */
-    tasks[TasksLength].priority = 0;
-    tasks[TasksLength].taskId = TasksLength;
-    tasks[TasksLength].function = &CodeEditorTask;
-    iparams[TasksLength * task_params_length + 0] = 80;
-    iparams[TasksLength * task_params_length + 1] = 60;
-    iparams[TasksLength * task_params_length + 2] = 400;
-    iparams[TasksLength * task_params_length + 3] = 280;
-    g_editor_task_id = TasksLength;
-    TasksLength++;
+    // /* LEARN:P11 — remove no PASSO 14 quando o botão existir */
+    // tasks[TasksLength].priority = 0;
+    // tasks[TasksLength].taskId = TasksLength;
+    // tasks[TasksLength].function = &CodeEditorTask;
+    // iparams[TasksLength * task_params_length + 0] = 80;
+    // iparams[TasksLength * task_params_length + 1] = 60;
+    // iparams[TasksLength * task_params_length + 2] = 400;
+    // iparams[TasksLength * task_params_length + 3] = 280;
+    // g_editor_task_id = TasksLength;
+    // TasksLength++;
 
     /*tasks[TasksLength].priority = 0;
     tasks[TasksLength].taskId = TasksLength;

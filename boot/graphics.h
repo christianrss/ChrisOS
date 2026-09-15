@@ -53,5 +53,6 @@ void Flush();
 extern unsigned short palette16[16];
 void PutPixel(int x, int y, int color);
 void Fill(int x, int y, int width, int height, int color);
+void DrawMouse(int x, int y, int r, int g, int b);
 
 #endif

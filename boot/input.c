@@ -33,6 +33,7 @@ int Scancode = -1;
 
 void InitialiseIDT();
 extern void LoadIDT();
+void InitPIT(unsigned int hz);
 void HandleISR1();
 void HandleISR2();
 void RemapPIC();
@@ -300,13 +301,13 @@ void HandleMousePacket() {
 
     if (mx < 0)
         mx = 0;
-    else if (mx > VBE->x_resolution)
-        mx = VBE->x_resolution;
-    
+    else if (mx >= VBE->x_resolution)
+        mx = VBE->x_resolution - 1;
+
     if (my < 0)
         my = 0;
-    else if (my > VBE->y_resolution)
-        my = VBE->y_resolution;
+    else if (my >= VBE->y_resolution)
+        my = VBE->y_resolution - 1;
     
 }
 

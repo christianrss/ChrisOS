@@ -21,7 +21,7 @@ struct Task {
 };
 
 struct Task tasks[256];
-int iparams[100] = {10};
+int iparams[task_params_length * 256];
 
 void ProcessTasks() {
     int priority;
@@ -66,11 +66,14 @@ void ProcessTasks() {
 }
 
 int WelcomeTask(int taskId) {
-    // String literals cannot be more than 61 characters.
-    char str1[] = "**** CHRISTIAN OS 64 ****\n\n";
-    char *p = str1;
-    DrawString(getArialCharacter, font_arial_width, font_arial_height, p, 100, 100, 0, 0, 0);
-    // Fill(100, 200, 40, 40, 12); /* LEARN:P06 quadrado vermelho */
+    VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
+    Fill(0, 0, VBE->x_resolution, 40, 10);
+    Fill(0, 0, 50, 40, 1);
+    Fill(50, 0, 50, 40, 6);
+    Fill(100, 0, 70, 40, 4);
+    Fill(90, 95, 360, 24, 15);
+    Fill(92, 97, 356, 20, 9);
+    (void)taskId;
     return 0;
 }
 
@@ -93,7 +96,7 @@ int ClearScreenTask(int taskId) {
 }
 
 int DrawMouseTask(int taskId) {
-    DrawMouse(mx, my, 16, 100.00 / 255.0 * 32, 100.0 / 255.0 * 16);
+    DrawMouse(mx, my, 15, 31, 31);
     return 0;
 }
 
@@ -343,14 +346,20 @@ int CodeEditorTask(int taskId) {
     return 0;
 }
 
-int TaskbarTask(int taskId) {
-    VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
-    DrawRect(0, 0, VBE->x_resolution, 40, 16, 32, 16);
+static int TaskbarClick(int x, int y, int w, int h, int taskId) {
+    if (mouse_possessed_task_id != taskId)
+        return 0;
+    if (mx > x && mx < x + w && my > y && my < y + h && left_clicked == TRUE) {
+        left_clicked = FALSE;
+        return 1;
+    }
+    return 0;
+}
 
+int TaskbarTask(int taskId) {
     int i = iparams[taskId * task_params_length + 4];
 
-    char text[] = "Shell\0";
-    if (DrawButton(0, 0, 50, 40, 0, 10, 16, text, 16, 32, 16, taskId) == TRUE) {
+    if (TaskbarClick(0, 0, 50, 40, taskId) == 1 && TasksLength < 255) {
         tasks[TasksLength].priority = 0;
         tasks[TasksLength].taskId = TasksLength;
         tasks[TasksLength].function = &ShellTask;
@@ -365,8 +374,7 @@ int TaskbarTask(int taskId) {
         iparams[taskId * task_params_length + 4]++;
     }
 
-    char text2[] = "Ball\0";
-    if (DrawButton(50, 0, 50, 40, 16, 10, 0, text2, 16, 32, 16, taskId) == TRUE) {
+    if (TaskbarClick(50, 0, 50, 40, taskId) == 1 && TasksLength < 255) {
         tasks[TasksLength].priority = 0;
         tasks[TasksLength].taskId = TasksLength;
         tasks[TasksLength].function = &BallTask;
@@ -382,8 +390,7 @@ int TaskbarTask(int taskId) {
         TasksLength++;
     }
 
-    char textEd[] = "Editor\0";
-    if (DrawButton(100, 0, 70, 40, 10, 0, 16, textEd, 16, 32, 16, taskId) == TRUE) {
+    if (TaskbarClick(100, 0, 70, 40, taskId) == 1) {
         int exists = 0;
         if (g_editor_task_id >= 0 && g_editor_task_id < TasksLength) {
             if (tasks[g_editor_task_id].function == &CodeEditorTask) {
@@ -392,7 +399,7 @@ int TaskbarTask(int taskId) {
                 tasks[g_editor_task_id].priority = 0;
             }
         }
-        if (!exists) {
+        if (!exists && TasksLength < 255) {
             tasks[TasksLength].priority = 0;
             tasks[TasksLength].taskId = TasksLength;
             tasks[TasksLength].function = &CodeEditorTask;
@@ -404,4 +411,5 @@ int TaskbarTask(int taskId) {
             TasksLength++;
         }
     }
+    return 0;
 }

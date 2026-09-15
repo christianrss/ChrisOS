@@ -115,7 +115,7 @@ void DrawString(int (*f)(int, int), int font_width, int font_height, char* strin
     }
 }
 
-void DrawMouse(int x, int y, int r, int g, int b) {
+static void DrawMouseShape(int x, int y, int r, int g, int b) {
     int mouse[] = {
         0b11111111111,
         0b11111111110,
@@ -130,20 +130,22 @@ void DrawMouse(int x, int y, int r, int g, int b) {
         0b10000000000
     };
 
-    int mouse_width = 10, mouse_height = 10;
+    int mouse_width = 11, mouse_height = 11;
     for (int j = 0; j < mouse_height; j++) {
         unsigned int row = mouse[j];
         int shift = mouse_width - 1;
-        int bit_val = 0;
 
         for (int i = 0; i < mouse_width; i++) {
-            bit_val = (row >> shift) & 0b00000000000000000000000000000001;
-            if (bit_val == 1)
+            if ((row >> shift) & 1)
                 Draw(x + i, y + j, r, g, b);
-
             shift -= 1;
         }
     }
+}
+
+void DrawMouse(int x, int y, int r, int g, int b) {
+    DrawMouseShape(x + 1, y + 1, 0, 0, 0);
+    DrawMouseShape(x, y, r, g, b);
 }
 
 void DrawCircle(int x, int y, int radius, int r, int g, int b) {

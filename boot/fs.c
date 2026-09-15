@@ -67,3 +67,44 @@ int fs_create(const char *name, int type) {
     }
     return -1;
 }
+
+int fs_write(const char *name, const unsigned char *data, int n, int type) {
+    int id = fs_find(name);
+    int i;
+    if (n < 0 || n > FS_ARENA) {
+        return -1;
+    }
+    if (fs_bump + n > FS_ARENA) {
+        return -2;
+    }
+    if (id < 0) {
+        id = fs_create(name, type);
+        if (id < 0) {
+            return -1;
+        }
+    }
+    fs_files[id].type = type;
+    fs_files[id].offset = fs_bump;
+    fs_files[id].size = n;
+    for (i = 0; i < n; i++) {
+        fs_arena[fs_bump + i] = data[i];
+    }
+    fs_bump += n;
+    return id;
+}
+
+int fs_read(const char *name, unsigned char *out, int out_cap) {
+    int id = fs_find(name);
+    int i, n;
+    if (id < 0) {
+        return -1;
+    }
+    n = fs_files[id].size;
+    if (n > out_cap) {
+        n = out_cap;
+    }
+    for (i = 0; i < n; i++) {
+        out[i] = fs_arena[fs_files[id].offset + i];
+    }
+    return n;
+}

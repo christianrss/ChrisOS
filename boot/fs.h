@@ -20,6 +20,8 @@ typedef struct FsFile {
 void fs_init(void);
 int fs_find(const char *name);
 int fs_create(const char *name, int type);
+int fs_write(const char *name, const unsigned char *data, int n, int type);
+int fs_read(const char *name, unsigned char *out, int out_cap);
 
 extern FsFile fs_files[FS_MAX_FILES];
 extern unsigned char fs_arena[FS_ARENA];
