@@ -23,6 +23,9 @@ C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o \
 ASM_OBJECTS := kernel/idt_stubs.o
 OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
 
+HOST_CC := gcc
+HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -Ikernel
+
 .PHONY: all iso run clean
 
 all: iso
@@ -32,6 +35,10 @@ iso: $(ISO)
 host-input-test: tools/test_input.c kernel/input.c kernel/input.h
 	gcc -std=c11 -Wall -Wextra -Werror -Ikernel -o tools/test_input tools/test_input.c kernel/input.c
 	./tools/test_input
+
+host-editor-test: host/test_editor64.c kernel/editor.c kernel/editor.h
+	$(HOST_CC) $(HOST_CFLAGS) -o host/test_editor64 host/test_editor64.c kernel/editor.c
+	./host/test_editor64
 
 kernel/%.o: kernel/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
