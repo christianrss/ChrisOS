@@ -5,6 +5,7 @@
 #include "irq.h"
 #include "panic.h"
 #include "pit.h"
+#include "pmm.h"
 #include "ps2.h"
 #include "serial.h"
 
@@ -35,6 +36,9 @@ void kstart(void) {
         panic("falha ao inicializar PS/2");
     }
 
+    pmm_init();
+    pmm_selftest();
+
     boot = bootinfo_get();
     pixels = (uint32_t *)boot->fb_addr;
     pitch_pixels = boot->fb_pitch / sizeof(uint32_t);
@@ -44,7 +48,7 @@ void kstart(void) {
         }
     }
 
-    serial_puts("ChrisOS: PS/2 pronto; use teclado e mouse\n");
+    serial_puts("ChrisOS: PS/2 pronto; use teclado e rato\n");
     for (;;) {
         __asm__ volatile ("sti; hlt");
         while (keyboard_pop(&key)) {
