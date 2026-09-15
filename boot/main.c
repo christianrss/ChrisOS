@@ -1,81 +1,17 @@
+#include "desktop.h"
 #include "graphics.h"
+#include "pit.h"
 
-int start() {
-    VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
+__attribute__((noreturn)) void desktop_run(void) {
+    uint64_t last_tick = ticks;
 
-    mx = VBE->x_resolution / 2;
-    my = VBE->y_resolution / 2;
+    for (;;) {
+        desktop_frame(ticks);
+        gfx_present();
 
-    char characterBuffer[1000] = "\0";
-    char* characterBufferPointer = characterBuffer;
-    int characterBufferLength = 0;
-
-    base = (unsigned int) &isr1;
-    base12 = (unsigned int) &isr12;
-    base32 = (unsigned int) &isr32;
-
-    InitialiseMouse();
-    InitialiseIDT();
-    fs_init();
-
-    tasks[TasksLength].priority = 0;
-    tasks[TasksLength].function = &ClearScreenTask;
-    TasksLength++;
-
-    tasks[TasksLength].priority = 0;
-    tasks[TasksLength].function = &WelcomeTask;
-    TasksLength++;
-
-    tasks[TasksLength].priority = 0;
-    tasks[TasksLength].function = &TaskbarTask;
-    tasks[TasksLength].taskId = TasksLength;
-    iparams[TasksLength * task_params_length + 0] = 0;
-    iparams[TasksLength * task_params_length + 1] = 0;
-    iparams[TasksLength * task_params_length + 2] = VBE->x_resolution;
-    iparams[TasksLength * task_params_length + 3] = 40;
-    iparams[TasksLength * task_params_length + 4] = 1;
-    mouse_possessed_task_id = TasksLength;
-    TasksLength++;
-
-    // /* LEARN:P11 — remove no PASSO 14 quando o botão existir */
-    // tasks[TasksLength].priority = 0;
-    // tasks[TasksLength].taskId = TasksLength;
-    // tasks[TasksLength].function = &CodeEditorTask;
-    // iparams[TasksLength * task_params_length + 0] = 80;
-    // iparams[TasksLength * task_params_length + 1] = 60;
-    // iparams[TasksLength * task_params_length + 2] = 400;
-    // iparams[TasksLength * task_params_length + 3] = 280;
-    // g_editor_task_id = TasksLength;
-    // TasksLength++;
-
-    /*tasks[TasksLength].priority = 0;
-    tasks[TasksLength].taskId = TasksLength;
-    tasks[TasksLength].function = &TestGraphicalElementsTask;
-    iparams[TasksLength * task_params_length + 0] = 50;
-    iparams[TasksLength * task_params_length + 1] = 50;
-    iparams[TasksLength * task_params_length + 2] = 300;
-    iparams[TasksLength * task_params_length + 3] = 300;
-    iparams[TasksLength * task_params_length + 4] = 0;
-    iparams[TasksLength * task_params_length + 5] = 0;
-    iparams[TasksLength * task_params_length + 6] = 0;
-    TasksLength++;*/
-
-    // tasks[TasksLength].priority = 0;
-    // tasks[TasksLength].function = &HandleKeyboardTask;
-    // TasksLength++;
-
-    tasks[TasksLength].priority = 5;
-    tasks[TasksLength].function = &DrawMouseTask;
-    TasksLength++;
-
-    /* LEARN:P04 espera 60 Hz */
-    unsigned int last = ticks;
-    while(1) {
-        ProcessTasks();
-        Flush();
-        while (ticks == last) {
-            __asm__ __volatile__("hlt");
+        while (ticks == last_tick) {
+            __asm__ volatile ("hlt");
         }
-        last = ticks;
+        last_tick = ticks;
     }
 }
