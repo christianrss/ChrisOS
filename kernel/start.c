@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "bootinfo.h"
 #include "gdt.h"
+#include "graphics.h"
 #include "heap.h"
 #include "idt.h"
 #include "irq.h"
@@ -15,10 +16,6 @@ void kstart(void) {
     const struct bootinfo *boot;
     struct keyboard_event key;
     struct mouse_event mouse;
-    uint32_t *pixels;
-    uint64_t pitch_pixels;
-    uint64_t x;
-    uint64_t y;
 
     if (!serial_init()) {
         __asm__ volatile ("cli");
@@ -46,15 +43,19 @@ void kstart(void) {
     heap_selftest();
 
     boot = bootinfo_get();
-    pixels = (uint32_t *)boot->fb_addr;
-    pitch_pixels = boot->fb_pitch / sizeof(uint32_t);
-    for (y = 40; y < 80 && y < boot->fb_height; ++y) {
-        for (x = 40; x < 200 && x < boot->fb_width; ++x) {
-            pixels[y * pitch_pixels + x] = 0x00ffffffu;
-        }
+    if (boot->fb_bpp != 32 ||
+        !gfx_init((uint32_t *)(uintptr_t)boot->fb_addr,
+                  (int)boot->fb_width,
+                  (int)boot->fb_height,
+                  (int)boot->fb_pitch)) {
+        panic("gfx_init recusou o framebuffer");
     }
 
-    serial_puts("ChrisOS: fase1 metal64 gate OK; use teclado e rato\n");
+    gfx_clear(CHRIS_DESKTOP_COLOR);
+    gfx_fill_rect(0, 0, g_gfx.width, 40, CHRIS_TASKBAR_COLOR);
+    gfx_present();
+    serial_puts("ChrisOS: gfx 32bpp pitch ok\n");
+
     for (;;) {
         __asm__ volatile ("sti; hlt");
         while (keyboard_pop(&key)) {

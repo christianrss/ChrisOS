@@ -1,58 +1,49 @@
-#ifndef GRAPHICS_H
-#define GRAPHICS_H
-typedef struct VBEInfoBlockStruct {
-    unsigned short mode_attribute;
-    unsigned char win_a_attribute;
-    unsigned char win_b_attribute;
-    unsigned short win_granuality;
-    unsigned short win_size;
-    unsigned short win_a_segment;
-    unsigned short win_b_segment;
-    unsigned int win_func_ptr;
-    unsigned short bytes_per_scan_line;
-    unsigned short x_resolution;
-    unsigned short y_resolution;
-    unsigned char char_x_size;
-    unsigned char char_y_size;
-    unsigned char number_of_planes;
-    unsigned char bits_per_pixel;
-    unsigned char number_of_banks;
-    unsigned char memory_model;
-    unsigned char bank_size;
-    unsigned char number_of_image_pages;
-    unsigned char b_reserved;
-    unsigned char red_mask_size;
-    unsigned char red_field_position;
-    unsigned char green_mask_size;
-    unsigned char green_field_position;
-    unsigned char blue_mask_size;
-    unsigned char blue_field_position;
-    unsigned char reserved_mask_size;
-    unsigned char reserved_field_position;
-    unsigned char direct_color_info;
-    unsigned int screen_ptr;
-} VBEInfoBlock;
+#ifndef CHRIS_GRAPHICS_H
+#define CHRIS_GRAPHICS_H
 
-#define VBEInfoAddress 0x8000
-/* LEARN:P02 - 640*480*2 = 614400 bytes. Identity-map, acima da stack 0x90000 */
-#define ScreenBufferAddress 0x2000000
+#include <stdbool.h>
+#include <stdint.h>
 
-extern const int font_arial_width;
-extern const int font_arial_height;
+#define GFX_MAX_WIDTH  1920
+#define GFX_MAX_HEIGHT 1080
 
-int getArialCharacter(int index, int y);
+#define CHRIS_DESKTOP_COLOR 0x00B5E8FFu
+#define CHRIS_TASKBAR_COLOR 0x0000FF00u
+#define CHRIS_SHELL_COLOR   0x00000080u
+#define CHRIS_BALL_COLOR    0x00808000u
+#define CHRIS_EDITOR_COLOR  0x00800000u
+#define CHRIS_TITLE_COLOR   0x00208020u
+#define CHRIS_WINDOW_COLOR  0x00FFFFFFu
+#define CHRIS_TEXT_COLOR    0x00000000u
+#define CHRIS_MOUSE_COLOR   0x00EFFFFFu
 
-int rgb(int r, int g, int b);
-void Draw(int x, int y, int r, int g, int b);
-void ClearScreen(int r, int g, int b);
-void DrawRect(int x, int y, int width, int height, int r, int g, int b);
-void DrawCharacter(int (*f)(int, int), int font_width, int font_height, char character, int x, int y, int r, int g, int b);
-void DrawString(int (*f)(int, int), int font_width, int font_height, char* string, int x, int y, int r, int g, int b);
-void Flush();
-/* LEARN:P06 */
-extern unsigned short palette16[16];
-void PutPixel(int x, int y, int color);
-void Fill(int x, int y, int width, int height, int color);
-void DrawMouse(int x, int y, int r, int g, int b);
+typedef uint32_t (*GfxFontRowFn)(unsigned int character, int row);
+
+typedef struct {
+    uint32_t *front;
+    uint32_t *back;
+    int width;
+    int height;
+    int pitch_pixels;
+} GfxFramebuffer;
+
+extern GfxFramebuffer g_gfx;
+
+bool gfx_init(uint32_t *address, int width, int height, int pitch_bytes);
+uint32_t gfx_rgb(uint8_t red, uint8_t green, uint8_t blue);
+void gfx_clear(uint32_t color);
+void gfx_put_pixel(int x, int y, uint32_t color);
+void gfx_fill_rect(int x, int y, int width, int height, uint32_t color);
+void gfx_fill_circle(int cx, int cy, int radius, uint32_t color);
+void gfx_draw_glyph(GfxFontRowFn font, int glyph_width, int glyph_height,
+                    unsigned int character, int x, int y, uint32_t color);
+void gfx_draw_text(GfxFontRowFn font, int glyph_width, int glyph_height,
+                   const char *text, int x, int y, uint32_t color);
+void gfx_draw_text_clipped(GfxFontRowFn font, int glyph_width, int glyph_height,
+                           const char *text, int x, int y, uint32_t color,
+                           int clip_x, int clip_y, int clip_w, int clip_h);
+int gfx_text_advance(int glyph_width);
+void gfx_draw_mouse(int x, int y);
+void gfx_present(void);
 
 #endif

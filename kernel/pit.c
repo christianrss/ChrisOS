@@ -4,7 +4,7 @@
 
 #define PIT_INPUT_HZ 1193182u
 
-static volatile uint64_t ticks;
+volatile uint64_t ticks;
 
 static void pit_irq(struct irq_frame *frame) {
     (void)frame;
