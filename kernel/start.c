@@ -3,7 +3,9 @@
 #include <limine.h>
 #include "gdt.h"
 #include "idt.h"
+#include "irq.h"
 #include "panic.h"
+#include "pit.h"
 #include "serial.h"
 
 __attribute__((used, section(".limine_requests_start")))
@@ -28,6 +30,7 @@ void kstart(void) {
     uint64_t pitch_pixels;
     uint64_t x;
     uint64_t y;
+    bool announced = false;
 
     if (!serial_init()) {
         __asm__ volatile ("cli");
@@ -45,11 +48,10 @@ void kstart(void) {
 
     gdt_init();
     idt_init();
-    serial_puts("ChrisOS: GDT/TSS e IDT256 prontas\n");
-
-#ifdef CHRISOS_TEST_INT3
-    __asm__ volatile ("int3");
-#endif
+    pic_init();
+    if (!pit_init(100)) {
+        panic("frequencia PIT invalida");
+    }
 
     framebuffer = framebuffer_request.response->framebuffers[0];
     if (framebuffer == 0 || framebuffer->bpp != 32) {
@@ -63,8 +65,12 @@ void kstart(void) {
         }
     }
 
-    __asm__ volatile ("cli");
+    serial_puts("ChrisOS: PIC e PIT100 prontos\n");
     for (;;) {
-        __asm__ volatile ("hlt");
+        __asm__ volatile ("sti; hlt");
+        if (!announced && pit_ticks() >= 100) {
+            announced = true;
+            serial_puts("ChrisOS: 100 ticks recebidos\n");
+        }
     }
 }

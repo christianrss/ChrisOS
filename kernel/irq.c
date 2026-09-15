@@ -1,23 +1,92 @@
-#include "port.h"
 #include "irq.h"
 #include "panic.h"
+#include "port.h"
 
-void irq_remap(void) {
-    outb(0x20, 0x11); outb(0xA0, 0x11);
-    outb(0x21, 0x20); outb(0xA1, 0x28);
-    outb(0x21, 4);    outb(0xA1, 2);
-    outb(0x21, 1);    outb(0xA1, 1);
-    outb(0x21, 0xF8); outb(0xA1, 0xEF);
+#define PIC1_COMMAND 0x20
+#define PIC1_DATA    0x21
+#define PIC2_COMMAND 0xa0
+#define PIC2_DATA    0xa1
+#define PIC_EOI      0x20
+
+static irq_handler handlers[16];
+
+void pic_init(void) {
+    unsigned int index;
+
+    __asm__ volatile ("cli");
+    outb(PIC1_COMMAND, 0x11);
+    io_wait();
+    outb(PIC2_COMMAND, 0x11);
+    io_wait();
+    outb(PIC1_DATA, 0x20);
+    io_wait();
+    outb(PIC2_DATA, 0x28);
+    io_wait();
+    outb(PIC1_DATA, 0x04);
+    io_wait();
+    outb(PIC2_DATA, 0x02);
+    io_wait();
+    outb(PIC1_DATA, 0x01);
+    io_wait();
+    outb(PIC2_DATA, 0x01);
+    io_wait();
+    outb(PIC1_DATA, 0xff);
+    outb(PIC2_DATA, 0xff);
+
+    for (index = 0; index < 16; ++index) {
+        handlers[index] = 0;
+    }
 }
 
-void irq_eoi(int irq) {
-    if (irq >= 8)
-        outb(0xA0, 0x20);
-    outb(0x20, 0x20);
+void pic_set_mask(uint8_t irq, bool masked) {
+    uint16_t port;
+    uint8_t bit;
+    uint8_t value;
+
+    if (irq >= 16) {
+        return;
+    }
+    port = irq < 8 ? PIC1_DATA : PIC2_DATA;
+    bit = irq < 8 ? irq : (uint8_t)(irq - 8);
+    value = inb(port);
+    if (masked) {
+        value = (uint8_t)(value | (uint8_t)(1u << bit));
+    } else {
+        value = (uint8_t)(value & (uint8_t)~(1u << bit));
+    }
+    outb(port, value);
+
+    if (!masked && irq >= 8) {
+        outb(PIC1_DATA, (uint8_t)(inb(PIC1_DATA) & (uint8_t)~(1u << 2)));
+    }
+}
+
+void irq_set_handler(uint8_t irq, irq_handler handler) {
+    if (irq < 16) {
+        handlers[irq] = handler;
+    }
+}
+
+void irq_eoi(uint8_t irq) {
+    if (irq >= 8) {
+        outb(PIC2_COMMAND, PIC_EOI);
+    }
+    outb(PIC1_COMMAND, PIC_EOI);
 }
 
 void irq_dispatch(struct irq_frame *frame) {
+    uint8_t irq;
+
     if (frame->vector < 32) {
         panic_exception(frame->vector, frame->error, frame->rip);
     }
+    if (frame->vector >= 48) {
+        return;
+    }
+
+    irq = (uint8_t)(frame->vector - 32);
+    if (handlers[irq] != 0) {
+        handlers[irq](frame);
+    }
+    irq_eoi(irq);
 }

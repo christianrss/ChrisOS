@@ -1,6 +1,7 @@
 #ifndef CHRISOS_IRQ_H
 #define CHRISOS_IRQ_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 struct irq_frame {
@@ -26,6 +27,12 @@ struct irq_frame {
     uint64_t rflags;
 };
 
+typedef void (*irq_handler)(struct irq_frame *frame);
+
+void pic_init(void);
+void pic_set_mask(uint8_t irq, bool masked);
+void irq_set_handler(uint8_t irq, irq_handler handler);
+void irq_eoi(uint8_t irq);
 void irq_dispatch(struct irq_frame *frame);
 
 #endif
