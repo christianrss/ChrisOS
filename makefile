@@ -14,7 +14,7 @@ CFLAGS := -std=c11 -m64 -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	-z noexecstack -T kernel/linker.ld
 
-C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o
+C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o kernel/gdt.o
 
 .PHONY: all iso run clean
 
