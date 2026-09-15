@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include "bootinfo.h"
 #include "gdt.h"
+#include "heap.h"
 #include "idt.h"
 #include "irq.h"
 #include "mm.h"
@@ -41,6 +42,8 @@ void kstart(void) {
     pmm_selftest();
     mm_init();
     mm_selftest();
+    heap_init();
+    heap_selftest();
 
     boot = bootinfo_get();
     pixels = (uint32_t *)boot->fb_addr;
@@ -51,7 +54,7 @@ void kstart(void) {
         }
     }
 
-    serial_puts("ChrisOS: PS/2 pronto; use teclado e rato\n");
+    serial_puts("ChrisOS: fase1 metal64 gate OK; use teclado e rato\n");
     for (;;) {
         __asm__ volatile ("sti; hlt");
         while (keyboard_pop(&key)) {
