@@ -16,7 +16,7 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 
 C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o \
 	kernel/gdt.o kernel/idt.o kernel/irq.o kernel/pit.o kernel/ps2.o \
-	kernel/bootinfo.o kernel/pmm.o
+	kernel/bootinfo.o kernel/pmm.o kernel/mm.o
 ASM_OBJECTS := kernel/idt_stubs.o
 OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
 

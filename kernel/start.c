@@ -3,6 +3,7 @@
 #include "gdt.h"
 #include "idt.h"
 #include "irq.h"
+#include "mm.h"
 #include "panic.h"
 #include "pit.h"
 #include "pmm.h"
@@ -38,6 +39,8 @@ void kstart(void) {
 
     pmm_init();
     pmm_selftest();
+    mm_init();
+    mm_selftest();
 
     boot = bootinfo_get();
     pixels = (uint32_t *)boot->fb_addr;
