@@ -2,8 +2,10 @@
 #include "bootinfo.h"
 #include "gdt.h"
 #include "graphics.h"
+#include "font.h"
 #include "heap.h"
 #include "idt.h"
+#include "input.h"
 #include "irq.h"
 #include "mm.h"
 #include "panic.h"
@@ -14,8 +16,9 @@
 
 void kstart(void) {
     const struct bootinfo *boot;
-    struct keyboard_event key;
-    struct mouse_event mouse;
+    InputEvent event;
+    InputMouse mouse;
+    uint64_t last_tick;
 
     if (!serial_init()) {
         __asm__ volatile ("cli");
@@ -50,28 +53,26 @@ void kstart(void) {
                   (int)boot->fb_pitch)) {
         panic("gfx_init recusou o framebuffer");
     }
+    input_init(g_gfx.width, g_gfx.height);
 
-    gfx_clear(CHRIS_DESKTOP_COLOR);
-    gfx_fill_rect(0, 0, g_gfx.width, 40, CHRIS_TASKBAR_COLOR);
-    gfx_present();
-    serial_puts("ChrisOS: gfx 32bpp pitch ok\n");
-
+    serial_puts("ChrisOS: input ponte IRQ pronta\n");
+    last_tick = ticks;
     for (;;) {
-        __asm__ volatile ("sti; hlt");
-        while (keyboard_pop(&key)) {
-            serial_puts("K code=");
-            serial_write_hex(key.scancode);
-            serial_puts(key.pressed ? " down" : " up");
-            serial_puts(key.extended ? " ext\n" : "\n");
+        gfx_clear(CHRIS_DESKTOP_COLOR);
+        gfx_fill_rect(0, 0, g_gfx.width, 40, CHRIS_TASKBAR_COLOR);
+        gfx_draw_text(font_row, font_arial_width, font_arial_height,
+                      "OK", 8, 8, CHRIS_TEXT_COLOR);
+        mouse = input_mouse_snapshot();
+        gfx_draw_mouse(mouse.x, mouse.y);
+        while (input_next_event(&event)) {
+            if (event.type == INPUT_EVENT_TEXT) {
+                serial_putc(event.character);
+            }
         }
-        while (mouse_pop(&mouse)) {
-            serial_puts("M dx=");
-            serial_write_hex((uint16_t)mouse.dx);
-            serial_puts(" dy=");
-            serial_write_hex((uint16_t)mouse.dy);
-            serial_puts(" buttons=");
-            serial_write_hex(mouse.buttons);
-            serial_puts("\n");
+        gfx_present();
+        while (ticks == last_tick) {
+            __asm__ volatile ("sti; hlt");
         }
+        last_tick = ticks;
     }
 }

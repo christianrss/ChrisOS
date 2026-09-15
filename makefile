@@ -15,8 +15,8 @@ LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	-z noexecstack -T kernel/linker.ld
 
 C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o \
-	kernel/gdt.o kernel/idt.o kernel/irq.o kernel/pit.o kernel/ps2.o \
-	kernel/bootinfo.o kernel/pmm.o kernel/mm.o kernel/heap.o \
+	kernel/gdt.o kernel/idt.o kernel/irq.o kernel/pit.o kernel/input.o \
+	kernel/ps2.o kernel/bootinfo.o kernel/pmm.o kernel/mm.o kernel/heap.o \
 	kernel/graphics.o kernel/font.o
 ASM_OBJECTS := kernel/idt_stubs.o
 OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
@@ -26,6 +26,10 @@ OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
 all: iso
 
 iso: $(ISO)
+
+host-input-test: tools/test_input.c kernel/input.c kernel/input.h
+	gcc -std=c11 -Wall -Wextra -Werror -Ikernel -o tools/test_input tools/test_input.c kernel/input.c
+	./tools/test_input
 
 kernel/%.o: kernel/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
