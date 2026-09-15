@@ -6,6 +6,7 @@
 #include "irq.h"
 #include "panic.h"
 #include "pit.h"
+#include "ps2.h"
 #include "serial.h"
 
 __attribute__((used, section(".limine_requests_start")))
@@ -26,11 +27,12 @@ static volatile LIMINE_REQUESTS_END_MARKER;
 
 void kstart(void) {
     struct limine_framebuffer *framebuffer;
+    struct keyboard_event key;
+    struct mouse_event mouse;
     uint32_t *pixels;
     uint64_t pitch_pixels;
     uint64_t x;
     uint64_t y;
-    bool announced = false;
 
     if (!serial_init()) {
         __asm__ volatile ("cli");
@@ -52,6 +54,9 @@ void kstart(void) {
     if (!pit_init(100)) {
         panic("frequencia PIT invalida");
     }
+    if (!ps2_init()) {
+        panic("falha ao inicializar PS/2");
+    }
 
     framebuffer = framebuffer_request.response->framebuffers[0];
     if (framebuffer == 0 || framebuffer->bpp != 32) {
@@ -65,12 +70,23 @@ void kstart(void) {
         }
     }
 
-    serial_puts("ChrisOS: PIC e PIT100 prontos\n");
+    serial_puts("ChrisOS: PS/2 pronto; use teclado e rato\n");
     for (;;) {
         __asm__ volatile ("sti; hlt");
-        if (!announced && pit_ticks() >= 100) {
-            announced = true;
-            serial_puts("ChrisOS: 100 ticks recebidos\n");
+        while (keyboard_pop(&key)) {
+            serial_puts("K code=");
+            serial_write_hex(key.scancode);
+            serial_puts(key.pressed ? " down" : " up");
+            serial_puts(key.extended ? " ext\n" : "\n");
+        }
+        while (mouse_pop(&mouse)) {
+            serial_puts("M dx=");
+            serial_write_hex((uint16_t)mouse.dx);
+            serial_puts(" dy=");
+            serial_write_hex((uint16_t)mouse.dy);
+            serial_puts(" buttons=");
+            serial_write_hex(mouse.buttons);
+            serial_puts("\n");
         }
     }
 }
