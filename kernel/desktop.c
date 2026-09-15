@@ -1,5 +1,7 @@
+/* LEARN:DESK64-08 */
 #include "desktop.h"
 
+#include "editor_window.h"
 #include "font.h"
 #include "graphics.h"
 #include "input.h"
@@ -7,9 +9,6 @@
 #include "ui.h"
 
 static int g_window_cascade = 1;
-
-__attribute__((weak)) void editor_window_open(void) {
-}
 
 static TaskRect cascaded_frame(int width, int body_height) {
     TaskRect frame;
