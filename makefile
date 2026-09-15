@@ -14,7 +14,10 @@ CFLAGS := -std=c11 -m64 -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	-z noexecstack -T kernel/linker.ld
 
-C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o kernel/gdt.o
+C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o \
+	kernel/gdt.o kernel/idt.o kernel/irq.o
+ASM_OBJECTS := kernel/idt_stubs.o
+OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
 
 .PHONY: all iso run clean
 
@@ -25,9 +28,12 @@ iso: $(ISO)
 kernel/%.o: kernel/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(KERNEL): $(C_OBJECTS) kernel/linker.ld
+kernel/%.o: kernel/%.asm
+	nasm -f elf64 $< -o $@
+
+$(KERNEL): $(OBJECTS) kernel/linker.ld
 	mkdir -p $(ISO_ROOT)/boot
-	$(LD) $(LDFLAGS) -o $@ $(C_OBJECTS)
+	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
 
 $(ISO_ROOT)/boot/limine/limine-bios-cd.bin: $(LIMINE_DIR)/limine-bios-cd.bin
 	mkdir -p $(ISO_ROOT)/boot/limine

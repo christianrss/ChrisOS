@@ -1,5 +1,6 @@
 #include "port.h"
 #include "irq.h"
+#include "panic.h"
 
 void irq_remap(void) {
     outb(0x20, 0x11); outb(0xA0, 0x11);
@@ -15,22 +16,8 @@ void irq_eoi(int irq) {
     outb(0x20, 0x20);
 }
 
-void irq_dispatch(unsigned long vec) {
-    if (vec == 32) {
-        /* ticks++ */
-        irq_eoi(0);
-        return;
+void irq_dispatch(struct irq_frame *frame) {
+    if (frame->vector < 32) {
+        panic_exception(frame->vector, frame->error, frame->rip);
     }
-    if (vec == 33) {
-        /* teclado: inb(0x60) */
-        irq_eoi(1);
-        return;
-    }
-    if (vec == 44) {
-        /* rato: PS/2 01d */
-        irq_eoi(12);
-        return;
-    }
-    if (vec >= 32 && vec < 48)
-        irq_eoi((int)(vec - 32));
 }

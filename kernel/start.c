@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <limine.h>
 #include "gdt.h"
+#include "idt.h"
 #include "panic.h"
 #include "serial.h"
 
@@ -43,9 +44,12 @@ void kstart(void) {
     }
 
     gdt_init();
-    serial_puts("ChrisOS: TR=");
-    serial_write_hex(gdt_read_tr());
-    serial_puts("\n");
+    idt_init();
+    serial_puts("ChrisOS: GDT/TSS e IDT256 prontas\n");
+
+#ifdef CHRISOS_TEST_INT3
+    __asm__ volatile ("int3");
+#endif
 
     framebuffer = framebuffer_request.response->framebuffers[0];
     if (framebuffer == 0 || framebuffer->bpp != 32) {
