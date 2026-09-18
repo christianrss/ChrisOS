@@ -14,6 +14,12 @@ int lang_run(Editor *editor, const char *clv_name);
 int lang_compile_run(Editor *editor);
 void lang_tick(uint32_t now);
 int lang_active_count(void);
+int lang_kill(int slot);
+int lang_slot_used(int slot);
+const char *lang_slot_name(int slot);
+uint32_t *lang_slot_pixels(int slot);
+int lang_slot_task(int slot);
+void lang_bind_task(int slot, int task_id);
+int lang_find_slot_by_task(int task_id);
 
 #endif
-

@@ -1,18 +1,26 @@
+/* LEARN:WS64-W08 */
 #include "lang_pipeline.h"
 #include "chrisc/chrisc.h"
 #include "clvm/clasm.h"
 #include "clvm/clvm.h"
 #include "fs.h"
+#include "gfx2d.h"
+#include "clvm_sys.h"
+#include "app_window.h"
 
 #define LANG_SOURCE_MAX 32768
 #define LANG_FILE_MAX (CLVM_HEADER_SIZE + CLVM_MAX_CODE)
-#define LANG_NAME_MAX 32
+#define LANG_NAME_MAX 96
+#define LANG_PIXELS (CLVM_SYS_GAME_W * CLVM_SYS_GAME_H)
 
 typedef struct LangSlot {
     int used;
     uint8_t file[LANG_FILE_MAX];
     size_t file_size;
     ClvmVm vm;
+    uint32_t pixels[LANG_PIXELS];
+    char name[LANG_NAME_MAX];
+    int task_id;
 } LangSlot;
 
 static LangSlot slots[LANG_VM_SLOTS];
@@ -28,6 +36,22 @@ static int slen(const char *s) {
         ++n;
     }
     return n;
+}
+
+static void scopy(char *dst, int cap, const char *src) {
+    int i = 0;
+    if (cap < 1) {
+        return;
+    }
+    if (!src) {
+        dst[0] = 0;
+        return;
+    }
+    while (src[i] && i < cap - 1) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
 }
 
 static void status(Editor *e, const char *s) {
@@ -73,12 +97,49 @@ static int suffix(const char *s, const char *ext) {
     return 1;
 }
 
+static int starts_src(const char *s) {
+    return s[0] == 'S' && s[1] == 'R' && s[2] == 'C' && s[3] == '/';
+}
+
+static int basename_start(const char *s) {
+    int n = slen(s);
+    int i;
+    int slash = 0;
+    for (i = 0; i < n; ++i) {
+        if (s[i] == '/') {
+            slash = i + 1;
+        }
+    }
+    return slash;
+}
+
 static int output_name(const char *in, char out[LANG_NAME_MAX]) {
     int n = slen(in);
     int base;
     int i;
+    int dst = 0;
     if (n < 4) {
         return 0;
+    }
+    if (starts_src(in)) {
+        out[dst++] = 'B';
+        out[dst++] = 'I';
+        out[dst++] = 'N';
+        out[dst++] = '/';
+        base = basename_start(in);
+        n = slen(in + base);
+        in = in + base;
+        if (n < 4) {
+            return 0;
+        }
+        for (i = 0; i < n - 3 && dst < LANG_NAME_MAX - 4; ++i) {
+            out[dst++] = in[i];
+        }
+        out[dst++] = 'C';
+        out[dst++] = 'L';
+        out[dst++] = 'V';
+        out[dst] = 0;
+        return 1;
     }
     base = n - 3;
     if (base + 3 >= LANG_NAME_MAX) {
@@ -111,6 +172,8 @@ void lang_init(ClvmSysFn sys, void *user) {
     system_user = user;
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         slots[i].used = 0;
+        slots[i].task_id = -1;
+        slots[i].name[0] = 0;
     }
 }
 
@@ -210,8 +273,12 @@ int lang_run(Editor *e, const char *name) {
         status(e, clvm_load_error(load));
         return 0;
     }
-    clvm_vm_init(&slots[i].vm, &image, system_fn, system_user);
+    gfx2d_clear(slots[i].pixels, CLVM_SYS_GAME_W, CLVM_SYS_GAME_H, 0);
+    clvm_vm_init(&slots[i].vm, &image, system_fn, slots[i].pixels);
+    scopy(slots[i].name, LANG_NAME_MAX, name);
+    slots[i].task_id = -1;
     slots[i].used = 1;
+    app_window_open(i, name);
     status(e, "running");
     return 1;
 }
@@ -248,3 +315,57 @@ int lang_active_count(void) {
     return n;
 }
 
+int lang_kill(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return 0;
+    }
+    slots[slot].used = 0;
+    slots[slot].task_id = -1;
+    slots[slot].name[0] = 0;
+    return 1;
+}
+
+int lang_slot_used(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return 0;
+    }
+    return slots[slot].used;
+}
+
+const char *lang_slot_name(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return "";
+    }
+    return slots[slot].name;
+}
+
+uint32_t *lang_slot_pixels(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return 0;
+    }
+    return slots[slot].pixels;
+}
+
+int lang_slot_task(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return -1;
+    }
+    return slots[slot].task_id;
+}
+
+void lang_bind_task(int slot, int task_id) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return;
+    }
+    slots[slot].task_id = task_id;
+}
+
+int lang_find_slot_by_task(int task_id) {
+    int i;
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && slots[i].task_id == task_id) {
+            return i;
+        }
+    }
+    return -1;
+}
