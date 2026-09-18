@@ -20,7 +20,7 @@ C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o \
 	kernel/graphics.o kernel/font.o kernel/input.o kernel/task.o \
 	kernel/ui.o kernel/desktop.o kernel/main.o \
 	kernel/editor.o kernel/editor_window.o \
-	kernel/ata_pio.o kernel/cfs.o kernel/storage.o
+	kernel/ata_pio.o kernel/cfs.o kernel/storage.o kernel/fs.o
 ASM_OBJECTS := kernel/idt_stubs.o
 OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
 

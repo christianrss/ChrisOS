@@ -1,7 +1,8 @@
-/* LEARN:STOR64-S06 */
+/* LEARN:STOR64-S07 */
 #include <stdint.h>
 #include "bootinfo.h"
 #include "desktop.h"
+#include "fs.h"
 #include "gdt.h"
 #include "graphics.h"
 #include "heap.h"
@@ -44,6 +45,7 @@ void kstart(void) {
     heap_selftest();
 
     storage_init();
+    fs_init();
 
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||
