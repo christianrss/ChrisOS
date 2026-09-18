@@ -1,0 +1,53 @@
+/* LEARN:STOR64-S05 */
+#ifndef CHRIS_CFS_H
+#define CHRIS_CFS_H
+
+#include <stdint.h>
+#include "block_device.h"
+#include "cfs_format.h"
+
+enum {
+    CFS_OK = 0,
+    CFS_EINVAL = -20,
+    CFS_EIO = -21,
+    CFS_EFORMAT = -22,
+    CFS_ENOENT = -23,
+    CFS_EEXIST = -24,
+    CFS_ENOSPC = -25,
+    CFS_EFBIG = -26,
+    CFS_ENAMETOOLONG = -27,
+    CFS_ECORRUPT = -28,
+    CFS_ENOTMOUNTED = -29
+};
+
+typedef struct CfsCacheLine {
+    uint8_t data[STOR_SECTOR_SIZE];
+    uint32_t lba;
+    uint32_t age;
+    uint8_t valid;
+} CfsCacheLine;
+
+typedef struct Cfs {
+    BlockDevice *dev;
+    CfsSuper super;
+    CfsCacheLine cache[CFS_CACHE_LINES];
+    uint8_t sector[STOR_SECTOR_SIZE];
+    uint8_t work[CFS_MAX_FILE_SIZE];
+    uint32_t clock;
+    uint8_t mounted;
+} Cfs;
+
+typedef int (*CfsListFn)(void *ctx, const char *name,
+                         uint32_t size, uint16_t type);
+
+int cfs_format(BlockDevice *dev);
+int cfs_mount(Cfs *fs, BlockDevice *dev);
+int cfs_sync(Cfs *fs);
+int cfs_create(Cfs *fs, const char *name);
+int cfs_read(Cfs *fs, const char *name, void *out, uint32_t capacity);
+int cfs_write(Cfs *fs, const char *name, const void *data, uint32_t size);
+int cfs_truncate(Cfs *fs, const char *name, uint32_t size);
+int cfs_list(Cfs *fs, CfsListFn fn, void *ctx);
+int cfs_stat(Cfs *fs, const char *name, uint32_t *size);
+
+#endif
