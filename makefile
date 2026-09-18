@@ -9,8 +9,8 @@ ISO := os.iso
 
 CFLAGS := -std=c11 -m64 -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
 	-mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2 \
-	-DLIMINE_API_REVISION=3 -I$(LIMINE_DIR) -Ikernel \
-	-Wall -Wextra -Werror
+	-DLIMINE_API_REVISION=3 -I$(LIMINE_DIR) -Ikernel -Icompiler -Icompiler/clvm \
+	-Wall -Wextra -Werror -Icompiler -Icompiler/clvm
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	-z noexecstack -T kernel/linker.ld
 
@@ -21,8 +21,11 @@ C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o \
 	kernel/ui.o kernel/desktop.o kernel/main.o \
 	kernel/editor.o kernel/editor_window.o \
 	kernel/ata_pio.o kernel/cfs.o kernel/cfs_fsck.o \
-	kernel/storage.o kernel/fs.o
-	
+	kernel/storage.o kernel/fs.o kernel/lang_sys.o \
+	compiler/lang_pipeline.o compiler/chrisc/chrisc.o \
+	compiler/clvm/clasm.o compiler/clvm/clvm_format.o \
+	compiler/clvm/clvm_vm.o
+
 ASM_OBJECTS := kernel/idt_stubs.o
 OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
 
@@ -55,6 +58,24 @@ host-editor-test: host/test_editor64.c kernel/editor.c kernel/editor.h
 	./host/test_editor64
 
 kernel/%.o: kernel/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+compiler/%.o: compiler/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+compiler/chrisc/%.o: compiler/chrisc/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+compiler/clvm/%.o: compiler/clvm/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+compiler/%.o: compiler/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+compiler/chrisc/%.o: compiler/chrisc/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+compiler/clvm/%.o: compiler/clvm/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 kernel/%.o: kernel/%.asm
@@ -99,4 +120,5 @@ run: $(ISO)
 		-no-reboot -no-shutdown
 
 clean:
-	rm -f kernel/*.o $(KERNEL) $(ISO)
+	rm -f kernel/*.o compiler/*.o compiler/chrisc/*.o compiler/clvm/*.o \
+		$(KERNEL) $(ISO)

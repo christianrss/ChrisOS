@@ -107,6 +107,8 @@ static InputKey plain_key(uint8_t code) {
         case 0x1C: return INPUT_KEY_ENTER;
         case 0x3C: return INPUT_KEY_F2;
         case 0x3D: return INPUT_KEY_F3;
+        case 0x3E: return INPUT_KEY_F4;
+        case 0x3F: return INPUT_KEY_F5;
         default: return INPUT_KEY_NONE;
     }
 }

@@ -13,6 +13,8 @@
 #include "pit.h"
 #include "pmm.h"
 #include "ps2.h"
+#include "lang_pipeline.h"
+#include "lang_sys.h"
 #include "serial.h"
 #include "storage.h"
 
@@ -47,6 +49,8 @@ void kstart(void) {
     storage_init();
     fs_init();
 
+    lang_init(kernel_lang_sys, 0);
+
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||
         !gfx_init((uint32_t *)(uintptr_t)boot->fb_addr,
@@ -61,3 +65,4 @@ void kstart(void) {
     __asm__ volatile ("sti");
     desktop_run();
 }
+

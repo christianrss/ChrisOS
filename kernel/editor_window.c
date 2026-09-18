@@ -7,6 +7,7 @@
 #include "fs.h"
 #include "graphics.h"
 #include "input.h"
+#include "lang_pipeline.h"
 #include "task.h"
 #include "ui.h"
 
@@ -317,23 +318,39 @@ static void editor_run(Task *task, uint64_t ticks) {
 
     bx = task->frame.x + 8;
     by = task->frame.y + TASK_TITLE_HEIGHT + 2;
-    if (ui_button(task, bx, by, 50, 16, CHRIS_TASKBAR_COLOR, "Save")) {
-        (void)ed_save(e);
+    if (ui_button(task, bx, by, 44, 16, CHRIS_TASKBAR_COLOR, "Save")) {
+        (void)lang_save(e);
     }
-    if (ui_button(task, bx + 62, by, 50, 16, CHRIS_TASKBAR_COLOR, "Open")) {
+    if (ui_button(task, bx + 50, by, 44, 16, CHRIS_TASKBAR_COLOR, "Open")) {
         (void)ed_open(e);
+    }
+    if (ui_button(task, bx + 100, by, 54, 16, CHRIS_TASKBAR_COLOR, "Compile")) {
+        (void)lang_compile(e);
+    }
+    if (ui_button(task, bx + 158, by, 36, 16, CHRIS_TASKBAR_COLOR, "Go")) {
+        (void)lang_compile_run(e);
     }
 
     if (task_is_focused(task)) {
         while (input_next_event(&event)) {
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F2) {
-                (void)ed_save(e);
+                (void)lang_save(e);
                 continue;
             }
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F3) {
                 (void)ed_open(e);
+                continue;
+            }
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F4) {
+                (void)lang_compile(e);
+                continue;
+            }
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F5) {
+                (void)lang_compile_run(e);
                 continue;
             }
             key = map_input_event(&event);
@@ -379,3 +396,4 @@ void editor_window_open(void) {
     task->state.editor.scroll_row = g_editor.scroll_row;
     task->state.editor.scroll_col = g_editor.scroll_col;
 }
+
