@@ -31,7 +31,8 @@ C_OBJECTS := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o \
 	kernel/lang/lang_sys.o kernel/lang/clvm_sys.o \
 	compiler/lang_pipeline.o compiler/chrisc/chrisc.o \
 	compiler/clvm/clasm.o compiler/clvm/clvm_format.o \
-	compiler/clvm/clvm_vm.o kernel/tools/app_window.o
+	compiler/clvm/clvm_vm.o kernel/tools/app_window.o \
+	kernel/tools/taskmgr.o
 
 ASM_OBJECTS := kernel/metal/idt_stubs.o
 OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)

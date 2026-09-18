@@ -1,4 +1,4 @@
-/* LEARN:WS64-W06 */
+/* LEARN:WS64-W09 */
 #include "desktop.h"
 
 #include "editor_window.h"
@@ -6,6 +6,7 @@
 #include "graphics.h"
 #include "input.h"
 #include "task.h"
+#include "taskmgr.h"
 #include "ui.h"
 
 static int g_window_cascade = 1;
@@ -121,7 +122,7 @@ void desktop_frame(uint64_t ticks) {
     } else if (action == TASKBAR_FILES) {
         explorer_window_open();
     } else if (action == TASKBAR_TASKS) {
-        (void)action;
+        taskmgr_window_open();
     } else if (input_left_pressed() && mouse.y >= UI_TASKBAR_HEIGHT) {
         (void)task_focus_at(mouse.x, mouse.y);
     }
