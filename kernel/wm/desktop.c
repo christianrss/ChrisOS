@@ -1,8 +1,7 @@
-/* LEARN:WS64-W03 */
+/* LEARN:WS64-W04 */
 #include "desktop.h"
 
 #include "editor_window.h"
-#include "font.h"
 #include "graphics.h"
 #include "input.h"
 #include "task.h"
@@ -82,13 +81,25 @@ static void open_ball(void) {
     (void)task_spawn(TASK_BALL, cascaded_frame(300, 280), ball_run);
 }
 
-static void draw_welcome(void) {
-    gfx_fill_rect(90, 95, 360, 24, 0x00FFFFFFu);
-    gfx_fill_rect(92, 97, 356, 20, 0x000000FFu);
-    gfx_draw_text_clipped(font_row, font_arial_width,
-                          font_arial_height, "Welcome to ChrisOS",
-                          100, 99, 0x00FFFFFFu,
-                          92, 97, 356, 20);
+static void open_demos(void) {
+    open_shell();
+    open_ball();
+}
+
+static void draw_icons(void) {
+    int x0 = UI_ICON_GAP;
+    int y0 = UI_TASKBAR_HEIGHT + UI_ICON_GAP;
+    int stride = UI_ICON_SIZE + UI_ICON_GAP + 24;
+
+    if (ui_icon(x0, y0, CHRIS_EDITOR_COLOR, "Editor")) {
+        editor_window_open();
+    }
+    if (ui_icon(x0 + stride, y0, 0x00008080u, "Files")) {
+        /* W06: explorer_window_open(); */
+    }
+    if (ui_icon(x0 + stride * 2, y0, CHRIS_BALL_COLOR, "Demos")) {
+        open_demos();
+    }
 }
 
 void desktop_init(void) {
@@ -115,7 +126,7 @@ void desktop_frame(uint64_t ticks) {
     }
 
     gfx_clear(CHRIS_DESKTOP_COLOR);
-    draw_welcome();
+    draw_icons();
     task_run_all(ticks);
     ui_draw_taskbar();
     ui_draw_cursor();
