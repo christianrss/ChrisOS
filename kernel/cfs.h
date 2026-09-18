@@ -1,4 +1,4 @@
-/* LEARN:STOR64-S05 */
+/* LEARN:STOR64-S09 */
 #ifndef CHRIS_CFS_H
 #define CHRIS_CFS_H
 
@@ -49,5 +49,7 @@ int cfs_write(Cfs *fs, const char *name, const void *data, uint32_t size);
 int cfs_truncate(Cfs *fs, const char *name, uint32_t size);
 int cfs_list(Cfs *fs, CfsListFn fn, void *ctx);
 int cfs_stat(Cfs *fs, const char *name, uint32_t *size);
+int cfs_fsck(Cfs *fs);
+const char *cfs_fsck_reason(void);
 
 #endif

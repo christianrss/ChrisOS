@@ -20,7 +20,9 @@ C_OBJECTS := kernel/start.o kernel/port.o kernel/serial.o kernel/panic.o \
 	kernel/graphics.o kernel/font.o kernel/input.o kernel/task.o \
 	kernel/ui.o kernel/desktop.o kernel/main.o \
 	kernel/editor.o kernel/editor_window.o \
-	kernel/ata_pio.o kernel/cfs.o kernel/storage.o kernel/fs.o
+	kernel/ata_pio.o kernel/cfs.o kernel/cfs_fsck.o \
+	kernel/storage.o kernel/fs.o
+	
 ASM_OBJECTS := kernel/idt_stubs.o
 OBJECTS := $(C_OBJECTS) $(ASM_OBJECTS)
 
@@ -32,6 +34,12 @@ HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -Ikernel
 all: iso
 
 iso: $(ISO)
+
+host-fsck-test: tools/test_cfs_fsck.c kernel/cfs.c kernel/cfs_fsck.c
+	gcc -std=c11 -Wall -Wextra -Werror -Ikernel \
+		-o tools/test_cfs_fsck tools/test_cfs_fsck.c \
+		kernel/cfs.c kernel/cfs_fsck.c
+	./tools/test_cfs_fsck
 
 host-input-test: tools/test_input.c kernel/input.c kernel/input.h
 	gcc -std=c11 -Wall -Wextra -Werror -Ikernel -o tools/test_input tools/test_input.c kernel/input.c

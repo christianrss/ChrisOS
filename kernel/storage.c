@@ -1,4 +1,4 @@
-/* LEARN:STOR64-S06 */
+/* LEARN:STOR64-S09 */
 #include "storage.h"
 
 #include "ata_pio.h"
@@ -78,6 +78,23 @@ static void hello_probe(Cfs *fs) {
     serial_puts("cfs hello unexpected\n");
 }
 
+static void fsck_report(void) {
+    int rc;
+    const char *reason;
+    if (!g_ready) {
+        return;
+    }
+    rc = cfs_fsck(&g_cfs);
+    reason = cfs_fsck_reason();
+    if (rc == 0) {
+        serial_puts("cfs fsck: clean\n");
+        return;
+    }
+    serial_puts("cfs fsck: ");
+    serial_puts(reason ? reason : "corrupt");
+    serial_puts("\n");
+}
+
 int storage_init(void) {
     uint32_t reported = 0u;
     int formatted = 0;
@@ -109,6 +126,7 @@ int storage_init(void) {
         serial_puts("cfs mounted\n");
     }
     hello_probe(&g_cfs);
+    fsck_report();
     return CFS_OK;
 }
 

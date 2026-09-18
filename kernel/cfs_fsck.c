@@ -1,0 +1,227 @@
+/* LEARN:STOR64-S09 */
+#include "cfs.h"
+#include "storage_limits.h"
+
+static char g_reason[80];
+static uint8_t g_bitmap[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
+static uint8_t g_seen[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
+static uint8_t g_sec[STOR_SECTOR_SIZE];
+static char g_names[CFS_INODE_COUNT][CFS_NAME_MAX + 1u];
+static uint32_t g_name_count;
+
+const char *cfs_fsck_reason(void) {
+    return g_reason;
+}
+
+static void set_reason(const char *msg) {
+    uint32_t i = 0;
+    if (g_reason[0]) {
+        return;
+    }
+    while (msg[i] && i < 79u) {
+        g_reason[i] = msg[i];
+        i++;
+    }
+    g_reason[i] = 0;
+}
+
+static int bit_get(const uint8_t *map, uint32_t index) {
+    return (map[index / 8u] >> (index % 8u)) & 1u;
+}
+
+static void bit_set(uint8_t *map, uint32_t index) {
+    map[index / 8u] |= (uint8_t)(1u << (index % 8u));
+}
+
+static int data_lba_ok(uint32_t lba) {
+    return lba >= CFS_DATA_LBA &&
+           lba < CFS_DATA_LBA + CFS_DATA_SECTORS;
+}
+
+static int note_block(uint32_t lba, int *errors) {
+    uint32_t idx;
+    if (!data_lba_ok(lba)) {
+        set_reason("block lba");
+        (*errors)++;
+        return -1;
+    }
+    idx = lba - CFS_DATA_LBA;
+    if (bit_get(g_seen, idx)) {
+        set_reason("duplicate block");
+        (*errors)++;
+        return -1;
+    }
+    bit_set(g_seen, idx);
+    if (!bit_get(g_bitmap, idx)) {
+        set_reason("bitmap missing");
+        (*errors)++;
+        return -1;
+    }
+    return 0;
+}
+
+static int name_taken(const char *name, uint8_t len) {
+    uint32_t i, k;
+    for (i = 0; i < g_name_count; i++) {
+        k = 0;
+        while (k < len && g_names[i][k] && g_names[i][k] == name[k]) {
+            k++;
+        }
+        if (k == len && g_names[i][k] == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+int cfs_fsck(Cfs *fs) {
+    CfsSuper super;
+    CfsInode inode;
+    CfsDirent ent;
+    uint32_t i, b, slot, need, id, per;
+    int errors = 0;
+    int rc;
+
+    g_reason[0] = 0;
+    g_name_count = 0;
+    for (i = 0; i < CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE; i++) {
+        g_bitmap[i] = 0u;
+        g_seen[i] = 0u;
+    }
+    if (!fs || !fs->mounted || !fs->dev) {
+        set_reason("not mounted");
+        return CFS_ENOTMOUNTED;
+    }
+
+    rc = bd_read(fs->dev, CFS_SUPER_LBA, 1u, g_sec);
+    if (rc != BD_OK) {
+        set_reason("super io");
+        return CFS_EIO;
+    }
+    if (cfs_super_decode(&super, g_sec) != 0) {
+        set_reason("super checksum");
+        return CFS_ECORRUPT;
+    }
+
+    for (i = 0; i < CFS_BITMAP_SECTORS; i++) {
+        rc = bd_read(fs->dev, CFS_BITMAP_LBA + i, 1u,
+                     g_bitmap + i * STOR_SECTOR_SIZE);
+        if (rc != BD_OK) {
+            set_reason("bitmap io");
+            return CFS_EIO;
+        }
+    }
+
+    per = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
+    for (id = 0; id < CFS_INODE_COUNT; id++) {
+        rc = bd_read(fs->dev, CFS_INODE_LBA + id / per, 1u, g_sec);
+        if (rc != BD_OK) {
+            set_reason("inode io");
+            return CFS_EIO;
+        }
+        if (cfs_inode_decode(&inode,
+                             g_sec + (id % per) * CFS_INODE_SIZE) != 0) {
+            set_reason("inode checksum");
+            errors++;
+            continue;
+        }
+        if (inode.type == CFS_INODE_FREE) {
+            continue;
+        }
+        if (inode.type != CFS_INODE_FILE && inode.type != CFS_INODE_DIR) {
+            set_reason("inode type");
+            errors++;
+            continue;
+        }
+        if (inode.size > CFS_MAX_FILE_SIZE) {
+            set_reason("size vs blocks");
+            errors++;
+        }
+        if (inode.type == CFS_INODE_FILE) {
+            need = (inode.size + STOR_SECTOR_SIZE - 1u) / STOR_SECTOR_SIZE;
+            for (b = 0; b < CFS_DIRECT_COUNT; b++) {
+                if (b < need) {
+                    if (!inode.direct[b]) {
+                        set_reason("size vs blocks");
+                        errors++;
+                    } else {
+                        (void)note_block(inode.direct[b], &errors);
+                    }
+                } else if (inode.direct[b]) {
+                    set_reason("size vs blocks");
+                    errors++;
+                }
+            }
+        } else {
+            for (b = 0; b < CFS_DIRECT_COUNT; b++) {
+                if (inode.direct[b]) {
+                    (void)note_block(inode.direct[b], &errors);
+                }
+            }
+        }
+        if (id == CFS_ROOT_INODE && inode.type != CFS_INODE_DIR) {
+            set_reason("root type");
+            errors++;
+        }
+    }
+
+    rc = bd_read(fs->dev, CFS_INODE_LBA, 1u, g_sec);
+    if (rc != BD_OK) {
+        set_reason("inode io");
+        return CFS_EIO;
+    }
+    if (cfs_inode_decode(&inode, g_sec) != 0) {
+        set_reason("inode checksum");
+        errors++;
+    } else {
+        for (b = 0; b < CFS_DIRECT_COUNT; b++) {
+            if (!inode.direct[b] || !data_lba_ok(inode.direct[b])) {
+                continue;
+            }
+            rc = bd_read(fs->dev, inode.direct[b], 1u, g_sec);
+            if (rc != BD_OK) {
+                set_reason("dir io");
+                return CFS_EIO;
+            }
+            for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
+                uint32_t k;
+                cfs_dirent_decode(&ent, g_sec + slot * CFS_DIRENT_SIZE);
+                if (!ent.inode || !ent.name_len) {
+                    continue;
+                }
+                if (ent.inode >= CFS_INODE_COUNT ||
+                    ent.name_len > CFS_NAME_MAX) {
+                    set_reason("dirent");
+                    errors++;
+                    continue;
+                }
+                if (name_taken((const char *)ent.name, ent.name_len)) {
+                    set_reason("name clash");
+                    errors++;
+                    continue;
+                }
+                if (g_name_count < CFS_INODE_COUNT) {
+                    for (k = 0; k < ent.name_len; k++) {
+                        g_names[g_name_count][k] = (char)ent.name[k];
+                    }
+                    g_names[g_name_count][ent.name_len] = 0;
+                    g_name_count++;
+                }
+            }
+        }
+    }
+
+    for (i = 0; i < CFS_DATA_SECTORS; i++) {
+        if (bit_get(g_bitmap, i) && !bit_get(g_seen, i)) {
+            set_reason("bitmap leak");
+            errors++;
+            break;
+        }
+    }
+
+    if (errors) {
+        return errors;
+    }
+    set_reason("clean");
+    return CFS_OK;
+}
