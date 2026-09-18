@@ -35,6 +35,11 @@ all: iso
 
 iso: $(ISO)
 
+host-cfs-test: tools/test_cfs_host.c kernel/cfs.c kernel/cfs.h
+	gcc -std=c11 -Wall -Wextra -Werror -Ikernel \
+		-o tools/test_cfs_host tools/test_cfs_host.c kernel/cfs.c
+	./tools/test_cfs_host
+
 host-fsck-test: tools/test_cfs_fsck.c kernel/cfs.c kernel/cfs_fsck.c
 	gcc -std=c11 -Wall -Wextra -Werror -Ikernel \
 		-o tools/test_cfs_fsck tools/test_cfs_fsck.c \
