@@ -1,4 +1,4 @@
-/* LEARN:DESK64-07 */
+/* LEARN:WS64-W06 */
 #include "editor.h"
 
 static void ed_clear_line(char *line) {
@@ -69,7 +69,7 @@ void ed_set_name(Editor *e, const char *name) {
         e->name[0] = 0;
         return;
     }
-    while (name[i] && i < 31) {
+    while (name[i] && i < ED_NAME - 1) {
         e->name[i] = name[i];
         i++;
     }

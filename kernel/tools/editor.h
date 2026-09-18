@@ -1,4 +1,4 @@
-/* LEARN:DESK64-07 */
+/* LEARN:WS64-W06 */
 #ifndef CHRIS_EDITOR_H
 #define CHRIS_EDITOR_H
 
@@ -12,6 +12,7 @@
 #define ED_HOME  5
 #define ED_END   6
 #define ED_DEL   7
+#define ED_NAME  96
 
 typedef struct Editor {
     char lines[ED_MAX_LINES][ED_MAX_COLS];
@@ -19,7 +20,7 @@ typedef struct Editor {
     int row;
     int col;
     int dirty;
-    char name[32];
+    char name[ED_NAME];
     char status[80];
     int scroll_row;
     int scroll_col;

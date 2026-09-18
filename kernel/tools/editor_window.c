@@ -1,4 +1,4 @@
-/* LEARN:STOR64-S08 */
+/* LEARN:WS64-W06 */
 #include "editor_window.h"
 
 #include "cfs.h"
@@ -25,23 +25,35 @@
 static Editor g_editor;
 static int g_editor_inited;
 static char g_filebuf[EDITOR_FILEBUF];
-static char g_title[40];
+static char g_title[100];
 
 static int ed_name_valid(const char *name) {
     unsigned int n = 0;
+    unsigned int comp = 0;
     if (!name) {
         return 0;
     }
     while (name[n]) {
-        if (name[n] == '/' || name[n] == '\\') {
+        if (name[n] == '\\') {
             return 0;
         }
-        if (n >= CFS_NAME_MAX) {
-            return 0;
+        if (name[n] == '/') {
+            if (comp < 1 || n >= ED_NAME - 1) {
+                return 0;
+            }
+            comp = 0;
+        } else {
+            comp++;
+            if (comp > CFS_NAME_MAX) {
+                return 0;
+            }
         }
         n++;
+        if (n >= ED_NAME) {
+            return 0;
+        }
     }
-    return n >= 1 && n <= CFS_NAME_MAX;
+    return n >= 1 && n < ED_NAME && comp >= 1;
 }
 
 static void ed_status_from_rc(Editor *e, int rc) {
@@ -143,7 +155,7 @@ static void build_title(const Editor *e) {
     if (e->dirty) {
         g_title[i++] = '*';
     }
-    while (src[s] && i < 38) {
+    while (src[s] && i < 98) {
         g_title[i++] = src[s++];
     }
     g_title[i] = 0;
@@ -397,3 +409,15 @@ void editor_window_open(void) {
     task->state.editor.scroll_col = g_editor.scroll_col;
 }
 
+void editor_window_open_path(const char *path) {
+    editor_window_open();
+    if (!path || !path[0]) {
+        return;
+    }
+    ed_set_name(&g_editor, path);
+    if (ed_open(&g_editor) != CFS_OK) {
+        ed_init(&g_editor);
+        ed_set_name(&g_editor, path);
+        ed_set_status(&g_editor, "new file");
+    }
+}

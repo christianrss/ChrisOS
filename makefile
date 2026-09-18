@@ -25,7 +25,7 @@ C_OBJECTS := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o \
 	kernel/gfx/graphics.o kernel/gfx/font.o kernel/gfx/input.o \
 	kernel/gfx/speaker.o kernel/gfx/gfx2d.o \
 	kernel/wm/task.o kernel/wm/ui.o kernel/wm/desktop.o kernel/wm/main.o \
-	kernel/tools/editor.o kernel/tools/editor_window.o \
+	kernel/tools/editor.o kernel/tools/editor_window.o kernel/tools/explorer.o \
 	kernel/fs/ata_pio.o kernel/fs/cfs.o kernel/fs/cfs_fsck.o \
 	kernel/fs/storage.o kernel/fs/fs.o \
 	kernel/lang/lang_sys.o kernel/lang/clvm_sys.o \

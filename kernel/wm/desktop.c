@@ -1,7 +1,8 @@
-/* LEARN:WS64-W04 */
+/* LEARN:WS64-W06 */
 #include "desktop.h"
 
 #include "editor_window.h"
+#include "explorer.h"
 #include "graphics.h"
 #include "input.h"
 #include "task.h"
@@ -95,7 +96,7 @@ static void draw_icons(void) {
         editor_window_open();
     }
     if (ui_icon(x0 + stride, y0, 0x00008080u, "Files")) {
-        /* W06: explorer_window_open(); */
+        explorer_window_open();
     }
     if (ui_icon(x0 + stride * 2, y0, CHRIS_BALL_COLOR, "Demos")) {
         open_demos();
@@ -118,7 +119,7 @@ void desktop_frame(uint64_t ticks) {
     } else if (action == TASKBAR_EDITOR) {
         editor_window_open();
     } else if (action == TASKBAR_FILES) {
-        (void)action;
+        explorer_window_open();
     } else if (action == TASKBAR_TASKS) {
         (void)action;
     } else if (input_left_pressed() && mouse.y >= UI_TASKBAR_HEIGHT) {

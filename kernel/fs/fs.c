@@ -1,4 +1,4 @@
-/* LEARN:STOR64-S07 */
+/* LEARN:WS64-W05 */
 #include "fs.h"
 
 #include "cfs.h"
@@ -11,11 +11,6 @@ typedef struct RamFile {
     int offset;
     int used;
 } RamFile;
-
-typedef struct FsListWrap {
-    FsListFn fn;
-    void *ctx;
-} FsListWrap;
 
 static int g_backend;
 static RamFile g_ram_files[FS_MAX_FILES];
@@ -161,7 +156,8 @@ static int ram_list(FsListFn fn, void *ctx) {
         if (!g_ram_files[i].used) {
             continue;
         }
-        rc = fn(ctx, g_ram_files[i].name, (uint32_t)g_ram_files[i].size);
+        rc = fn(ctx, g_ram_files[i].name, (uint32_t)g_ram_files[i].size,
+                CFS_INODE_FILE);
         if (rc) {
             return rc;
         }
@@ -170,17 +166,32 @@ static int ram_list(FsListFn fn, void *ctx) {
     return count;
 }
 
-static int cfs_list_adapt(void *ctx, const char *name,
-                          uint32_t size, uint16_t type) {
-    FsListWrap *wrap = ctx;
-    (void)type;
-    return wrap->fn(wrap->ctx, name, size);
+static void seed_dirs(Cfs *fs) {
+    int rc;
+    rc = cfs_mkdir(fs, "GAMES");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        serial_puts("fs mkdir GAMES failed\n");
+    }
+    rc = cfs_mkdir(fs, "SRC");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        serial_puts("fs mkdir SRC failed\n");
+    }
+    rc = cfs_mkdir(fs, "BIN");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        serial_puts("fs mkdir BIN failed\n");
+    }
 }
 
 void fs_init(void) {
+    Cfs *fs;
     if (storage_ready() && storage_cfs()) {
         g_backend = FS_BACKEND_CFS;
         serial_puts("fs backend cfs64\n");
+        fs = storage_cfs();
+        if (fs) {
+            seed_dirs(fs);
+            (void)cfs_sync(fs);
+        }
         return;
     }
     g_backend = FS_BACKEND_RAM;
@@ -192,7 +203,7 @@ int fs_backend(void) {
     return g_backend;
 }
 
-int fs_write(const char *name, const void *data, int n) {
+int fs_write(const char *path, const void *data, int n) {
     Cfs *fs;
     if (g_backend == FS_BACKEND_CFS) {
         fs = storage_cfs();
@@ -202,12 +213,12 @@ int fs_write(const char *name, const void *data, int n) {
         if (n < 0) {
             return CFS_EINVAL;
         }
-        return cfs_write(fs, name, data, (uint32_t)n);
+        return cfs_write(fs, path, data, (uint32_t)n);
     }
-    return ram_write(name, (const unsigned char *)data, n);
+    return ram_write(path, (const unsigned char *)data, n);
 }
 
-int fs_read(const char *name, void *out, int out_cap) {
+int fs_read(const char *path, void *out, int out_cap) {
     Cfs *fs;
     if (g_backend == FS_BACKEND_CFS) {
         fs = storage_cfs();
@@ -217,25 +228,100 @@ int fs_read(const char *name, void *out, int out_cap) {
         if (out_cap < 0) {
             return CFS_EINVAL;
         }
-        return cfs_read(fs, name, out, (uint32_t)out_cap);
+        return cfs_read(fs, path, out, (uint32_t)out_cap);
     }
-    return ram_read(name, (unsigned char *)out, out_cap);
+    return ram_read(path, (unsigned char *)out, out_cap);
 }
 
-int fs_list(FsListFn fn, void *ctx) {
+int fs_mkdir(const char *path) {
     Cfs *fs;
-    FsListWrap wrap;
+    if (g_backend != FS_BACKEND_CFS) {
+        return CFS_EINVAL;
+    }
+    fs = storage_cfs();
+    if (!fs) {
+        return CFS_ENOTMOUNTED;
+    }
+    return cfs_mkdir(fs, path);
+}
+
+int fs_rmdir(const char *path) {
+    Cfs *fs;
+    if (g_backend != FS_BACKEND_CFS) {
+        return CFS_EINVAL;
+    }
+    fs = storage_cfs();
+    if (!fs) {
+        return CFS_ENOTMOUNTED;
+    }
+    return cfs_rmdir(fs, path);
+}
+
+int fs_unlink(const char *path) {
+    Cfs *fs;
+    if (g_backend != FS_BACKEND_CFS) {
+        return CFS_EINVAL;
+    }
+    fs = storage_cfs();
+    if (!fs) {
+        return CFS_ENOTMOUNTED;
+    }
+    return cfs_unlink(fs, path);
+}
+
+int fs_rename(const char *old_path, const char *new_path) {
+    Cfs *fs;
+    if (g_backend != FS_BACKEND_CFS) {
+        return CFS_EINVAL;
+    }
+    fs = storage_cfs();
+    if (!fs) {
+        return CFS_ENOTMOUNTED;
+    }
+    return cfs_rename(fs, old_path, new_path);
+}
+
+int fs_stat(const char *path, uint32_t *size, uint16_t *type) {
+    Cfs *fs;
+    int id;
     if (g_backend == FS_BACKEND_CFS) {
         fs = storage_cfs();
         if (!fs) {
             return CFS_ENOTMOUNTED;
         }
-        if (!fn) {
-            return CFS_EINVAL;
+        return cfs_stat(fs, path, size, type);
+    }
+    id = ram_find(path);
+    if (id < 0) {
+        return CFS_ENOENT;
+    }
+    if (size) {
+        *size = (uint32_t)g_ram_files[id].size;
+    }
+    if (type) {
+        *type = CFS_INODE_FILE;
+    }
+    return CFS_OK;
+}
+
+int fs_list_at(const char *path, FsListFn fn, void *ctx) {
+    Cfs *fs;
+    if (!fn) {
+        return CFS_EINVAL;
+    }
+    if (g_backend == FS_BACKEND_CFS) {
+        fs = storage_cfs();
+        if (!fs) {
+            return CFS_ENOTMOUNTED;
         }
-        wrap.fn = fn;
-        wrap.ctx = ctx;
-        return cfs_list(fs, cfs_list_adapt, &wrap);
+        return cfs_list_at(fs, path, fn, ctx);
+    }
+    if (path && path[0] && !(path[0] == '/' && path[1] == 0)) {
+        return CFS_EINVAL;
     }
     return ram_list(fn, ctx);
+}
+
+int fs_list(FsListFn fn, void *ctx) {
+    return fs_list_at("", fn, ctx);
 }
