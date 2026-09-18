@@ -14,9 +14,10 @@
 #include "pmm.h"
 #include "ps2.h"
 #include "lang_pipeline.h"
-#include "lang_sys.h"
 #include "serial.h"
 #include "storage.h"
+#include "clvm_sys.h"
+#include "speaker.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -48,8 +49,8 @@ void kstart(void) {
 
     storage_init();
     fs_init();
-
-    lang_init(kernel_lang_sys, 0);
+    lang_init(clvm_sys_dispatch, 0);
+    speaker_off();
 
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||

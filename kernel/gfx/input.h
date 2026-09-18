@@ -54,4 +54,10 @@ InputMouse input_mouse_snapshot(void);
 bool input_left_pressed(void);
 void input_consume_left_press(void);
 
+/* LEARN:F5P02 */
+void input_keystate_note(uint8_t scancode);
+int input_key_down(int scancode);
+void input_keystate_clear(void);
+
+
 #endif

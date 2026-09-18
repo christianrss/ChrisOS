@@ -50,6 +50,8 @@ struct IDTElement _idt[256];
 extern unsigned int isr1, isr12, isr32;
 unsigned int base, base12, base32;
 volatile unsigned int ticks = 0;
+/* LEARN:F5P02 */
+static volatile uint8_t g_keys[128];
 
 unsigned char inportb(unsigned short port) {
     unsigned char value;

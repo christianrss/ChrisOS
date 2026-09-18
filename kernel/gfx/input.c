@@ -29,6 +29,9 @@ static bool g_left_shift;
 static bool g_right_shift;
 static bool g_caps_lock;
 
+/* LEARN:F5P02 */
+static volatile uint8_t g_keys[128];
+
 static const char normal_map[128] = {
     [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4',
     [0x06] = '5', [0x07] = '6', [0x08] = '7', [0x09] = '8',
@@ -116,6 +119,7 @@ static InputKey plain_key(uint8_t code) {
 void input_init(int screen_width, int screen_height) {
     g_queue_head = 0;
     g_queue_tail = 0;
+    input_keystate_clear();
     g_lost_events = 0;
     g_screen_width = screen_width > 0 ? screen_width : 1;
     g_screen_height = screen_height > 0 ? screen_height : 1;
@@ -134,12 +138,34 @@ void input_init(int screen_width, int screen_height) {
     g_caps_lock = false;
 }
 
+void input_keystate_clear(void) {
+    unsigned i;
+    for (i = 0; i < 128u; ++i)
+        g_keys[i] = 0;
+}
+
+void input_keystate_note(uint8_t scancode) {
+    uint8_t code;
+    if (scancode == 0xE0u)
+        return;
+    code = (uint8_t)(scancode & 0x7Fu);
+    g_keys[code] = (scancode & 0x80u) ? 0 : 1;
+}
+
+int input_key_down(int scancode) {
+    if (scancode < 0 || scancode > 127)
+        return 0;
+    return g_keys[scancode] ? 1 : 0;
+}
+
 void input_keyboard_irq(uint8_t scancode) {
     bool released;
     uint8_t code;
     bool shifted;
     char character;
     InputKey key;
+
+    input_keystate_note(scancode);
 
     if (scancode == 0xE0u) {
         g_extended = true;

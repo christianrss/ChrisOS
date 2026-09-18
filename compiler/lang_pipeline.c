@@ -2,7 +2,7 @@
 #include "chrisc/chrisc.h"
 #include "clvm/clasm.h"
 #include "clvm/clvm.h"
-#include "../kernel/fs.h"
+#include "fs.h"
 
 #define LANG_SOURCE_MAX 32768
 #define LANG_FILE_MAX (CLVM_HEADER_SIZE + CLVM_MAX_CODE)
@@ -227,14 +227,12 @@ int lang_compile_run(Editor *e) {
 void lang_tick(uint32_t now) {
     int i;
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
-        if (!slots[i].used) {
-            continue;
-        }
-        ClvmStepResult r;
-        clvm_vm_wake(&slots[i].vm, now);
-        r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
-        if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT) {
-            slots[i].used = 0;
+        if (slots[i].used) {
+            ClvmStepResult r;
+            clvm_vm_wake(&slots[i].vm, now);
+            r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
+            if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
+                slots[i].used = 0;
         }
     }
 }
