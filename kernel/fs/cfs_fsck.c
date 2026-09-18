@@ -1,4 +1,4 @@
-/* LEARN:STOR64-S09 */
+/* LEARN:WS64-W05 */
 #include "cfs.h"
 #include "storage_limits.h"
 
@@ -6,8 +6,9 @@ static char g_reason[80];
 static uint8_t g_bitmap[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
 static uint8_t g_seen[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
 static uint8_t g_sec[STOR_SECTOR_SIZE];
+static uint8_t g_dirsec[STOR_SECTOR_SIZE];
 static char g_names[CFS_INODE_COUNT][CFS_NAME_MAX + 1u];
-static uint32_t g_name_count;
+static uint8_t g_anc[CFS_INODE_COUNT];
 
 const char *cfs_fsck_reason(void) {
     return g_reason;
@@ -60,9 +61,9 @@ static int note_block(uint32_t lba, int *errors) {
     return 0;
 }
 
-static int name_taken(const char *name, uint8_t len) {
+static int name_taken(uint32_t count, const char *name, uint8_t len) {
     uint32_t i, k;
-    for (i = 0; i < g_name_count; i++) {
+    for (i = 0; i < count; i++) {
         k = 0;
         while (k < len && g_names[i][k] && g_names[i][k] == name[k]) {
             k++;
@@ -74,16 +75,119 @@ static int name_taken(const char *name, uint8_t len) {
     return 0;
 }
 
+static int walk_dir(BlockDevice *dev, uint32_t id, int *errors);
+
+static int check_dirents(BlockDevice *dev, const CfsInode *inode,
+                         uint32_t dir_id, int *errors) {
+    CfsDirent ent;
+    CfsInode child;
+    uint32_t b, slot, k, local = 0u;
+    uint32_t per = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
+    int rc;
+    (void)dir_id;
+    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
+        if (!inode->direct[b] || !data_lba_ok(inode->direct[b])) {
+            continue;
+        }
+        rc = bd_read(dev, inode->direct[b], 1u, g_dirsec);
+        if (rc != BD_OK) {
+            set_reason("dir io");
+            return CFS_EIO;
+        }
+        local = 0u;
+        for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
+            cfs_dirent_decode(&ent, g_dirsec + slot * CFS_DIRENT_SIZE);
+            if (!ent.inode || !ent.name_len) {
+                continue;
+            }
+            if (ent.inode >= CFS_INODE_COUNT ||
+                ent.name_len > CFS_NAME_MAX) {
+                set_reason("dirent");
+                (*errors)++;
+                continue;
+            }
+            if (name_taken(local, (const char *)ent.name, ent.name_len)) {
+                set_reason("name clash");
+                (*errors)++;
+                continue;
+            }
+            if (local < CFS_INODE_COUNT) {
+                for (k = 0; k < ent.name_len; k++) {
+                    g_names[local][k] = (char)ent.name[k];
+                }
+                g_names[local][ent.name_len] = 0;
+                local++;
+            }
+            rc = bd_read(dev, CFS_INODE_LBA + ent.inode / per, 1u, g_sec);
+            if (rc != BD_OK) {
+                set_reason("inode io");
+                return CFS_EIO;
+            }
+            if (cfs_inode_decode(&child,
+                                 g_sec + (ent.inode % per) * CFS_INODE_SIZE) != 0) {
+                set_reason("inode checksum");
+                (*errors)++;
+                continue;
+            }
+            if (child.type == CFS_INODE_DIR) {
+                rc = walk_dir(dev, ent.inode, errors);
+                if (rc < 0) {
+                    return rc;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int walk_dir(BlockDevice *dev, uint32_t id, int *errors) {
+    CfsInode inode;
+    uint32_t per = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
+    int rc;
+    if (id >= CFS_INODE_COUNT) {
+        set_reason("dirent");
+        (*errors)++;
+        return 0;
+    }
+    if (g_anc[id]) {
+        set_reason("dir cycle");
+        (*errors)++;
+        return 0;
+    }
+    g_anc[id] = 1u;
+    rc = bd_read(dev, CFS_INODE_LBA + id / per, 1u, g_sec);
+    if (rc != BD_OK) {
+        set_reason("inode io");
+        return CFS_EIO;
+    }
+    if (cfs_inode_decode(&inode, g_sec + (id % per) * CFS_INODE_SIZE) != 0) {
+        set_reason("inode checksum");
+        (*errors)++;
+        g_anc[id] = 0u;
+        return 0;
+    }
+    if (inode.type != CFS_INODE_DIR) {
+        set_reason("root type");
+        (*errors)++;
+        g_anc[id] = 0u;
+        return 0;
+    }
+    rc = check_dirents(dev, &inode, id, errors);
+    g_anc[id] = 0u;
+    return rc;
+}
+
 int cfs_fsck(Cfs *fs) {
     CfsSuper super;
     CfsInode inode;
-    CfsDirent ent;
-    uint32_t i, b, slot, need, id, per;
+    uint32_t i, b, need, id, per;
     int errors = 0;
     int rc;
 
     g_reason[0] = 0;
-    g_name_count = 0;
+    for (i = 0; i < CFS_INODE_COUNT; i++) {
+        g_anc[i] = 0u;
+    }
     for (i = 0; i < CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE; i++) {
         g_bitmap[i] = 0u;
         g_seen[i] = 0u;
@@ -165,50 +269,9 @@ int cfs_fsck(Cfs *fs) {
         }
     }
 
-    rc = bd_read(fs->dev, CFS_INODE_LBA, 1u, g_sec);
-    if (rc != BD_OK) {
-        set_reason("inode io");
-        return CFS_EIO;
-    }
-    if (cfs_inode_decode(&inode, g_sec) != 0) {
-        set_reason("inode checksum");
-        errors++;
-    } else {
-        for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-            if (!inode.direct[b] || !data_lba_ok(inode.direct[b])) {
-                continue;
-            }
-            rc = bd_read(fs->dev, inode.direct[b], 1u, g_sec);
-            if (rc != BD_OK) {
-                set_reason("dir io");
-                return CFS_EIO;
-            }
-            for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
-                uint32_t k;
-                cfs_dirent_decode(&ent, g_sec + slot * CFS_DIRENT_SIZE);
-                if (!ent.inode || !ent.name_len) {
-                    continue;
-                }
-                if (ent.inode >= CFS_INODE_COUNT ||
-                    ent.name_len > CFS_NAME_MAX) {
-                    set_reason("dirent");
-                    errors++;
-                    continue;
-                }
-                if (name_taken((const char *)ent.name, ent.name_len)) {
-                    set_reason("name clash");
-                    errors++;
-                    continue;
-                }
-                if (g_name_count < CFS_INODE_COUNT) {
-                    for (k = 0; k < ent.name_len; k++) {
-                        g_names[g_name_count][k] = (char)ent.name[k];
-                    }
-                    g_names[g_name_count][ent.name_len] = 0;
-                    g_name_count++;
-                }
-            }
-        }
+    rc = walk_dir(fs->dev, CFS_ROOT_INODE, &errors);
+    if (rc < 0) {
+        return rc;
     }
 
     for (i = 0; i < CFS_DATA_SECTORS; i++) {

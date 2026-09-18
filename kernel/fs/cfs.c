@@ -1,6 +1,16 @@
-/* LEARN:STOR64-S05 */
+/* LEARN:WS64-W05 */
 #include <stdint.h>
 #include "cfs.h"
+
+#define CFS_COMP_MAX CFS_NAME_MAX
+
+typedef struct PathParts {
+    uint32_t ncomp;
+    uint32_t start[6];
+    uint32_t len[6];
+    const char *s;
+    uint32_t total;
+} PathParts;
 
 static void bytes_zero(void *dst, uint32_t n) {
     uint8_t *p = dst;
@@ -19,25 +29,64 @@ static int io_error(int rc) {
     return rc == BD_OK ? CFS_OK : CFS_EIO;
 }
 
-static int name_length(const char *name, uint32_t *length) {
-    uint32_t n = 0;
-    if (!name) return CFS_EINVAL;
-    while (name[n]) {
-        if (name[n] == '/' || name[n] == '\\') return CFS_EINVAL;
-        if (n == CFS_NAME_MAX) return CFS_ENAMETOOLONG;
-        n++;
-    }
-    if (!n) return CFS_EINVAL;
-    *length = n;
-    return CFS_OK;
-}
-
 static int name_equal(const CfsDirent *e, const char *name, uint32_t n) {
     uint32_t i;
     if (e->name_len != n) return 0;
     for (i = 0; i < n; i++)
         if (e->name[i] != (uint8_t)name[i]) return 0;
     return 1;
+}
+
+static int parse_path(const char *path, PathParts *p) {
+    uint32_t i = 0;
+    uint32_t n = 0;
+    uint32_t total = 0;
+    if (!path || !p) return CFS_EINVAL;
+    bytes_zero(p, (uint32_t)sizeof(*p));
+    while (path[total]) {
+        if (total >= CFS_PATH_MAX) return CFS_ENAMETOOLONG;
+        total++;
+    }
+    p->total = total;
+    p->s = path;
+    if (path[0] == '/') {
+        i = 1;
+        p->s = path + 1;
+        if (!path[1]) {
+            p->ncomp = 0;
+            return CFS_OK;
+        }
+    }
+    if (!p->s[0]) {
+        p->ncomp = 0;
+        return CFS_OK;
+    }
+    i = 0;
+    while (p->s[i]) {
+        uint32_t st;
+        uint32_t ln;
+        if (n >= CFS_PATH_DEPTH) return CFS_EINVAL;
+        if (p->s[i] == '/') return CFS_EINVAL;
+        st = i;
+        ln = 0;
+        while (p->s[i] && p->s[i] != '/') {
+            if (p->s[i] == '\\') return CFS_EINVAL;
+            ln++;
+            if (ln > CFS_COMP_MAX) return CFS_ENAMETOOLONG;
+            i++;
+        }
+        if (ln == 1u && p->s[st] == '.') return CFS_EINVAL;
+        if (ln == 2u && p->s[st] == '.' && p->s[st + 1] == '.') return CFS_EINVAL;
+        p->start[n] = st;
+        p->len[n] = ln;
+        n++;
+        if (p->s[i] == '/') {
+            i++;
+            if (!p->s[i]) return CFS_EINVAL;
+        }
+    }
+    p->ncomp = n;
+    return CFS_OK;
 }
 
 static void cache_reset(Cfs *fs) {
@@ -60,17 +109,39 @@ static CfsCacheLine *cache_victim(Cfs *fs) {
     return v;
 }
 
+static void cache_drop_lba(Cfs *fs, uint32_t lba) {
+    uint32_t i;
+    for (i = 0; i < CFS_CACHE_LINES; i++) {
+        if (fs->cache[i].valid && fs->cache[i].lba == lba) {
+            fs->cache[i].valid = 0u;
+        }
+    }
+}
+
 static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
     uint32_t i;
-    CfsCacheLine *line;
+    CfsCacheLine *line = 0;
+    CfsCacheLine *best = 0;
     for (i = 0; i < CFS_CACHE_LINES; i++) {
         line = &fs->cache[i];
         if (line->valid && line->lba == lba) {
-            line->age = ++fs->clock;
-            bytes_copy(out, line->data, 512u);
-            return CFS_OK;
+            if (!best || line->age > best->age) {
+                best = line;
+            }
         }
     }
+    if (best) {
+        for (i = 0; i < CFS_CACHE_LINES; i++) {
+            line = &fs->cache[i];
+            if (line != best && line->valid && line->lba == lba) {
+                line->valid = 0u;
+            }
+        }
+        best->age = ++fs->clock;
+        bytes_copy(out, best->data, 512u);
+        return CFS_OK;
+    }
+    cache_drop_lba(fs, lba);
     line = cache_victim(fs);
     if (bd_read(fs->dev, lba, 1u, line->data) != BD_OK)
         return CFS_EIO;
@@ -82,17 +153,15 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
 }
 
 static int cache_write(Cfs *fs, uint32_t lba, const uint8_t in[512]) {
-    uint32_t i;
+    CfsCacheLine *line;
     if (bd_write(fs->dev, lba, 1u, in) != BD_OK)
         return CFS_EIO;
-    for (i = 0; i < CFS_CACHE_LINES; i++) {
-        CfsCacheLine *line = &fs->cache[i];
-        if (line->valid && line->lba == lba) {
-            bytes_copy(line->data, in, 512u);
-            line->age = ++fs->clock;
-            break;
-        }
-    }
+    cache_drop_lba(fs, lba);
+    line = cache_victim(fs);
+    line->valid = 1u;
+    line->lba = lba;
+    bytes_copy(line->data, in, 512u);
+    line->age = ++fs->clock;
     return CFS_OK;
 }
 
@@ -196,18 +265,33 @@ static int inode_alloc(Cfs *fs, uint32_t *id) {
     return CFS_ENOSPC;
 }
 
-static int dir_find(Cfs *fs, const char *name, uint32_t name_len,
-                    uint32_t *inode_id) {
-    CfsInode root;
+static int inode_release(Cfs *fs, uint32_t id) {
+    CfsInode n;
+    uint32_t b;
+    int rc = inode_read(fs, id, &n);
+    if (rc != CFS_OK) return rc;
+    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
+        if (n.direct[b]) {
+            rc = block_free(fs, n.direct[b]);
+            if (rc != CFS_OK) return rc;
+        }
+    }
+    bytes_zero(&n, (uint32_t)sizeof(n));
+    return inode_write(fs, id, &n);
+}
+
+static int dir_find(Cfs *fs, uint32_t dir_id, const char *name,
+                    uint32_t name_len, uint32_t *inode_id) {
+    CfsInode dir;
     CfsDirent e;
     uint32_t b, slot;
-    int rc = inode_read(fs, CFS_ROOT_INODE, &root);
+    int rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
-    if (root.type != CFS_INODE_DIR) return CFS_ECORRUPT;
+    if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
     for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!root.direct[b]) continue;
-        if (!data_lba_valid(root.direct[b])) return CFS_ECORRUPT;
-        rc = cache_read(fs, root.direct[b], fs->sector);
+        if (!dir.direct[b]) continue;
+        if (!data_lba_valid(dir.direct[b])) return CFS_ECORRUPT;
+        rc = cache_read(fs, dir.direct[b], fs->sector);
         if (rc != CFS_OK) return rc;
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
             cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
@@ -221,18 +305,39 @@ static int dir_find(Cfs *fs, const char *name, uint32_t name_len,
     return CFS_ENOENT;
 }
 
-static int dir_add(Cfs *fs, const char *name, uint32_t name_len,
-                   uint32_t inode_id) {
-    CfsInode root;
+static int dir_count(Cfs *fs, uint32_t dir_id, uint32_t *count) {
+    CfsInode dir;
+    CfsDirent e;
+    uint32_t b, slot, n = 0u;
+    int rc = inode_read(fs, dir_id, &dir);
+    if (rc != CFS_OK) return rc;
+    if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
+    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
+        if (!dir.direct[b]) continue;
+        rc = cache_read(fs, dir.direct[b], fs->sector);
+        if (rc != CFS_OK) return rc;
+        for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
+            cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
+            if (e.inode && e.name_len) n++;
+        }
+    }
+    *count = n;
+    return CFS_OK;
+}
+
+static int dir_add(Cfs *fs, uint32_t dir_id, const char *name,
+                   uint32_t name_len, uint32_t inode_id, uint8_t type) {
+    CfsInode dir;
     CfsDirent e;
     uint32_t b, slot, target_b = CFS_DIRECT_COUNT;
     uint32_t target_slot = 0u;
-    int rc = inode_read(fs, CFS_ROOT_INODE, &root);
+    int rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
+    if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
 
     for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!root.direct[b]) continue;
-        rc = cache_read(fs, root.direct[b], fs->sector);
+        if (!dir.direct[b]) continue;
+        rc = cache_read(fs, dir.direct[b], fs->sector);
         if (rc != CFS_OK) return rc;
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
             cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
@@ -245,31 +350,101 @@ static int dir_add(Cfs *fs, const char *name, uint32_t name_len,
 
     if (target_b == CFS_DIRECT_COUNT) {
         for (b = 0; b < CFS_DIRECT_COUNT; b++)
-            if (!root.direct[b]) break;
+            if (!dir.direct[b]) break;
         if (b == CFS_DIRECT_COUNT) return CFS_ENOSPC;
-        rc = block_alloc(fs, &root.direct[b]);
+        rc = block_alloc(fs, &dir.direct[b]);
         if (rc != CFS_OK) return rc;
-        rc = inode_write(fs, CFS_ROOT_INODE, &root);
+        rc = inode_write(fs, dir_id, &dir);
         if (rc != CFS_OK) {
-            (void)block_free(fs, root.direct[b]);
+            (void)block_free(fs, dir.direct[b]);
             return rc;
         }
         target_b = b;
         target_slot = 0u;
     }
 
-    rc = cache_read(fs, root.direct[target_b], fs->sector);
+    rc = cache_read(fs, dir.direct[target_b], fs->sector);
     if (rc != CFS_OK) return rc;
     bytes_zero(&e, (uint32_t)sizeof(e));
     e.inode = inode_id;
-    e.type = CFS_INODE_FILE;
+    e.type = type;
     e.name_len = (uint8_t)name_len;
     for (b = 0; b < name_len; b++) e.name[b] = (uint8_t)name[b];
     cfs_dirent_encode(fs->sector + target_slot * CFS_DIRENT_SIZE, &e);
-    rc = cache_write(fs, root.direct[target_b], fs->sector);
+    rc = cache_write(fs, dir.direct[target_b], fs->sector);
     if (rc != CFS_OK) return rc;
-    root.size += CFS_DIRENT_SIZE;
-    return inode_write(fs, CFS_ROOT_INODE, &root);
+    dir.size += CFS_DIRENT_SIZE;
+    return inode_write(fs, dir_id, &dir);
+}
+
+static int dir_remove(Cfs *fs, uint32_t dir_id, const char *name,
+                      uint32_t name_len) {
+    CfsInode dir;
+    CfsDirent e;
+    uint32_t b, slot;
+    int rc = inode_read(fs, dir_id, &dir);
+    if (rc != CFS_OK) return rc;
+    if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
+    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
+        if (!dir.direct[b]) continue;
+        rc = cache_read(fs, dir.direct[b], fs->sector);
+        if (rc != CFS_OK) return rc;
+        for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
+            cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
+            if (e.inode && e.name_len && name_equal(&e, name, name_len)) {
+                bytes_zero(&e, (uint32_t)sizeof(e));
+                cfs_dirent_encode(fs->sector + slot * CFS_DIRENT_SIZE, &e);
+                rc = cache_write(fs, dir.direct[b], fs->sector);
+                if (rc != CFS_OK) return rc;
+                if (dir.size >= CFS_DIRENT_SIZE)
+                    dir.size -= CFS_DIRENT_SIZE;
+                return inode_write(fs, dir_id, &dir);
+            }
+        }
+    }
+    return CFS_ENOENT;
+}
+
+static int walk_parent(Cfs *fs, const PathParts *p,
+                       uint32_t *parent_id, uint32_t *leaf_index) {
+    uint32_t cur = CFS_ROOT_INODE;
+    uint32_t i, id;
+    CfsInode in;
+    int rc;
+    if (p->ncomp == 0) return CFS_EINVAL;
+    for (i = 0; i + 1 < p->ncomp; i++) {
+        rc = dir_find(fs, cur, p->s + p->start[i], p->len[i], &id);
+        if (rc != CFS_OK) return rc;
+        rc = inode_read(fs, id, &in);
+        if (rc != CFS_OK) return rc;
+        if (in.type != CFS_INODE_DIR) return CFS_ENOTDIR;
+        cur = id;
+    }
+    *parent_id = cur;
+    *leaf_index = p->ncomp - 1u;
+    return CFS_OK;
+}
+
+static int walk_full(Cfs *fs, const PathParts *p, uint32_t *id_out) {
+    uint32_t cur = CFS_ROOT_INODE;
+    uint32_t i, id;
+    CfsInode in;
+    int rc;
+    if (p->ncomp == 0) {
+        *id_out = CFS_ROOT_INODE;
+        return CFS_OK;
+    }
+    for (i = 0; i < p->ncomp; i++) {
+        rc = dir_find(fs, cur, p->s + p->start[i], p->len[i], &id);
+        if (rc != CFS_OK) return rc;
+        rc = inode_read(fs, id, &in);
+        if (rc != CFS_OK) return rc;
+        if (i + 1 < p->ncomp && in.type != CFS_INODE_DIR)
+            return CFS_ENOTDIR;
+        cur = id;
+    }
+    *id_out = cur;
+    return CFS_OK;
 }
 
 int cfs_format(BlockDevice *dev) {
@@ -347,19 +522,23 @@ int cfs_sync(Cfs *fs) {
     return io_error(bd_flush(fs->dev));
 }
 
-int cfs_create(Cfs *fs, const char *name) {
-    uint32_t n, id, existing;
+int cfs_create(Cfs *fs, const char *path) {
+    PathParts p;
+    uint32_t parent, leaf, id, existing;
     CfsInode empty;
     int rc;
     if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
-    rc = name_length(name, &n);
+    rc = parse_path(path, &p);
     if (rc != CFS_OK) return rc;
-    rc = dir_find(fs, name, n, &existing);
+    rc = walk_parent(fs, &p, &parent, &leaf);
+    if (rc != CFS_OK) return rc;
+    rc = dir_find(fs, parent, p.s + p.start[leaf], p.len[leaf], &existing);
     if (rc == CFS_OK) return CFS_EEXIST;
     if (rc != CFS_ENOENT) return rc;
     rc = inode_alloc(fs, &id);
     if (rc != CFS_OK) return rc;
-    rc = dir_add(fs, name, n, id);
+    rc = dir_add(fs, parent, p.s + p.start[leaf], p.len[leaf],
+                 id, CFS_INODE_FILE);
     if (rc != CFS_OK) {
         bytes_zero(&empty, (uint32_t)sizeof(empty));
         (void)inode_write(fs, id, &empty);
@@ -369,38 +548,153 @@ int cfs_create(Cfs *fs, const char *name) {
     return (int)id;
 }
 
-int cfs_stat(Cfs *fs, const char *name, uint32_t *size) {
-    uint32_t n, id;
-    CfsInode inode;
+int cfs_mkdir(Cfs *fs, const char *path) {
+    PathParts p;
+    uint32_t parent, leaf, id, existing;
+    CfsInode node;
     int rc;
     if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
-    if (!size) return CFS_EINVAL;
-    rc = name_length(name, &n);
+    rc = parse_path(path, &p);
     if (rc != CFS_OK) return rc;
-    rc = dir_find(fs, name, n, &id);
+    rc = walk_parent(fs, &p, &parent, &leaf);
     if (rc != CFS_OK) return rc;
-    rc = inode_read(fs, id, &inode);
+    rc = dir_find(fs, parent, p.s + p.start[leaf], p.len[leaf], &existing);
+    if (rc == CFS_OK) return CFS_EEXIST;
+    if (rc != CFS_ENOENT) return rc;
+    rc = inode_alloc(fs, &id);
     if (rc != CFS_OK) return rc;
-    if (inode.type != CFS_INODE_FILE) return CFS_ECORRUPT;
-    *size = inode.size;
+    rc = inode_read(fs, id, &node);
+    if (rc != CFS_OK) return rc;
+    node.type = CFS_INODE_DIR;
+    node.size = 0u;
+    rc = inode_write(fs, id, &node);
+    if (rc != CFS_OK) return rc;
+    rc = dir_add(fs, parent, p.s + p.start[leaf], p.len[leaf],
+                 id, CFS_INODE_DIR);
+    if (rc != CFS_OK) {
+        bytes_zero(&node, (uint32_t)sizeof(node));
+        (void)inode_write(fs, id, &node);
+        return rc;
+    }
+    fs->super.generation++;
     return CFS_OK;
 }
 
-int cfs_read(Cfs *fs, const char *name, void *out, uint32_t capacity) {
-    uint32_t n, id, done = 0u, amount, block;
+int cfs_rmdir(Cfs *fs, const char *path) {
+    PathParts p;
+    uint32_t parent, leaf, id, n;
+    CfsInode node;
+    int rc;
+    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
+    rc = parse_path(path, &p);
+    if (rc != CFS_OK) return rc;
+    rc = walk_parent(fs, &p, &parent, &leaf);
+    if (rc != CFS_OK) return rc;
+    rc = dir_find(fs, parent, p.s + p.start[leaf], p.len[leaf], &id);
+    if (rc != CFS_OK) return rc;
+    if (id == CFS_ROOT_INODE) return CFS_EINVAL;
+    rc = inode_read(fs, id, &node);
+    if (rc != CFS_OK) return rc;
+    if (node.type != CFS_INODE_DIR) return CFS_ENOTDIR;
+    rc = dir_count(fs, id, &n);
+    if (rc != CFS_OK) return rc;
+    if (n) return CFS_ENOTEMPTY;
+    rc = dir_remove(fs, parent, p.s + p.start[leaf], p.len[leaf]);
+    if (rc != CFS_OK) return rc;
+    rc = inode_release(fs, id);
+    if (rc != CFS_OK) return rc;
+    fs->super.generation++;
+    return CFS_OK;
+}
+
+int cfs_unlink(Cfs *fs, const char *path) {
+    PathParts p;
+    uint32_t parent, leaf, id;
+    CfsInode node;
+    int rc;
+    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
+    rc = parse_path(path, &p);
+    if (rc != CFS_OK) return rc;
+    rc = walk_parent(fs, &p, &parent, &leaf);
+    if (rc != CFS_OK) return rc;
+    rc = dir_find(fs, parent, p.s + p.start[leaf], p.len[leaf], &id);
+    if (rc != CFS_OK) return rc;
+    rc = inode_read(fs, id, &node);
+    if (rc != CFS_OK) return rc;
+    if (node.type != CFS_INODE_FILE) return CFS_EISDIR;
+    rc = dir_remove(fs, parent, p.s + p.start[leaf], p.len[leaf]);
+    if (rc != CFS_OK) return rc;
+    rc = inode_release(fs, id);
+    if (rc != CFS_OK) return rc;
+    fs->super.generation++;
+    return CFS_OK;
+}
+
+int cfs_rename(Cfs *fs, const char *old_path, const char *new_path) {
+    PathParts a, b;
+    uint32_t pa, pb, la, lb, id, clash;
+    CfsInode node;
+    int rc;
+    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
+    rc = parse_path(old_path, &a);
+    if (rc != CFS_OK) return rc;
+    rc = parse_path(new_path, &b);
+    if (rc != CFS_OK) return rc;
+    rc = walk_parent(fs, &a, &pa, &la);
+    if (rc != CFS_OK) return rc;
+    rc = walk_parent(fs, &b, &pb, &lb);
+    if (rc != CFS_OK) return rc;
+    if (pa != pb) return CFS_EXDEV;
+    rc = dir_find(fs, pa, a.s + a.start[la], a.len[la], &id);
+    if (rc != CFS_OK) return rc;
+    rc = dir_find(fs, pb, b.s + b.start[lb], b.len[lb], &clash);
+    if (rc == CFS_OK) return CFS_EEXIST;
+    if (rc != CFS_ENOENT) return rc;
+    rc = inode_read(fs, id, &node);
+    if (rc != CFS_OK) return rc;
+    rc = dir_add(fs, pb, b.s + b.start[lb], b.len[lb], id, (uint8_t)node.type);
+    if (rc != CFS_OK) return rc;
+    rc = dir_remove(fs, pa, a.s + a.start[la], a.len[la]);
+    if (rc != CFS_OK) return rc;
+    fs->super.generation++;
+    return CFS_OK;
+}
+
+int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type) {
+    PathParts p;
+    uint32_t id;
+    CfsInode inode;
+    int rc;
+    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
+    if (!size && !type) return CFS_EINVAL;
+    rc = parse_path(path, &p);
+    if (rc != CFS_OK) return rc;
+    rc = walk_full(fs, &p, &id);
+    if (rc != CFS_OK) return rc;
+    rc = inode_read(fs, id, &inode);
+    if (rc != CFS_OK) return rc;
+    if (size) *size = inode.size;
+    if (type) *type = inode.type;
+    return CFS_OK;
+}
+
+int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
+    PathParts p;
+    uint32_t id, done = 0u, amount, block;
     uint8_t *dst = out;
     CfsInode inode;
     int rc;
     if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
     if (!out && capacity) return CFS_EINVAL;
-    rc = name_length(name, &n);
+    rc = parse_path(path, &p);
     if (rc != CFS_OK) return rc;
-    rc = dir_find(fs, name, n, &id);
+    if (p.ncomp == 0) return CFS_EINVAL;
+    rc = walk_full(fs, &p, &id);
     if (rc != CFS_OK) return rc;
     rc = inode_read(fs, id, &inode);
     if (rc != CFS_OK) return rc;
-    if (inode.type != CFS_INODE_FILE ||
-        inode.size > CFS_MAX_FILE_SIZE) return CFS_ECORRUPT;
+    if (inode.type != CFS_INODE_FILE) return CFS_EISDIR;
+    if (inode.size > CFS_MAX_FILE_SIZE) return CFS_ECORRUPT;
     amount = inode.size < capacity ? inode.size : capacity;
     for (block = 0; done < amount; block++) {
         uint32_t take = amount - done;
@@ -415,18 +709,20 @@ int cfs_read(Cfs *fs, const char *name, void *out, uint32_t capacity) {
     return (int)done;
 }
 
-int cfs_write(Cfs *fs, const char *name, const void *data, uint32_t size) {
+int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size) {
     CfsInode old_inode, inode;
-    uint32_t n, id, need, old_count, i, added_from, done;
+    PathParts p;
+    uint32_t id, need, old_count, i, added_from, done;
     int rc;
     if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
     if (!data && size) return CFS_EINVAL;
     if (size > CFS_MAX_FILE_SIZE) return CFS_EFBIG;
-    rc = name_length(name, &n);
+    rc = parse_path(path, &p);
     if (rc != CFS_OK) return rc;
-    rc = dir_find(fs, name, n, &id);
+    if (p.ncomp == 0) return CFS_EINVAL;
+    rc = walk_full(fs, &p, &id);
     if (rc == CFS_ENOENT) {
-        rc = cfs_create(fs, name);
+        rc = cfs_create(fs, path);
         if (rc < 0) return rc;
         id = (uint32_t)rc;
     } else if (rc != CFS_OK) {
@@ -486,35 +782,37 @@ int cfs_write(Cfs *fs, const char *name, const void *data, uint32_t size) {
     return (int)size;
 }
 
-int cfs_truncate(Cfs *fs, const char *name, uint32_t size) {
+int cfs_truncate(Cfs *fs, const char *path, uint32_t size) {
     uint32_t old_size, i;
+    uint16_t type;
     int rc;
     if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
     if (size > CFS_MAX_FILE_SIZE) return CFS_EFBIG;
-    rc = cfs_stat(fs, name, &old_size);
+    rc = cfs_stat(fs, path, &old_size, &type);
     if (rc != CFS_OK) return rc;
-    rc = cfs_read(fs, name, fs->work, CFS_MAX_FILE_SIZE);
+    if (type != CFS_INODE_FILE) return CFS_EISDIR;
+    rc = cfs_read(fs, path, fs->work, CFS_MAX_FILE_SIZE);
     if (rc < 0) return rc;
     for (i = old_size; i < size; i++) fs->work[i] = 0u;
-    return cfs_write(fs, name, fs->work, size);
+    return cfs_write(fs, path, fs->work, size);
 }
 
-int cfs_list(Cfs *fs, CfsListFn fn, void *ctx) {
-    CfsInode root, inode;
+static int list_dir_inode(Cfs *fs, uint32_t dir_id, CfsListFn fn, void *ctx) {
+    CfsInode dir, inode;
     CfsDirent e;
     char name[CFS_NAME_MAX + 1u];
+    uint8_t dirsec[STOR_SECTOR_SIZE];
     uint32_t b, slot, i;
     int rc, count = 0;
-    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
-    if (!fn) return CFS_EINVAL;
-    rc = inode_read(fs, CFS_ROOT_INODE, &root);
+    rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
+    if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
     for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!root.direct[b]) continue;
-        rc = cache_read(fs, root.direct[b], fs->sector);
+        if (!dir.direct[b]) continue;
+        rc = cache_read(fs, dir.direct[b], dirsec);
         if (rc != CFS_OK) return rc;
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
-            cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
+            cfs_dirent_decode(&e, dirsec + slot * CFS_DIRENT_SIZE);
             if (!e.inode || !e.name_len) continue;
             if (e.inode >= CFS_INODE_COUNT ||
                 e.name_len > CFS_NAME_MAX) return CFS_ECORRUPT;
@@ -528,4 +826,22 @@ int cfs_list(Cfs *fs, CfsListFn fn, void *ctx) {
         }
     }
     return count;
+}
+
+int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx) {
+    PathParts p;
+    uint32_t id;
+    int rc;
+    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
+    if (!fn) return CFS_EINVAL;
+    if (!path) path = "";
+    rc = parse_path(path, &p);
+    if (rc != CFS_OK) return rc;
+    rc = walk_full(fs, &p, &id);
+    if (rc != CFS_OK) return rc;
+    return list_dir_inode(fs, id, fn, ctx);
+}
+
+int cfs_list(Cfs *fs, CfsListFn fn, void *ctx) {
+    return cfs_list_at(fs, "", fn, ctx);
 }

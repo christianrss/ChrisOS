@@ -73,6 +73,12 @@ test_gfx2d: kernel/gfx/gfx2d.c tools/test_gfx2d.c kernel/gfx/gfx2d.h
 test_keystate: tools/test_keystate.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror tools/test_keystate.c -o test_keystate
 
+host-cfs-paths-test: tools/test_cfs_paths.c kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/fs \
+		-o tools/test_cfs_paths tools/test_cfs_paths.c \
+		kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	./tools/test_cfs_paths
+
 kernel/metal/%.o: kernel/metal/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 

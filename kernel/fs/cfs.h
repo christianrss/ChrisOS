@@ -1,10 +1,13 @@
-/* LEARN:STOR64-S09 */
+/* LEARN:WS64-W05 */
 #ifndef CHRIS_CFS_H
 #define CHRIS_CFS_H
 
 #include <stdint.h>
 #include "block_device.h"
 #include "cfs_format.h"
+
+#define CFS_PATH_MAX 96u
+#define CFS_PATH_DEPTH 6u
 
 enum {
     CFS_OK = 0,
@@ -17,7 +20,11 @@ enum {
     CFS_EFBIG = -26,
     CFS_ENAMETOOLONG = -27,
     CFS_ECORRUPT = -28,
-    CFS_ENOTMOUNTED = -29
+    CFS_ENOTMOUNTED = -29,
+    CFS_ENOTDIR = -30,
+    CFS_ENOTEMPTY = -31,
+    CFS_EISDIR = -32,
+    CFS_EXDEV = -33
 };
 
 typedef struct CfsCacheLine {
@@ -43,12 +50,17 @@ typedef int (*CfsListFn)(void *ctx, const char *name,
 int cfs_format(BlockDevice *dev);
 int cfs_mount(Cfs *fs, BlockDevice *dev);
 int cfs_sync(Cfs *fs);
-int cfs_create(Cfs *fs, const char *name);
-int cfs_read(Cfs *fs, const char *name, void *out, uint32_t capacity);
-int cfs_write(Cfs *fs, const char *name, const void *data, uint32_t size);
-int cfs_truncate(Cfs *fs, const char *name, uint32_t size);
+int cfs_create(Cfs *fs, const char *path);
+int cfs_mkdir(Cfs *fs, const char *path);
+int cfs_rmdir(Cfs *fs, const char *path);
+int cfs_unlink(Cfs *fs, const char *path);
+int cfs_rename(Cfs *fs, const char *old_path, const char *new_path);
+int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity);
+int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size);
+int cfs_truncate(Cfs *fs, const char *path, uint32_t size);
 int cfs_list(Cfs *fs, CfsListFn fn, void *ctx);
-int cfs_stat(Cfs *fs, const char *name, uint32_t *size);
+int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx);
+int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type);
 int cfs_fsck(Cfs *fs);
 const char *cfs_fsck_reason(void);
 
