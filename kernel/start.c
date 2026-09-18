@@ -1,3 +1,4 @@
+/* LEARN:STOR64-S06 */
 #include <stdint.h>
 #include "bootinfo.h"
 #include "desktop.h"
@@ -12,6 +13,7 @@
 #include "pmm.h"
 #include "ps2.h"
 #include "serial.h"
+#include "storage.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -40,6 +42,8 @@ void kstart(void) {
     mm_selftest();
     heap_init();
     heap_selftest();
+
+    storage_init();
 
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||
