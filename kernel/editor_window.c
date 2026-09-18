@@ -1,8 +1,10 @@
-/* LEARN:DESK64-08 */
+/* LEARN:STOR64-S08 */
 #include "editor_window.h"
 
+#include "cfs.h"
 #include "editor.h"
 #include "font.h"
+#include "fs.h"
 #include "graphics.h"
 #include "input.h"
 #include "task.h"
@@ -13,19 +15,146 @@
 #define EDITOR_W 400
 #define EDITOR_BODY_H 280
 #define EDITOR_STATUS_H 18
+#define EDITOR_CHROME_H 20
 #define EDITOR_PAD_X 4
 #define EDITOR_PAD_Y 2
 #define EDITOR_CARET_W 2
+#define EDITOR_FILEBUF (ED_MAX_LINES * ED_MAX_COLS + ED_MAX_LINES)
 
 static Editor g_editor;
 static int g_editor_inited;
+static char g_filebuf[EDITOR_FILEBUF];
+static char g_title[40];
+
+static int ed_name_valid(const char *name) {
+    unsigned int n = 0;
+    if (!name) {
+        return 0;
+    }
+    while (name[n]) {
+        if (name[n] == '/' || name[n] == '\\') {
+            return 0;
+        }
+        if (n >= CFS_NAME_MAX) {
+            return 0;
+        }
+        n++;
+    }
+    return n >= 1 && n <= CFS_NAME_MAX;
+}
+
+static void ed_status_from_rc(Editor *e, int rc) {
+    if (rc == CFS_ENOSPC) {
+        ed_set_status(e, "disk full");
+        return;
+    }
+    if (rc == CFS_ENOENT) {
+        ed_set_status(e, "not found");
+        return;
+    }
+    if (rc == CFS_EFBIG) {
+        ed_set_status(e, "file too big");
+        return;
+    }
+    if (rc == CFS_ENAMETOOLONG) {
+        ed_set_status(e, "name too long");
+        return;
+    }
+    if (rc == CFS_EINVAL) {
+        ed_set_status(e, "bad name");
+        return;
+    }
+    if (rc == CFS_EIO) {
+        ed_set_status(e, "io error");
+        return;
+    }
+    if (rc == CFS_ENOTMOUNTED) {
+        ed_set_status(e, "not mounted");
+        return;
+    }
+    ed_set_status(e, "io error");
+}
+
+int ed_save(Editor *e) {
+    int n;
+    int rc;
+    if (!e) {
+        return CFS_EINVAL;
+    }
+    if (!ed_name_valid(e->name)) {
+        if (!e->name[0]) {
+            ed_set_status(e, "need name");
+        } else {
+            ed_set_status(e, "bad name");
+        }
+        return CFS_EINVAL;
+    }
+    ed_get_text(e, g_filebuf, EDITOR_FILEBUF);
+    n = 0;
+    while (g_filebuf[n]) {
+        n++;
+    }
+    rc = fs_write(e->name, g_filebuf, n);
+    if (rc < 0) {
+        ed_status_from_rc(e, rc);
+        return rc;
+    }
+    e->dirty = 0;
+    ed_set_status(e, "saved");
+    return CFS_OK;
+}
+
+int ed_open(Editor *e) {
+    int rc;
+    int i;
+    if (!e) {
+        return CFS_EINVAL;
+    }
+    if (!ed_name_valid(e->name)) {
+        if (!e->name[0]) {
+            ed_set_status(e, "need name");
+        } else {
+            ed_set_status(e, "bad name");
+        }
+        return CFS_EINVAL;
+    }
+    for (i = 0; i < EDITOR_FILEBUF; i++) {
+        g_filebuf[i] = 0;
+    }
+    rc = fs_read(e->name, g_filebuf, EDITOR_FILEBUF - 1);
+    if (rc < 0) {
+        ed_status_from_rc(e, rc);
+        return rc;
+    }
+    g_filebuf[rc] = 0;
+    if (!ed_load_text(e, g_filebuf)) {
+        return CFS_EFBIG;
+    }
+    e->dirty = 0;
+    ed_set_status(e, "opened");
+    return CFS_OK;
+}
+
+static void build_title(const Editor *e) {
+    int i = 0;
+    int s = 0;
+    const char *src = e->name[0] ? e->name : "Editor";
+    if (e->dirty) {
+        g_title[i++] = '*';
+    }
+    while (src[s] && i < 38) {
+        g_title[i++] = src[s++];
+    }
+    g_title[i] = 0;
+}
 
 static int map_input_event(const InputEvent *event) {
+    unsigned char ch;
     if (!event) {
         return 0;
     }
     if (event->type == INPUT_EVENT_TEXT) {
-        unsigned char ch = (unsigned char)event->character;
+        ch = (unsigned char)event->character;
         if (ch >= 32 && ch < 127) {
             return (int)ch;
         }
@@ -110,9 +239,10 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
     int x = task->frame.x;
     int body_y = task->frame.y + TASK_TITLE_HEIGHT;
     int text_x = x + EDITOR_PAD_X;
-    int text_y = body_y + EDITOR_PAD_Y;
+    int text_y = body_y + EDITOR_CHROME_H + EDITOR_PAD_Y;
     int text_w = task->frame.width - EDITOR_PAD_X * 2;
-    int text_h = task->frame.body_height - EDITOR_STATUS_H - EDITOR_PAD_Y * 2;
+    int text_h = task->frame.body_height - EDITOR_STATUS_H - EDITOR_CHROME_H
+                 - EDITOR_PAD_Y * 2;
     int glyph_h = font_arial_height;
     int advance = gfx_text_advance(font_arial_width);
     int visible_rows;
@@ -173,17 +303,39 @@ static void editor_run(Task *task, uint64_t ticks) {
     Editor *e;
     InputEvent event;
     int key;
+    int bx;
+    int by;
 
     if (!task) {
         return;
     }
     e = &g_editor;
-    if (ui_window(task, CHRIS_WINDOW_COLOR, "Editor")) {
+    build_title(e);
+    if (ui_window(task, CHRIS_WINDOW_COLOR, g_title)) {
         return;
+    }
+
+    bx = task->frame.x + 8;
+    by = task->frame.y + TASK_TITLE_HEIGHT + 2;
+    if (ui_button(task, bx, by, 50, 16, CHRIS_TASKBAR_COLOR, "Save")) {
+        (void)ed_save(e);
+    }
+    if (ui_button(task, bx + 62, by, 50, 16, CHRIS_TASKBAR_COLOR, "Open")) {
+        (void)ed_open(e);
     }
 
     if (task_is_focused(task)) {
         while (input_next_event(&event)) {
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F2) {
+                (void)ed_save(e);
+                continue;
+            }
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F3) {
+                (void)ed_open(e);
+                continue;
+            }
             key = map_input_event(&event);
             if (key) {
                 (void)ed_handle(e, key);
@@ -220,6 +372,7 @@ void editor_window_open(void) {
     }
     if (!g_editor_inited) {
         ed_init(&g_editor);
+        ed_set_name(&g_editor, "NOTES.TXT");
         g_editor_inited = 1;
     }
     task->state.editor.model_slot = 0;
