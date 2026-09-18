@@ -1,4 +1,4 @@
-/* LEARN:WS64-W06 */
+/* LEARN:WS64-W07 */
 #include "editor_window.h"
 
 #include "cfs.h"
@@ -21,6 +21,13 @@
 #define EDITOR_PAD_Y 2
 #define EDITOR_CARET_W 2
 #define EDITOR_FILEBUF (ED_MAX_LINES * ED_MAX_COLS + ED_MAX_LINES)
+
+#define ED_MODE_EDIT 0
+#define ED_MODE_NAME 1
+#define ED_MODE_CONFIRM 2
+#define ED_MODE_PICK 3
+#define PICK_MAX 48
+
 
 static Editor g_editor;
 static int g_editor_inited;
@@ -312,12 +319,90 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
     }
 }
 
+
+static int g_mode;
+static char g_namebuf[ED_NAME];
+static int g_pending; /* 1=new after confirm, 2=open after confirm */
+static char g_picks[PICK_MAX][ED_NAME];
+static int g_npick;
+static int g_psel;
+
+static void name_from_editor(void) {
+    int i = 0;
+    while (g_editor.name[i] && i < ED_NAME - 1) {
+        g_namebuf[i] = g_editor.name[i];
+        i++;
+    }
+    g_namebuf[i] = 0;
+}
+
+static int pick_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
+    int *n = ctx;
+    int i = 0;
+    (void)size;
+    if (*n >= PICK_MAX) {
+        return 0;
+    }
+    if (type == CFS_INODE_DIR) {
+        g_picks[*n][0] = '/';
+        while (name[i] && i < ED_NAME - 2) {
+            g_picks[*n][i + 1] = name[i];
+            i++;
+        }
+        g_picks[*n][i + 1] = 0;
+    } else {
+        while (name[i] && i < ED_NAME - 1) {
+            g_picks[*n][i] = name[i];
+            i++;
+        }
+        g_picks[*n][i] = 0;
+    }
+    (*n)++;
+    return 0;
+}
+
+static void start_picker(void) {
+    g_npick = 0;
+    g_psel = 0;
+    (void)fs_list_at("", pick_cb, &g_npick);
+    g_mode = ED_MODE_PICK;
+}
+
+static void do_new(void) {
+    ed_init(&g_editor);
+    ed_set_name(&g_editor, "SRC/DEMO.CC");
+    name_from_editor();
+    g_mode = ED_MODE_NAME;
+    ed_set_status(&g_editor, "type name, Enter");
+}
+
+static void request_new(void) {
+    if (ed_is_dirty(&g_editor)) {
+        g_pending = 1;
+        g_mode = ED_MODE_CONFIRM;
+        ed_set_status(&g_editor, "discard changes?");
+        return;
+    }
+    do_new();
+}
+
+static void apply_name(void) {
+    if (!ed_name_valid(g_namebuf)) {
+        ed_set_status(&g_editor, "bad name");
+        return;
+    }
+    ed_set_name(&g_editor, g_namebuf);
+    g_mode = ED_MODE_EDIT;
+    ed_set_status(&g_editor, "name set");
+}
+
 static void editor_run(Task *task, uint64_t ticks) {
     Editor *e;
     InputEvent event;
     int key;
     int bx;
     int by;
+    int i;
 
     if (!task) {
         return;
@@ -328,18 +413,120 @@ static void editor_run(Task *task, uint64_t ticks) {
         return;
     }
 
-    bx = task->frame.x + 8;
+    bx = task->frame.x + 4;
     by = task->frame.y + TASK_TITLE_HEIGHT + 2;
-    if (ui_button(task, bx, by, 44, 16, CHRIS_TASKBAR_COLOR, "Save")) {
+    if (g_mode == ED_MODE_CONFIRM) {
+        ui_label(bx, by, 200, 16, "Discard unsaved?", CHRIS_TEXT_COLOR);
+        if (ui_button(task, bx, by + 20, 40, 16, CHRIS_TASKBAR_COLOR, "Yes")) {
+            if (g_pending == 1) {
+                do_new();
+            } else {
+                start_picker();
+            }
+            g_pending = 0;
+        }
+        if (ui_button(task, bx + 48, by + 20, 40, 16, CHRIS_EDITOR_COLOR, "No")) {
+            g_mode = ED_MODE_EDIT;
+            g_pending = 0;
+        }
+        editor_draw_status(task, e);
+        return;
+    }
+    if (g_mode == ED_MODE_NAME) {
+        ui_label(bx, by, 80, 16, "Name:", CHRIS_TEXT_COLOR);
+        gfx_fill_rect(bx + 50, by, task->frame.width - 60, 16, 0x00E0E0E0u);
+        ui_label(bx + 52, by, task->frame.width - 64, 16, g_namebuf,
+                 CHRIS_TEXT_COLOR);
+        if (ui_button(task, bx, by + 20, 50, 16, CHRIS_TASKBAR_COLOR, "OK")) {
+            apply_name();
+        }
+        if (ui_button(task, bx + 54, by + 20, 50, 16, CHRIS_EDITOR_COLOR, "Esc")) {
+            g_mode = ED_MODE_EDIT;
+        }
+        if (task_is_focused(task)) {
+            while (input_next_event(&event)) {
+                if (event.type == INPUT_EVENT_KEY &&
+                    event.key == INPUT_KEY_ENTER) {
+                    apply_name();
+                    continue;
+                }
+                if (event.type == INPUT_EVENT_KEY &&
+                    event.key == INPUT_KEY_ESCAPE) {
+                    g_mode = ED_MODE_EDIT;
+                    continue;
+                }
+                key = map_input_event(&event);
+                if (key == 8) {
+                    int n = 0;
+                    while (g_namebuf[n]) n++;
+                    if (n) g_namebuf[n - 1] = 0;
+                } else if (key >= 32 && key < 127) {
+                    int n = 0;
+                    while (g_namebuf[n]) n++;
+                    if (n < ED_NAME - 1) {
+                        g_namebuf[n] = (char)key;
+                        g_namebuf[n + 1] = 0;
+                    }
+                }
+            }
+        }
+        editor_draw_status(task, e);
+        return;
+    }
+    if (g_mode == ED_MODE_PICK) {
+        ui_label(bx, by, 200, 16, "Open file (root)", CHRIS_TEXT_COLOR);
+        for (i = 0; i < g_npick; i++) {
+            int ry = by + 20 + i * 16;
+            if (i == g_psel) {
+                gfx_fill_rect(bx, ry, task->frame.width - 16, 16, 0x00C0C0C0u);
+            }
+            ui_label(bx + 2, ry, task->frame.width - 20, 16, g_picks[i],
+                     CHRIS_TEXT_COLOR);
+            if (task_is_focused(task) &&
+                ui_hit_rect(input_mouse_snapshot().x, input_mouse_snapshot().y,
+                            bx, ry, task->frame.width - 16, 16) &&
+                input_left_pressed()) {
+                g_psel = i;
+                input_consume_left_press();
+                if (g_picks[i][0] == '/') {
+                    ed_set_status(e, "pick a file");
+                } else {
+                    ed_set_name(e, g_picks[i]);
+                    (void)ed_open(e);
+                    g_mode = ED_MODE_EDIT;
+                }
+            }
+        }
+        if (ui_button(task, bx, by + 20 + g_npick * 16, 50, 16,
+                      CHRIS_EDITOR_COLOR, "Esc")) {
+            g_mode = ED_MODE_EDIT;
+        }
+        editor_draw_status(task, e);
+        return;
+    }
+
+    if (ui_button(task, bx, by, 36, 16, CHRIS_TASKBAR_COLOR, "New")) {
+        request_new();
+    }
+    if (ui_button(task, bx + 40, by, 44, 16, CHRIS_TASKBAR_COLOR, "Name")) {
+        name_from_editor();
+        g_mode = ED_MODE_NAME;
+    }
+    if (ui_button(task, bx + 88, by, 44, 16, CHRIS_TASKBAR_COLOR, "Open")) {
+        if (ed_is_dirty(e)) {
+            g_pending = 2;
+            g_mode = ED_MODE_CONFIRM;
+        } else {
+            start_picker();
+        }
+    }
+    if (ui_button(task, bx + 136, by, 44, 16, CHRIS_TASKBAR_COLOR, "Save")) {
         (void)lang_save(e);
     }
-    if (ui_button(task, bx + 50, by, 44, 16, CHRIS_TASKBAR_COLOR, "Open")) {
-        (void)ed_open(e);
-    }
-    if (ui_button(task, bx + 100, by, 54, 16, CHRIS_TASKBAR_COLOR, "Compile")) {
+    if (ui_button(task, bx + 184, by, 54, 16, CHRIS_TASKBAR_COLOR, "Compile")) {
         (void)lang_compile(e);
     }
-    if (ui_button(task, bx + 158, by, 36, 16, CHRIS_TASKBAR_COLOR, "Go")) {
+    if (ui_button(task, bx + 242, by, 36, 16, CHRIS_TASKBAR_COLOR, "Go")) {
         (void)lang_compile_run(e);
     }
 
@@ -352,7 +539,7 @@ static void editor_run(Task *task, uint64_t ticks) {
             }
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F3) {
-                (void)ed_open(e);
+                start_picker();
                 continue;
             }
             if (event.type == INPUT_EVENT_KEY &&
