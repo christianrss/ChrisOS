@@ -1,4 +1,4 @@
-/* LEARN:DESK64-08 */
+/* LEARN:WS64-W03 */
 #include "desktop.h"
 
 #include "editor_window.h"
@@ -15,7 +15,7 @@ static TaskRect cascaded_frame(int width, int body_height) {
     int offset = g_window_cascade * 40;
 
     frame.x = offset;
-    frame.y = offset;
+    frame.y = UI_TASKBAR_HEIGHT + offset;
     frame.width = width;
     frame.body_height = body_height;
     ++g_window_cascade;
@@ -106,7 +106,11 @@ void desktop_frame(uint64_t ticks) {
         open_ball();
     } else if (action == TASKBAR_EDITOR) {
         editor_window_open();
-    } else if (input_left_pressed() && mouse.y >= 40) {
+    } else if (action == TASKBAR_FILES) {
+        (void)action;
+    } else if (action == TASKBAR_TASKS) {
+        (void)action;
+    } else if (input_left_pressed() && mouse.y >= UI_TASKBAR_HEIGHT) {
         (void)task_focus_at(mouse.x, mouse.y);
     }
 

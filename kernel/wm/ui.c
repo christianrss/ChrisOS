@@ -1,9 +1,10 @@
-/* LEARN:WS64-W02 */
+/* LEARN:WS64-W03 */
 #include "ui.h"
 
 #include "font.h"
 #include "graphics.h"
 #include "input.h"
+#include "pit.h"
 
 static uint32_t dim_color(uint32_t color) {
     uint32_t red = (color >> 16) & 0xFFu;
@@ -138,29 +139,79 @@ bool ui_window(Task *task, uint32_t body_color, const char *title) {
 }
 
 void ui_draw_taskbar(void) {
+    static const char *names[] = {"Shell", "Ball", "Edit", "Files", "Tasks"};
+    int i;
+    int n;
+    int x;
+    char clock[6];
+    unsigned sec;
+    unsigned m;
+    unsigned s;
+    uint64_t now = pit_ticks();
+
     gfx_fill_rect(0, 0, g_gfx.width, UI_TASKBAR_HEIGHT, CHRIS_TASKBAR_COLOR);
-    gfx_fill_rect(0, 0, 50, UI_TASKBAR_HEIGHT, CHRIS_SHELL_COLOR);
-    gfx_fill_rect(50, 0, 50, UI_TASKBAR_HEIGHT, CHRIS_BALL_COLOR);
-    gfx_fill_rect(100, 0, 70, UI_TASKBAR_HEIGHT, CHRIS_EDITOR_COLOR);
+    for (i = 0; i < 5; ++i) {
+        ui_label(6 + i * 56, 12, 52, 16, names[i], CHRIS_TEXT_COLOR);
+    }
+    sec = (unsigned)(now / 60ull);
+    m = (sec / 60u) % 60u;
+    s = sec % 60u;
+    clock[0] = (char)('0' + (m / 10u));
+    clock[1] = (char)('0' + (m % 10u));
+    clock[2] = ':';
+    clock[3] = (char)('0' + (s / 10u));
+    clock[4] = (char)('0' + (s % 10u));
+    clock[5] = 0;
+    ui_label(g_gfx.width - 48, 12, 44, 16, clock, CHRIS_TEXT_COLOR);
+
+    n = task_count();
+    x = 6 + 5 * 56;
+    for (i = 0; i < n && x + 50 < g_gfx.width - 56; ++i) {
+        Task *t = task_iter(i);
+        if (!t) {
+            break;
+        }
+        gfx_fill_rect(x, 8, 48, 24, 0x00208020u);
+        ui_label(x + 2, 12, 44, 16, task_title(t), 0x00FFFFFFu);
+        x += 52;
+    }
 }
 
 TaskbarAction ui_take_taskbar_action(void) {
     InputMouse mouse = input_mouse_snapshot();
     TaskbarAction action = TASKBAR_NONE;
+    int i;
+    int n;
+    int x;
 
     if (!input_left_pressed() || mouse.y < 0 || mouse.y >= UI_TASKBAR_HEIGHT) {
         return TASKBAR_NONE;
     }
-    if (mouse.x >= 0 && mouse.x < 50) {
+    if (mouse.x >= 0 && mouse.x < 56) {
         action = TASKBAR_SHELL;
-    } else if (mouse.x < 100) {
+    } else if (mouse.x < 112) {
         action = TASKBAR_BALL;
-    } else if (mouse.x < 170) {
+    } else if (mouse.x < 168) {
         action = TASKBAR_EDITOR;
+    } else if (mouse.x < 224) {
+        action = TASKBAR_FILES;
+    } else if (mouse.x < 280) {
+        action = TASKBAR_TASKS;
+    } else {
+        n = task_count();
+        x = 6 + 5 * 56;
+        for (i = 0; i < n && x + 50 < g_gfx.width - 56; ++i) {
+            Task *t = task_iter(i);
+            if (t && ui_hit_rect(mouse.x, mouse.y, x, 8, 48, 24)) {
+                task_raise(t->id);
+                input_consume_left_press();
+                return TASKBAR_NONE;
+            }
+            x += 52;
+        }
+        return TASKBAR_NONE;
     }
-    if (action != TASKBAR_NONE) {
-        input_consume_left_press();
-    }
+    input_consume_left_press();
     return action;
 }
 

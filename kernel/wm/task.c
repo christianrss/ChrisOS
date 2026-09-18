@@ -13,6 +13,7 @@ static void clear_task(Task *task, int id) {
     }
     task->id = id;
     task->type = TASK_NONE;
+    task->title[0] = 0;
 }
 
 void task_system_init(void) {
@@ -39,6 +40,32 @@ Task *task_find(TaskType type) {
         }
     }
     return 0;
+}
+
+void task_set_title(int task_id, const char *title) {
+    Task *task;
+    int i = 0;
+
+    if (task_id < 0 || task_id >= TASK_MAX) {
+        return;
+    }
+    task = &g_tasks[task_id];
+    if (!title) {
+        task->title[0] = 0;
+        return;
+    }
+    while (title[i] && i < TASK_TITLE_CHARS - 1) {
+        task->title[i] = title[i];
+        i++;
+    }
+    task->title[i] = 0;
+}
+
+const char *task_title(const Task *task) {
+    if (!task || !task->title[0]) {
+        return "?";
+    }
+    return task->title;
 }
 
 int task_spawn(TaskType type, TaskRect frame, TaskRunner runner) {
@@ -69,16 +96,31 @@ int task_spawn(TaskType type, TaskRect frame, TaskRunner runner) {
 
     if (type == TASK_SHELL) {
         task->state.shell.body_color = 0x00000000u;
+        task_set_title(task->id, "Shell");
     } else if (type == TASK_BALL) {
         task->state.ball.center_x = 20;
         task->state.ball.center_y = 30;
         task->state.ball.velocity_x = 5;
         task->state.ball.velocity_y = 5;
         task->state.ball.last_tick = 0;
+        task_set_title(task->id, "Ball");
     } else if (type == TASK_EDITOR) {
         task->state.editor.model_slot = 0;
         task->state.editor.scroll_row = 0;
         task->state.editor.scroll_col = 0;
+        task_set_title(task->id, "Editor");
+    } else if (type == TASK_EXPLORER) {
+        task->state.explorer.cwd[0] = 0;
+        task->state.explorer.cwd_len = 0;
+        task->state.explorer.scroll = 0;
+        task->state.explorer.selected = 0;
+        task_set_title(task->id, "Files");
+    } else if (type == TASK_TASKMGR) {
+        task->state.taskmgr.selected = 0;
+        task_set_title(task->id, "Tasks");
+    } else if (type == TASK_APP) {
+        task->state.app.lang_slot = -1;
+        task_set_title(task->id, "App");
     }
 
     g_focused_id = task->id;
@@ -144,6 +186,37 @@ int task_focused_id(void) {
 
 bool task_is_focused(const Task *task) {
     return task != 0 && task->active && task->id == g_focused_id;
+}
+
+int task_count(void) {
+    int i;
+    int n = 0;
+
+    for (i = 0; i < TASK_MAX; ++i) {
+        if (g_tasks[i].active) {
+            n++;
+        }
+    }
+    return n;
+}
+
+Task *task_iter(int index) {
+    int i;
+    int n = 0;
+
+    if (index < 0) {
+        return 0;
+    }
+    for (i = 0; i < TASK_MAX; ++i) {
+        if (!g_tasks[i].active) {
+            continue;
+        }
+        if (n == index) {
+            return &g_tasks[i];
+        }
+        n++;
+    }
+    return 0;
 }
 
 void task_run_all(uint64_t ticks) {

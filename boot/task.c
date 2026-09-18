@@ -1,415 +1,221 @@
-int TasksLength = 0;
+/* LEARN:WS64-W03 */
+#include "ui.h"
 
-#define task_type_void 0
-#define task_type_string_buffer 1
-#define task_params_length 10
+#include "font.h"
+#include "graphics.h"
+#include "input.h"
+#include "pit.h"
 
-/* LEARN:P11 */
-Editor g_editor;
-int g_editor_inited = 0;
-int g_editor_task_id = -1;
+static uint32_t dim_color(uint32_t color) {
+    uint32_t red = (color >> 16) & 0xFFu;
+    uint32_t green = (color >> 8) & 0xFFu;
+    uint32_t blue = color & 0xFFu;
+    return ((red / 4u) << 16) | ((green / 4u) << 8) | (blue / 4u);
+}
 
-struct Task {
-    // 0 to 5 with zero being the highest priority
-    int priority;
-    int taskId;
-    char ca1[100];
-    int i1;
+bool ui_hit_rect(int px, int py, int x, int y, int width, int height) {
+    return width > 0 && height > 0 &&
+           px >= x && px < x + width &&
+           py >= y && py < y + height;
+}
 
-    // Function pointers
-    int (*function)(int);
-};
+static bool ui_hit_circle(int px, int py, int cx, int cy, int radius) {
+    int dx = px - cx;
+    int dy = py - cy;
+    return dx * dx + dy * dy <= radius * radius;
+}
 
-struct Task tasks[256];
-int iparams[task_params_length * 256];
+void ui_label(int x, int y, int w, int h, const char *text, uint32_t color) {
+    if (!text) {
+        return;
+    }
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
+                          text, x, y, color, x, y, w, h);
+}
 
-void ProcessTasks() {
-    int priority;
-    int i =0;
+bool ui_button(Task *owner, int x, int y, int width, int height,
+               uint32_t color, const char *text) {
+    InputMouse mouse = input_mouse_snapshot();
+    bool allowed = (owner == 0) || task_is_focused(owner);
+    bool hover = allowed && ui_hit_rect(mouse.x, mouse.y, x, y, width, height);
+    int text_x = x + 4;
+    int text_y = y + (height > 15 ? (height - 15) / 2 : 1);
 
-    priority = 5;
-    while (priority >= 0) {
-        i = mouse_possessed_task_id;
-        if (left_clicked == TRUE &&
-            mx > iparams[i * task_params_length + 0] &&
-            mx < iparams[i * task_params_length + 0] + iparams[i * task_params_length + 2] &&
-            my > iparams[i * task_params_length + 1] &&
-            my < iparams[i * task_params_length + 1] + iparams[i * task_params_length + 3])
+    gfx_fill_rect(x, y, width, height, hover ? color : dim_color(color));
+    if (text != 0) {
+        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
+                              text, text_x, text_y, 0x00FFFFFFu,
+                              x, y, width, height);
+    }
+    if (hover && input_left_pressed()) {
+        input_consume_left_press();
+        return true;
+    }
+    return false;
+}
+
+bool ui_icon(int x, int y, uint32_t color, const char *caption) {
+    InputMouse mouse = input_mouse_snapshot();
+    int tw = UI_ICON_SIZE + 8;
+    int th = UI_ICON_SIZE + UI_ICON_TEXT_H;
+    bool hover = ui_hit_rect(mouse.x, mouse.y, x, y, tw, th);
+
+    gfx_fill_rect(x, y, UI_ICON_SIZE, UI_ICON_SIZE,
+                  hover ? color : dim_color(color));
+    if (caption) {
+        ui_label(x, y + UI_ICON_SIZE + 1, tw, UI_ICON_TEXT_H,
+                 caption, CHRIS_TEXT_COLOR);
+    }
+    if (hover && input_left_pressed() && mouse.y >= UI_TASKBAR_HEIGHT) {
+        input_consume_left_press();
+        return true;
+    }
+    return false;
+}
+
+bool ui_window(Task *task, uint32_t body_color, const char *title) {
+    InputMouse mouse;
+    int x;
+    int y;
+    int close_x;
+    int close_y;
+    bool close_hover;
+    bool title_hover;
+
+    if (task == 0 || !task->active) {
+        return false;
+    }
+
+    mouse = input_mouse_snapshot();
+    x = task->frame.x;
+    y = task->frame.y;
+    close_x = x + task->frame.width - 10;
+    close_y = y + 10;
+    close_hover = task_is_focused(task) &&
+                  ui_hit_circle(mouse.x, mouse.y, close_x, close_y, 8);
+    title_hover = task_is_focused(task) &&
+                  ui_hit_rect(mouse.x, mouse.y, x, y,
+                              task->frame.width - 30, TASK_TITLE_HEIGHT);
+
+    if (!mouse.left_down) {
+        task->window.dragging = false;
+    }
+
+    if (task->window.dragging && mouse.left_down) {
+        task->frame.x = mouse.x - task->window.drag_offset_x;
+        task->frame.y = mouse.y - task->window.drag_offset_y;
+        if (task->frame.y < UI_TASKBAR_HEIGHT) {
+            task->frame.y = UI_TASKBAR_HEIGHT;
+        }
+        x = task->frame.x;
+        y = task->frame.y;
+        close_x = x + task->frame.width - 10;
+        close_y = y + 10;
+    } else if (title_hover && input_left_pressed()) {
+        task->window.dragging = true;
+        task->window.drag_offset_x = mouse.x - x;
+        task->window.drag_offset_y = mouse.y - y;
+        input_consume_left_press();
+    }
+
+    gfx_fill_rect(x, y, task->frame.width, TASK_TITLE_HEIGHT, CHRIS_TITLE_COLOR);
+    gfx_fill_rect(x, y + TASK_TITLE_HEIGHT, task->frame.width,
+                  task->frame.body_height, body_color);
+
+    if (title != 0) {
+        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
+                              title, x + 6, y + 2, 0x00FFFFFFu,
+                              x, y, task->frame.width - 30, TASK_TITLE_HEIGHT);
+    }
+
+    gfx_fill_circle(close_x, close_y, 8,
+                    close_hover ? 0x00FF0000u : 0x00400000u);
+    if (close_hover && input_left_pressed()) {
+        input_consume_left_press();
+        task_close(task->id);
+        return true;
+    }
+    return false;
+}
+
+void ui_draw_taskbar(void) {
+    static const char *names[] = {"Shell", "Ball", "Edit", "Files", "Tasks"};
+    int i;
+    int n;
+    int x;
+    char clock[6];
+    unsigned sec;
+    unsigned m;
+    unsigned s;
+    uint64_t now = pit_ticks();
+
+    gfx_fill_rect(0, 0, g_gfx.width, UI_TASKBAR_HEIGHT, CHRIS_TASKBAR_COLOR);
+    for (i = 0; i < 5; ++i) {
+        ui_label(6 + i * 56, 12, 52, 16, names[i], CHRIS_TEXT_COLOR);
+    }
+    sec = (unsigned)(now / 60ull);
+    m = (sec / 60u) % 60u;
+    s = sec % 60u;
+    clock[0] = (char)('0' + (m / 10u));
+    clock[1] = (char)('0' + (m % 10u));
+    clock[2] = ':';
+    clock[3] = (char)('0' + (s / 10u));
+    clock[4] = (char)('0' + (s % 10u));
+    clock[5] = 0;
+    ui_label(g_gfx.width - 48, 12, 44, 16, clock, CHRIS_TEXT_COLOR);
+
+    n = task_count();
+    x = 6 + 5 * 56;
+    for (i = 0; i < n && x + 50 < g_gfx.width - 56; ++i) {
+        Task *t = task_iter(i);
+        if (!t) {
             break;
-
-        for (i = 0; i < TasksLength; i++) {
-            if (left_clicked == TRUE &&
-                mx > iparams[i * task_params_length + 0] &&
-                mx < iparams[i * task_params_length + 0] + iparams[i * task_params_length + 2] &&
-                my > iparams[i * task_params_length + 1] &&
-                my < iparams[i * task_params_length + 1] + iparams[i * task_params_length + 3]) {
-                    tasks[mouse_possessed_task_id].priority = 0;
-                    mouse_possessed_task_id = i;
-                    tasks[i].priority = 2;
-                    left_clicked = FALSE;
-                }
-                
         }
-
-        priority--;
-    }
-
-    priority = 0;
-    while (priority <= 5) {
-        for (int i = 0; i < TasksLength; i++) {
-            if (tasks[i].priority == priority) {
-                tasks[i].function(tasks[i].taskId);
-            }
-        }
-        priority++;
+        gfx_fill_rect(x, 8, 48, 24, 0x00208020u);
+        ui_label(x + 2, 12, 44, 16, task_title(t), 0x00FFFFFFu);
+        x += 52;
     }
 }
 
-int WelcomeTask(int taskId) {
-    VBEInfoBlock* VBE = (VBEInfoBlock*) VBEInfoAddress;
-    Fill(0, 0, VBE->x_resolution, 40, 10);
-    Fill(0, 0, 50, 40, 1);
-    Fill(50, 0, 50, 40, 6);
-    Fill(100, 0, 70, 40, 4);
-    Fill(90, 95, 360, 24, 15);
-    Fill(92, 97, 356, 20, 9);
-    (void)taskId;
-    return 0;
-}
+TaskbarAction ui_take_taskbar_action(void) {
+    InputMouse mouse = input_mouse_snapshot();
+    TaskbarAction action = TASKBAR_NONE;
+    int i;
+    int n;
+    int x;
 
-int NullTask(int taskId)
-{
-    return 0;
-}
-
-void CloseTask(int taskId) {
-    tasks[taskId].function = &NullTask;
-    iparams[taskId * task_params_length + 0] = 0;
-    iparams[taskId * task_params_length + 1] = 0;
-    iparams[taskId * task_params_length + 2] = 0;
-    iparams[taskId * task_params_length + 3] = 0;
-}
-
-int ClearScreenTask(int taskId) {
-    ClearScreen(181.0f / 255.0f * 16.0f, 232.0f / 255.0f * 32.0f, 255.0f / 255.0f * 16.0f);
-    return 0;
-}
-
-int DrawMouseTask(int taskId) {
-    DrawMouse(mx, my, 15, 31, 31);
-    return 0;
-}
-
-int HandleKeyboardTask(int taskId) {
-    char* characterBuffer = tasks[taskId].ca1;
-    int* characterBufferLength = &tasks[taskId].i1;
-    char character = ProcessScancode(Scancode);
-
-    if (backspace_pressed == TRUE) {
-        characterBuffer[*characterBufferLength - 1] = '\0';
-        if ((*characterBufferLength) != 0)
-            (*characterBufferLength)--;
-        backspace_pressed = FALSE;
-        Scancode = -1;
+    if (!input_left_pressed() || mouse.y < 0 || mouse.y >= UI_TASKBAR_HEIGHT) {
+        return TASKBAR_NONE;
     }
-    else if (character != '\0') {
-        characterBuffer[*characterBufferLength] = character;
-        characterBuffer[*characterBufferLength + 1] = '\0';
-        (*characterBufferLength)++;
-        Scancode = -1;
-    }
-
-    DrawString(getArialCharacter, font_arial_width, font_arial_height, characterBuffer, 30, 150, 16, 32, 16);
-    
-    return 0;
-}
-
-int ShellTask(int taskId) {
-    int* r = &iparams[taskId * task_params_length + 4];
-    int* g = &iparams[taskId * task_params_length + 5];
-    int* b = &iparams[taskId * task_params_length + 6];
-
-    int closeClicked = DrawWindow(
-        &iparams[taskId * task_params_length + 0],
-        &iparams[taskId * task_params_length + 1],
-        &iparams[taskId * task_params_length + 2],
-        &iparams[taskId * task_params_length + 3],
-        *r,
-        *g,
-        *b,
-        &iparams[taskId * task_params_length + 9],
-        taskId);
-    
-    int x = iparams[taskId * task_params_length + 0];
-    int y = iparams[taskId * task_params_length + 1];
-    int width = iparams[taskId * task_params_length + 2];
-    int height = iparams[taskId * task_params_length + 3];
-
-    if (closeClicked == TRUE)
-        CloseTask(taskId);
-
-    char text[] = "Dark\0";
-    char text1[] = "Light\0";
-
-    if (DrawButton(
-        x + 20,
-        y + 20,
-        50,
-        20,
-        0,
-        32,
-        0,
-        text,
-        16,
-        32,
-        16,
-        taskId
-    ) == TRUE) {
-        *r = 0;
-        *g = 0;
-        *b = 0;
-    }
-
-    if (DrawButton(
-        x + 100,
-        y + 20,
-        50,
-        20,
-        0,
-        32,
-        0,
-        text1,
-        16,
-        32,
-        16,
-        taskId
-    ) == TRUE) {
-        *r = 16;
-        *g = 31;
-        *b = 16;
-    }
-
-    return 0;
-}
-
-int BallTask(int taskId) {
-    int closeClicked = DrawWindow(
-        &iparams[taskId * task_params_length + 0],
-        &iparams[taskId * task_params_length + 1],
-        &iparams[taskId * task_params_length + 2],
-        &iparams[taskId * task_params_length + 3],
-        0,
-        0,
-        0,
-        &iparams[taskId * task_params_length + 9],
-        taskId);
-
-    if (closeClicked == TRUE)
-        CloseTask(taskId);
-
-    int x = iparams[taskId * task_params_length + 0];
-    int y = iparams[taskId * task_params_length + 1];
-    int width = iparams[taskId * task_params_length + 2];
-    int height = iparams[taskId * task_params_length + 3];
-
-
- /* LEARN:P07 - iparams[4] guarda o último tick em que a bola andou */
-    if (iparams[taskId * task_params_length + 4] == (int)ticks) {
-
+    if (mouse.x >= 0 && mouse.x < 56) {
+        action = TASKBAR_SHELL;
+    } else if (mouse.x < 112) {
+        action = TASKBAR_BALL;
+    } else if (mouse.x < 168) {
+        action = TASKBAR_EDITOR;
+    } else if (mouse.x < 224) {
+        action = TASKBAR_FILES;
+    } else if (mouse.x < 280) {
+        action = TASKBAR_TASKS;
     } else {
-        iparams[taskId * task_params_length + 4] = (int)ticks;
-        iparams[taskId * task_params_length + 5] += iparams[taskId * task_params_length + 7];
-        iparams[taskId * task_params_length + 6] += iparams[taskId * task_params_length + 8];
-        /* bounce: matenha os dois ifs que já existem sobre +5/+6 vs width/height */
-        if (iparams[taskId * task_params_length + 5] + 10 > iparams[taskId * task_params_length + 2] ||
-            iparams[taskId * task_params_length + 5] - 10 < 0)
-            iparams[taskId * task_params_length + 7] = -iparams[taskId * task_params_length + 7];
-
-        if (iparams[taskId * task_params_length + 6] + 10 > iparams[taskId * task_params_length + 3] + 19 ||
-            iparams[taskId * task_params_length + 6] - 10 < 20)
-            iparams[taskId * task_params_length + 8] = -iparams[taskId * task_params_length + 8];
-    }
-
-    DrawCircle(x + iparams[taskId * task_params_length + 5], y + iparams[taskId * task_params_length + 6], 10, 16, 32, 16);
-}
-
-int CodeEditorTask(int taskId) {
-    int closeClicked;
-    int x, y, width, height;
-    int row;
-    char linebuff[4];
-
-    if (!g_editor_inited) {
-        ed_init(&g_editor);
-        g_editor_inited = 1;
-    }
-
-    closeClicked = DrawWindow(
-        &iparams[taskId * task_params_length + 0],
-        &iparams[taskId * task_params_length + 1],
-        &iparams[taskId * task_params_length + 2],
-        &iparams[taskId * task_params_length + 3],
-        16, 31, 16,
-        &iparams[taskId * task_params_length + 9],
-        taskId);
-
-    if (closeClicked == TRUE) {
-        CloseTask(taskId);
-        return 0;
-    }
-    x = iparams[taskId * task_params_length + 0];
-    y = iparams[taskId * task_params_length + 1];
-    width = iparams[taskId * task_params_length + 2];
-    height = iparams[taskId * task_params_length + 3];
-    (void) width;
-    (void) height;
-
-    int vis = (height - 28) / font_arial_height;
-    int sc;
-    if (vis < 1) {
-        vis = 1;
-    }
-
-    if (mouse_possessed_task_id == taskId && Scancode != -1) {
-        sc = Scancode;
-        if (sc & 0x80) {
-            Scancode = -1;
-        } else if (sc == 0x48) {
-            ed_handle(&g_editor, ED_UP);
-            Scancode = -1;
-        } else if (sc == 0x50) {
-            ed_handle(&g_editor, ED_DOWN);
-            Scancode = -1;
-        } else if (sc == 0x4B) {
-            ed_handle(&g_editor, ED_LEFT);
-            Scancode = -1;
-        } else if (sc == 0x4D) {
-            ed_handle(&g_editor, ED_RIGHT);
-            Scancode = -1;
-        } else if (sc == 0x47) {
-            ed_handle(&g_editor, ED_HOME);
-            Scancode = -1;
-        } else if (sc == 0x4F) {
-            ed_handle(&g_editor, ED_END);
-            Scancode = -1;
-        } else if (sc == 0x53) {
-            ed_handle(&g_editor, ED_DEL);
-            Scancode = -1;
-        } else {
-            char ch = ProcessScancode(Scancode);
-            if (backspace_pressed == TRUE) {
-                ed_handle(&g_editor, 8);
-                backspace_pressed = FALSE;
-            } else if (ch == '\n' || enter_pressed == TRUE) {
-                ed_handle(&g_editor, '\n');
-                enter_pressed = FALSE;
-            } else if (ch != '\0') {
-                ed_handle(&g_editor, (int)ch);
+        n = task_count();
+        x = 6 + 5 * 56;
+        for (i = 0; i < n && x + 50 < g_gfx.width - 56; ++i) {
+            Task *t = task_iter(i);
+            if (t && ui_hit_rect(mouse.x, mouse.y, x, 8, 48, 24)) {
+                task_raise(t->id);
+                input_consume_left_press();
+                return TASKBAR_NONE;
             }
-            Scancode = -1;
+            x += 52;
         }
+        return TASKBAR_NONE;
     }
-
-    if (g_editor.row < g_editor.scroll_row) {
-        g_editor.scroll_row = g_editor.row;
-    }
-    if (g_editor.row >= g_editor.scroll_row + vis) {
-        g_editor.scroll_row = g_editor.row - vis + 1;
-    }
-
-    for (row = 0; row < vis; row++) {
-        int src = g_editor.scroll_row + row;
-        if (src >= g_editor.nlines) {
-            break;
-        }
-        DrawString(getArialCharacter, font_arial_width, font_arial_height,
-            g_editor.lines[src],
-            x + 8, y + 24 + row * font_arial_height,
-            0, 0, 0);
-    }
-
-    /* LEARN: P13 */
-    if ((ticks / 30) % 2 == 0) {
-        int cr = g_editor.row - g_editor.scroll_row;
-        int cw = font_arial_width - (font_arial_width / 5);
-        if (cw < 1) {
-            cw = 1;
-        }
-        if (cr >= 0 && cr < vis) {
-            int cx = x + 8 + g_editor.col * cw;
-            int cy = y + 24 + cr * font_arial_height;
-            Fill(cx, cy, 2, font_arial_height, 0);
-        }
-    }
-
-    (void)linebuff;
-    return 0;
+    input_consume_left_press();
+    return action;
 }
 
-static int TaskbarClick(int x, int y, int w, int h, int taskId) {
-    if (mouse_possessed_task_id != taskId)
-        return 0;
-    if (mx > x && mx < x + w && my > y && my < y + h && left_clicked == TRUE) {
-        left_clicked = FALSE;
-        return 1;
-    }
-    return 0;
-}
-
-int TaskbarTask(int taskId) {
-    int i = iparams[taskId * task_params_length + 4];
-
-    if (TaskbarClick(0, 0, 50, 40, taskId) == 1 && TasksLength < 255) {
-        tasks[TasksLength].priority = 0;
-        tasks[TasksLength].taskId = TasksLength;
-        tasks[TasksLength].function = &ShellTask;
-        iparams[TasksLength * task_params_length + 0] = i * 40;
-        iparams[TasksLength * task_params_length + 1] = i * 40;
-        iparams[TasksLength * task_params_length + 2] = 300;
-        iparams[TasksLength * task_params_length + 3] = 300;
-        iparams[TasksLength * task_params_length + 4] = 0;
-        iparams[TasksLength * task_params_length + 5] = 0;
-        iparams[TasksLength * task_params_length + 6] = 0;
-        TasksLength++;
-        iparams[taskId * task_params_length + 4]++;
-    }
-
-    if (TaskbarClick(50, 0, 50, 40, taskId) == 1 && TasksLength < 255) {
-        tasks[TasksLength].priority = 0;
-        tasks[TasksLength].taskId = TasksLength;
-        tasks[TasksLength].function = &BallTask;
-        iparams[TasksLength * task_params_length + 0] = i * 40;
-        iparams[TasksLength * task_params_length + 1] = i * 40;
-        iparams[TasksLength * task_params_length + 2] = 300;
-        iparams[TasksLength * task_params_length + 3] = 300;
-        iparams[TasksLength * task_params_length + 4] = 0;
-        iparams[TasksLength * task_params_length + 5] = 20;
-        iparams[TasksLength * task_params_length + 6] = 30;
-        iparams[TasksLength * task_params_length + 7] = 5;
-        iparams[TasksLength * task_params_length + 8] = 5;
-        TasksLength++;
-    }
-
-    if (TaskbarClick(100, 0, 70, 40, taskId) == 1) {
-        int exists = 0;
-        if (g_editor_task_id >= 0 && g_editor_task_id < TasksLength) {
-            if (tasks[g_editor_task_id].function == &CodeEditorTask) {
-                exists = 1;
-                mouse_possessed_task_id = g_editor_task_id;
-                tasks[g_editor_task_id].priority = 0;
-            }
-        }
-        if (!exists && TasksLength < 255) {
-            tasks[TasksLength].priority = 0;
-            tasks[TasksLength].taskId = TasksLength;
-            tasks[TasksLength].function = &CodeEditorTask;
-            iparams[TasksLength * task_params_length + 0] = 80;
-            iparams[TasksLength * task_params_length + 1] = 60;
-            iparams[TasksLength * task_params_length + 2] = 400;
-            iparams[TasksLength * task_params_length + 3] = 280;
-            g_editor_task_id = TasksLength;
-            TasksLength++;
-        }
-    }
-    return 0;
+void ui_draw_cursor(void) {
+    InputMouse mouse = input_mouse_snapshot();
+    gfx_draw_mouse(mouse.x, mouse.y);
 }
