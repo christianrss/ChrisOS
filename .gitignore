@@ -1,8 +1,8 @@
 # ChrisOS build tree (kernel objects, ISO, host tools, disk image)
 build/
 
-# Legacy 32-bit boot outputs
-boot/bin/
+# Legacy 32-bit boot chain (removed from tree; ignore if present locally)
+boot/
 
 # Images and ISO at repo root (pre-build/ layout)
 *.iso
@@ -75,11 +75,6 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# Local study material (not published)
-learn/
-docs/
-backup/
-
 # Python
 __pycache__/
 *.pyc
@@ -93,5 +88,22 @@ Thumbs.db
 # Scratch at repo root
 /TEST.CC
 
-# Geradores do livro didático (material local em learn/)
+# Material didático / debug local (não faz parte do projeto versionado)
+learn/
+docs/
+backup/
 tools/gen_fase*.py
+tools/write_learn_book.py
+tools/fix_historico_banners.py
+tools/analyze_screen.py
+tools/check_mouse.py
+tools/find_cursor.py
+tools/scan_cursor_color.py
+tools/sample_px.py
+tools/move_font_to_rodata.py
+tools/boot_dump.sh
+tools/boot_lfb.sh
+tools/test_boot.sh
+tools/mon_cmds.txt
+tools/test_udp_echo.py
+tools/test_udp_echo.sh

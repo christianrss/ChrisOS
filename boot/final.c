@@ -1,8 +1,0 @@
-#include "graphics.c"
-#include "font.c"
-#include "input.c"
-#include "fs.c"
-#include "graphics_elements.c"
-#include "../host/editor.c"
-#include "task.c"
-#include "main.c"

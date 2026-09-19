@@ -244,11 +244,11 @@ Hardware: `virtio-net-pci` com stack mínima in-kernel (sem BSD sockets completo
 | `tools/` | Utilitários e testes **fonte** (binários em `build/host/`) |
 | `iso_root/boot/limine/limine.conf` | Config Limine (fonte; blobs de `third_party/`) |
 | `user/` | Programas flat ASM de teste |
-| `boot/` | Bootloader legado 32-bit (referência; path Limine é o ativo) |
+| `host/` | Testes host (`test_editor64.c`) |
 | `third_party/limine` | Binários Limine |
 | `build/` | **Gerado** — não versionado |
 
-Material didático local: `learn/` (gitignored). Geradores `tools/gen_fase*.py` também são locais (gitignored).
+Material didático, scripts de debug e geradores de capítulos ficam em `learn/` e padrões listados no `.gitignore` — não são versionados.
 
 ## Licença
 

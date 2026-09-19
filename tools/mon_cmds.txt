@@ -1,2 +1,0 @@
-screendump screen.ppm
-quit
