@@ -92,3 +92,6 @@ Thumbs.db
 
 # Scratch at repo root
 /TEST.CC
+
+# Geradores do livro didático (material local em learn/)
+tools/gen_fase*.py
