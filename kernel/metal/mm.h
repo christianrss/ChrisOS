@@ -14,6 +14,7 @@ void mm_init(void);
 void mm_selftest(void);
 void map_4k(uint64_t virt, uint64_t phys, uint64_t flags);
 void *map_mmio_page(uint64_t phys);
+void *mm_lapic_virt(void);
 uint64_t mm_virt_to_phys(uint64_t virt);
 
 #endif

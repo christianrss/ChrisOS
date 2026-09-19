@@ -14,11 +14,16 @@
 #include "net.h"
 #include "elf.h"
 #include "user_enter.h"
+#include "chrisbuild.h"
+#include "port.h"
+#include "heap.h"
+#include "kcc.h"
+#include "chriso.h"
 
 #define SH_COLS 48
 #define SH_ROWS 24
 #define SH_HIST 8
-#define SH_LINE 96
+#define SH_LINE 512
 
 static char g_lines[SH_ROWS][SH_COLS];
 static int g_nlines;
@@ -27,7 +32,7 @@ static int g_inlen;
 static char g_hist[SH_HIST][SH_LINE];
 static int g_nhist;
 static int g_hcur;
-static char g_cwd[96];
+static char g_cwd[512];
 static char g_out[SH_LINE];
 static Editor g_sh_ed;
 
@@ -135,7 +140,8 @@ static int ls_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
 
 static void cmd_help(void) {
     sh_emit("help ls cd pwd cat mkdir rmdir");
-    sh_emit("rm mv ed cc run jit runelf ps kill clear ticks net");
+    sh_emit("rm mv ed cc kcc mk reboot run jit runelf");
+    sh_emit("ps kill clear ticks net");
 }
 
 static void cmd_ls(void) {
@@ -148,26 +154,26 @@ static void cmd_pwd(void) {
 }
 
 static void cmd_cd(const char *arg) {
-    char path[96];
+    char path[FS_PATH];
     uint32_t sz;
     uint16_t ty;
     if (sh_eq(arg, "") || sh_eq(arg, "/")) {
         g_cwd[0] = 0;
         return;
     }
-    join_cwd(arg, path, 96);
+    join_cwd(arg, path, FS_PATH);
     if (fs_stat(path, &sz, &ty) != CFS_OK || ty != CFS_INODE_DIR) {
         sh_emit("not a dir");
         return;
     }
-    sh_copy(g_cwd, 96, path);
+    sh_copy(g_cwd, FS_PATH, path);
 }
 
 static void cmd_cat(const char *arg) {
-    char path[96];
+    char path[FS_PATH];
     char buf[200];
     int n, i, o = 0;
-    join_cwd(arg, path, 96);
+    join_cwd(arg, path, FS_PATH);
     n = fs_read(path, buf, 199);
     if (n < 0) { sh_emit("cat failed"); return; }
     buf[n] = 0;
@@ -183,47 +189,47 @@ static void cmd_cat(const char *arg) {
 }
 
 static void cmd_mkdir(const char *arg) {
-    char path[96];
-    join_cwd(arg, path, 96);
+    char path[FS_PATH];
+    join_cwd(arg, path, FS_PATH);
     if (fs_mkdir(path) != CFS_OK) sh_emit("mkdir failed");
 }
 
 static void cmd_rmdir(const char *arg) {
-    char path[96];
-    join_cwd(arg, path, 96);
+    char path[FS_PATH];
+    join_cwd(arg, path, FS_PATH);
     if (fs_rmdir(path) != CFS_OK) sh_emit("rmdir failed");
 }
 
 static void cmd_rm(const char *arg) {
-    char path[96];
-    join_cwd(arg, path, 96);
+    char path[FS_PATH];
+    join_cwd(arg, path, FS_PATH);
     if (fs_unlink(path) != CFS_OK) sh_emit("rm failed");
 }
 
 static void cmd_mv(const char *line) {
-    char a[96], b[96], pa[96], pb[96];
+    char a[FS_PATH], b[FS_PATH], pa[FS_PATH], pb[FS_PATH];
     int i = 0, j = 0;
     while (line[i] == ' ') i++;
-    while (line[i] && line[i] != ' ' && j < 95) a[j++] = line[i++];
+    while (line[i] && line[i] != ' ' && j < FS_PATH - 1) a[j++] = line[i++];
     a[j] = 0;
     while (line[i] == ' ') i++;
     j = 0;
-    while (line[i] && j < 95) b[j++] = line[i++];
+    while (line[i] && j < FS_PATH - 1) b[j++] = line[i++];
     b[j] = 0;
-    join_cwd(a, pa, 96);
-    join_cwd(b, pb, 96);
+    join_cwd(a, pa, FS_PATH);
+    join_cwd(b, pb, FS_PATH);
     if (fs_rename(pa, pb) != CFS_OK) sh_emit("mv failed");
 }
 
 static void cmd_ed(const char *arg) {
-    char path[96];
-    join_cwd(arg, path, 96);
+    char path[FS_PATH];
+    join_cwd(arg, path, FS_PATH);
     editor_window_open_path(path);
 }
 
 static void cmd_cc(const char *arg) {
-    char path[96];
-    join_cwd(arg, path, 96);
+    char path[FS_PATH];
+    join_cwd(arg, path, FS_PATH);
     ed_init(&g_sh_ed);
     ed_set_name(&g_sh_ed, path);
     if (ed_open(&g_sh_ed) != CFS_OK) { sh_emit("cc open"); return; }
@@ -232,16 +238,16 @@ static void cmd_cc(const char *arg) {
 }
 
 static void cmd_run(const char *arg) {
-    char path[96];
-    join_cwd(arg, path, 96);
+    char path[FS_PATH];
+    join_cwd(arg, path, FS_PATH);
     ed_init(&g_sh_ed);
     ed_set_name(&g_sh_ed, path);
     if (!lang_run(&g_sh_ed, path)) sh_emit(g_sh_ed.status);
 }
 
 static void cmd_jit(const char *arg) {
-    char path[96];
-    join_cwd(arg, path, 96);
+    char path[FS_PATH];
+    join_cwd(arg, path, FS_PATH);
     ed_init(&g_sh_ed);
     ed_set_name(&g_sh_ed, path);
     if (ed_open(&g_sh_ed) != CFS_OK) {
@@ -256,12 +262,12 @@ static void cmd_jit(const char *arg) {
 }
 
 static void cmd_runelf(const char *arg) {
-    char path[96];
+    char path[FS_PATH];
     static uint8_t buf[4096];
     uint64_t entry;
     int n;
 
-    join_cwd(arg, path, 96);
+    join_cwd(arg, path, FS_PATH);
     n = fs_read(path, buf, (int)sizeof(buf));
     if (n < 0) {
         sh_emit("runelf open");
@@ -323,6 +329,109 @@ static void cmd_net(void) {
     sh_emit(line);
 }
 
+static void cmd_kcc(const char *arg) {
+    char path[FS_PATH];
+    char out_path[FS_PATH + 8];
+    char *src_buf;
+    uint8_t *chriso_buf;
+    ChrisoImage img;
+    int n;
+    int wn;
+
+    if (!arg[0]) {
+        sh_emit("kcc: path");
+        return;
+    }
+    src_buf = (char *)kmalloc(65536u);
+    chriso_buf = (uint8_t *)kmalloc(65536u);
+    if (!src_buf || !chriso_buf) {
+        sh_emit("kcc nomem");
+        if (src_buf) {
+            kfree(src_buf);
+        }
+        if (chriso_buf) {
+            kfree(chriso_buf);
+        }
+        return;
+    }
+    join_cwd(arg, path, FS_PATH);
+    n = fs_read(path, src_buf, 65535);
+    if (n < 0) {
+        sh_emit("kcc open");
+        goto done;
+    }
+    src_buf[n] = 0;
+    if (kcc_compile_source(src_buf, &img) != 0) {
+        sh_emit("kcc fail");
+        goto done;
+    }
+    wn = chriso_write(&img, chriso_buf, 65536u);
+    if (img.sec[CHRISO_SEC_TEXT]) {
+        kfree(img.sec[CHRISO_SEC_TEXT]);
+        img.sec[CHRISO_SEC_TEXT] = 0;
+    }
+    if (wn < 0) {
+        sh_emit("kcc write");
+        goto done;
+    }
+    sh_copy(out_path, FS_PATH + 8, path);
+    {
+        int i = 0;
+        while (out_path[i]) {
+            i++;
+        }
+        if (i + 7 < FS_PATH + 7) {
+            out_path[i++] = '.';
+            out_path[i++] = 'C';
+            out_path[i++] = 'H';
+            out_path[i++] = 'R';
+            out_path[i++] = 'I';
+            out_path[i++] = 'S';
+            out_path[i++] = 'O';
+            out_path[i] = 0;
+        }
+    }
+    if (fs_write(out_path, chriso_buf, wn) != wn) {
+        sh_emit("kcc save");
+        goto done;
+    }
+    sh_emit("kcc ok");
+
+done:
+    kfree(src_buf);
+    kfree(chriso_buf);
+}
+
+static void cmd_mk(const char *arg) {
+    if (sh_eq(arg, "kernel")) {
+        if (chrisbuild_mk_kernel() == 0) {
+            sh_emit("mk kernel ok");
+        } else {
+            sh_emit("mk kernel fail");
+        }
+        return;
+    }
+    if (sh_eq(arg, "clean")) {
+        chrisbuild_mk_clean();
+        sh_emit("mk clean ok");
+        return;
+    }
+    if (sh_eq(arg, "install")) {
+        if (chrisbuild_mk_install() == 0) {
+            sh_emit("mk install ok");
+        } else {
+            sh_emit("mk install fail");
+        }
+        return;
+    }
+    sh_emit("mk kernel|clean|install");
+}
+
+static void cmd_reboot(void) {
+    sh_emit("rebooting");
+    machine_reboot();
+}
+
 static void cmd_ticks(void) {
     unsigned t = (unsigned)pit_ticks();
     char line[12];
@@ -351,6 +460,9 @@ static void sh_exec(const char *line) {
     else if (sh_eq(cmd, "mv")) cmd_mv(arg);
     else if (sh_eq(cmd, "ed")) cmd_ed(arg);
     else if (sh_eq(cmd, "cc")) cmd_cc(arg);
+    else if (sh_eq(cmd, "kcc")) cmd_kcc(arg);
+    else if (sh_eq(cmd, "mk")) cmd_mk(arg);
+    else if (sh_eq(cmd, "reboot")) cmd_reboot();
     else if (sh_eq(cmd, "run")) cmd_run(arg);
     else if (sh_eq(cmd, "jit")) cmd_jit(arg);
     else if (sh_eq(cmd, "runelf")) cmd_runelf(arg);

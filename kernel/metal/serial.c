@@ -1,9 +1,11 @@
 #include "serial.h"
 #include "port.h"
+#include "spin.h"
 
 #define COM1 0x3f8
 
 static bool serial_available;
+static Spinlock g_serial_lock;
 
 bool serial_init(void) {
     outb(COM1 + 1, 0x00);
@@ -23,6 +25,7 @@ bool serial_init(void) {
 
     outb(COM1 + 4, 0x0f);
     serial_available = true;
+    spin_init(&g_serial_lock);
     return true;
 }
 
@@ -30,9 +33,11 @@ void serial_putc(char value) {
     if (!serial_available) {
         return;
     }
+    spin_lock(&g_serial_lock);
     while ((inb(COM1 + 5) & 0x20u) == 0) {
     }
     outb(COM1, (uint8_t)value);
+    spin_unlock(&g_serial_lock);
 }
 
 void serial_puts(const char *text) {

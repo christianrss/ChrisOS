@@ -12,7 +12,7 @@
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
 
-#define LANG_SOURCE_MAX 32768
+#define LANG_SOURCE_MAX 262144
 #define LANG_FILE_MAX (CLVM_HEADER_SIZE + CLVM_MAX_CODE)
 #define LANG_NAME_MAX 96
 #define LANG_PIXELS (CLVM_SYS_GAME_W * CLVM_SYS_GAME_H)

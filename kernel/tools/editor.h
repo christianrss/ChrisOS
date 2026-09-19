@@ -12,7 +12,7 @@
 #define ED_HOME  5
 #define ED_END   6
 #define ED_DEL   7
-#define ED_NAME  96
+#define ED_NAME  512
 
 typedef struct Editor {
     char lines[ED_MAX_LINES][ED_MAX_COLS];

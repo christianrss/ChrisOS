@@ -204,9 +204,15 @@ void bootinfo_init(void) {
     serial_puts("\nbsp_lapic_id=");
     serial_write_u64(info.bsp_lapic_id);
     serial_puts("\n");
-    serial_puts("MP inventory only; goto_address nao escrito\n");
 
     dump_lapic_not_ram();
+}
+
+struct limine_mp_response *bootinfo_mp_response(void) {
+    if (!bootinfo_ready || mp_request.response == 0) {
+        return 0;
+    }
+    return mp_request.response;
 }
 
 const struct bootinfo *bootinfo_get(void) {

@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 #define PMM_PAGE     4096ull
-#define PMM_MAX_PHYS (256ull * 1024ull * 1024ull)
+#define PMM_MAX_PHYS (2048ull * 1024ull * 1024ull)
 
 void pmm_init(void);
 void pmm_selftest(void);

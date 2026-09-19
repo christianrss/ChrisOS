@@ -1,4 +1,5 @@
 #include "irq.h"
+#include "apic.h"
 #include "panic.h"
 #include "port.h"
 #include "syscall.h"
@@ -69,6 +70,9 @@ void irq_set_handler(uint8_t irq, irq_handler handler) {
 }
 
 void irq_eoi(uint8_t irq) {
+    if (apic_ready()) {
+        apic_eoi();
+    }
     if (irq >= 8) {
         outb(PIC2_COMMAND, PIC_EOI);
     }

@@ -9,7 +9,7 @@
 
 #define FS_MAX_FILES 32
 #define FS_NAME 12
-#define FS_PATH 96
+#define FS_PATH 512
 #define FS_ARENA 262144
 
 void fs_init(void);

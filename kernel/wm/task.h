@@ -56,7 +56,7 @@ typedef struct {
 
 typedef struct {
     int cwd_len;
-    char cwd[96];
+    char cwd[512];
     int scroll;
     int selected;
 } ExplorerState;

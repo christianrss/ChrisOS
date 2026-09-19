@@ -160,10 +160,18 @@ void ata_pio_configure(AtaPio *a, uint32_t sectors) {
     a->poll_limit = 1000000u;
 }
 
-int ata_pio_identify(AtaPio *a, uint32_t *reported_sectors) {
+static void ata_soft_reset(const AtaPio *a) {
+    outb(a->ctrl, 0x04u);
+    ata_delay_400ns(a);
+    outb(a->ctrl, 0x00u);
+    ata_delay_400ns(a);
+}
+
+static int ata_try_identify(AtaPio *a, uint32_t *reported_sectors) {
     uint16_t id[256];
     uint32_t i;
     int rc;
+
     ata_select(a, 0u);
     outb((uint16_t)(a->io + ATA_REG_COUNT), 0u);
     outb((uint16_t)(a->io + ATA_REG_LBA0), 0u);
@@ -171,15 +179,56 @@ int ata_pio_identify(AtaPio *a, uint32_t *reported_sectors) {
     outb((uint16_t)(a->io + ATA_REG_LBA2), 0u);
     outb((uint16_t)(a->io + ATA_REG_COMMAND), ATA_CMD_IDENTIFY);
     rc = ata_poll(a, 1);
-    if (rc != BD_OK)
+    if (rc != BD_OK) {
         return rc;
-    for (i = 0; i < 256u; i++)
+    }
+    for (i = 0; i < 256u; i++) {
         id[i] = ata_inw((uint16_t)(a->io + ATA_REG_DATA));
-    if (!(id[49] & (1u << 9)))
+    }
+    if (!(id[49] & (1u << 9))) {
         return BD_EIO;
-    *reported_sectors = (uint32_t)id[60] |
-                        ((uint32_t)id[61] << 16);
+    }
+    *reported_sectors = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
     return *reported_sectors ? BD_OK : BD_EIO;
+}
+
+int ata_pio_identify(AtaPio *a, uint32_t *reported_sectors) {
+    static const struct {
+        uint16_t io;
+        uint16_t ctrl;
+    } ports[] = {
+        {0x1f0u, 0x3f6u},
+        {0x170u, 0x376u},
+    };
+    uint32_t port;
+    uint32_t drive;
+    uint32_t i;
+    uint32_t attempt;
+    int rc = BD_ENODEV;
+
+    for (i = 0; i < 5000000u; i++) {
+        __asm__ volatile ("pause");
+    }
+    for (attempt = 0; attempt < 8u; attempt++) {
+        if (attempt > 0u) {
+            ata_soft_reset(a);
+            for (i = 0; i < 200000u; i++) {
+                __asm__ volatile ("pause");
+            }
+        }
+        for (port = 0u; port < 2u; port++) {
+            a->io = ports[port].io;
+            a->ctrl = ports[port].ctrl;
+            for (drive = 0u; drive < 2u; drive++) {
+                a->drive = drive;
+                rc = ata_try_identify(a, reported_sectors);
+                if (rc == BD_OK) {
+                    return BD_OK;
+                }
+            }
+        }
+    }
+    return rc;
 }
 
 void ata_pio_make_device(AtaPio *a, BlockDevice *out) {

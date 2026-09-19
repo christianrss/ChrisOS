@@ -6,8 +6,8 @@
 #include "block_device.h"
 #include "cfs_format.h"
 
-#define CFS_PATH_MAX 96u
-#define CFS_PATH_DEPTH 6u
+#define CFS_PATH_MAX 512u
+#define CFS_PATH_DEPTH 32u
 
 #define JNL_MAGIC 0x4C4E4A43u
 #define JNL_EMPTY 0u
@@ -34,6 +34,14 @@ enum {
     CFS_EPERM = -34
 };
 
+typedef struct PathParts {
+    uint32_t ncomp;
+    uint32_t start[CFS_PATH_DEPTH];
+    uint32_t len[CFS_PATH_DEPTH];
+    const char *s;
+    uint32_t total;
+} PathParts;
+
 typedef struct CfsCacheLine {
     uint8_t data[STOR_SECTOR_SIZE];
     uint32_t lba;
@@ -55,7 +63,6 @@ typedef struct Cfs {
     CfsSuper super;
     CfsCacheLine cache[CFS_CACHE_LINES];
     uint8_t sector[STOR_SECTOR_SIZE];
-    uint8_t work[CFS_MAX_FILE_SIZE];
     uint32_t clock;
     uint8_t mounted;
     Jnl jnl;

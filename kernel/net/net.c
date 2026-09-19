@@ -3,6 +3,7 @@
 #include "pit.h"
 #include "serial.h"
 #include "virtio_net.h"
+#include "net_xfer.h"
 
 #define NET_IP0 10u
 #define NET_IP1 0u
@@ -309,7 +310,7 @@ static void net_udp_echo(const uint8_t *frame, uint32_t n) {
     net_send_frame(g_tx, out_len);
 }
 
-static void net_tcp_send(const uint8_t *dst_mac, const uint8_t *dst_ip,
+void net_tcp_xmit(const uint8_t *dst_mac, const uint8_t *dst_ip,
                          uint16_t src_port, uint16_t dst_port,
                          uint32_t seq, uint32_t ack, uint8_t flags,
                          const uint8_t *payload, uint32_t payload_len) {
@@ -389,6 +390,10 @@ static void net_tcp(const uint8_t *frame, uint32_t n) {
     tcp = ip + ihl;
     src_port = read_be16(tcp + 0);
     dst_port = read_be16(tcp + 2);
+    if (dst_port == NET_XFER_PORT) {
+        net_xfer_tcp(frame, n);
+        return;
+    }
     if (dst_port != 7u) {
         return;
     }
@@ -424,7 +429,7 @@ static void net_tcp(const uint8_t *frame, uint32_t n) {
         g_tcp.remote_port = src_port;
         g_tcp.snd_nxt = (uint32_t)(pit_ticks() * 2654435761u);
         g_tcp.rcv_nxt = seq + 1u;
-        net_tcp_send(src_mac, src_ip, 7, src_port, g_tcp.snd_nxt, g_tcp.rcv_nxt,
+        net_tcp_xmit(src_mac, src_ip, 7, src_port, g_tcp.snd_nxt, g_tcp.rcv_nxt,
                      (uint8_t)(TCP_FLAG_SYN | TCP_FLAG_ACK), 0, 0);
         g_tcp.snd_nxt += 1u;
         serial_puts("tcp syn-ack\n");
@@ -444,7 +449,7 @@ static void net_tcp(const uint8_t *frame, uint32_t n) {
 
     if ((flags & TCP_FLAG_PSH) != 0 && payload_len > 0) {
         g_tcp.rcv_nxt = seq + payload_len;
-        net_tcp_send(g_tcp.remote_mac, src_ip, 7, g_tcp.remote_port,
+        net_tcp_xmit(g_tcp.remote_mac, src_ip, 7, g_tcp.remote_port,
                      g_tcp.snd_nxt, g_tcp.rcv_nxt,
                      (uint8_t)(TCP_FLAG_ACK | TCP_FLAG_PSH),
                      frame + payload_off, payload_len);
@@ -491,6 +496,7 @@ int net_init(void) {
         return 0;
     }
     g_net_ready = 1;
+    net_xfer_init();
     serial_puts("net: ip=");
     serial_write_u64(NET_IP0);
     serial_puts(".");

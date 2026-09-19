@@ -12,6 +12,7 @@
 
 static uint64_t mm_cr3_phys;
 static uint64_t mmio_next;
+static void *mm_lapic_mapped;
 static int mm_ready;
 
 static unsigned pml4_index(uint64_t virt) {
@@ -85,6 +86,10 @@ void map_4k(uint64_t virt, uint64_t phys, uint64_t flags) {
     pt = ensure_table(pd, pd_index(virt));
     pt[pt_index(virt)] = (phys & MM_ADDR_MASK) | (flags | MM_PRESENT);
     __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
+}
+
+void *mm_lapic_virt(void) {
+    return mm_lapic_mapped;
 }
 
 void *map_mmio_page(uint64_t phys) {
@@ -191,6 +196,7 @@ void mm_selftest(void) {
     serial_puts("\n");
 
     lapic = (volatile uint32_t *)map_mmio_page(LAPIC_PHYS);
+    mm_lapic_mapped = (void *)lapic;
     lapic_id = lapic[0x20 / 4] >> 24;
     boot = bootinfo_get();
     serial_puts("mm: lapic virt=");

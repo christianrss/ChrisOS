@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+struct limine_mp_response;
+
 struct bootinfo {
     uint64_t hhdm_offset;
     uint64_t fb_addr;
@@ -21,5 +23,6 @@ const struct bootinfo *bootinfo_get(void);
 uint64_t bootinfo_phys_to_virt(uint64_t phys);
 uint64_t bootinfo_memmap_count(void);
 int bootinfo_memmap_entry(uint64_t index, uint64_t *base, uint64_t *length, uint64_t *type);
+struct limine_mp_response *bootinfo_mp_response(void);
 
 #endif

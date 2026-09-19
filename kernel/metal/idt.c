@@ -42,16 +42,20 @@ void idt_set_user_gate(unsigned int vector) {
     idt_set_gate_attr(vector, isr_stub_table[vector], 0xee);
 }
 
-void idt_init(void) {
+void idt_load(void) {
     struct idt_pointer pointer;
+
+    pointer.limit = sizeof(idt) - 1u;
+    pointer.base = (uint64_t)idt;
+    __asm__ volatile ("lidt %0" : : "m"(pointer) : "memory");
+}
+
+void idt_init(void) {
     unsigned int vector;
 
     _Static_assert(sizeof(struct idt_gate) == 16, "gate IDT deve ter 16 bytes");
     for (vector = 0; vector < 256; ++vector) {
         idt_set_gate(vector, isr_stub_table[vector]);
     }
-
-    pointer.limit = sizeof(idt) - 1u;
-    pointer.base = (uint64_t)idt;
-    __asm__ volatile ("lidt %0" : : "m"(pointer) : "memory");
+    idt_load();
 }

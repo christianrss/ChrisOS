@@ -166,7 +166,7 @@ static void exp_open_selected(Task *task) {
         return;
     }
     if (g_ents[ex->selected].type == CFS_INODE_DIR) {
-        exp_copy(ex->cwd, 96, path);
+        exp_copy(ex->cwd, CFS_PATH_MAX, path);
         ex->cwd_len = 0;
         while (ex->cwd[ex->cwd_len]) {
             ex->cwd_len++;
@@ -184,11 +184,11 @@ static void exp_open_selected(Task *task) {
 }
 
 static void exp_up(Task *task) {
-    char parent[96];
-    if (!parent_path(task->state.explorer.cwd, parent, 96)) {
+    char parent[CFS_PATH_MAX];
+    if (!parent_path(task->state.explorer.cwd, parent, CFS_PATH_MAX)) {
         return;
     }
-    exp_copy(task->state.explorer.cwd, 96, parent);
+    exp_copy(task->state.explorer.cwd, CFS_PATH_MAX, parent);
     task->state.explorer.cwd_len = 0;
     while (task->state.explorer.cwd[task->state.explorer.cwd_len]) {
         task->state.explorer.cwd_len++;
@@ -352,7 +352,7 @@ static void explorer_spawn(const char *path) {
     Task *task;
     if (existing) {
         if (path) {
-            exp_copy(existing->state.explorer.cwd, 96, path);
+            exp_copy(existing->state.explorer.cwd, CFS_PATH_MAX, path);
         }
         existing->state.explorer.selected = 0;
         existing->state.explorer.scroll = 0;
@@ -372,7 +372,7 @@ static void explorer_spawn(const char *path) {
     if (!task) {
         return;
     }
-    exp_copy(task->state.explorer.cwd, 96, path ? path : "");
+    exp_copy(task->state.explorer.cwd, CFS_PATH_MAX, path ? path : "");
     task->state.explorer.cwd_len = 0;
     while (task->state.explorer.cwd[task->state.explorer.cwd_len]) {
         task->state.explorer.cwd_len++;

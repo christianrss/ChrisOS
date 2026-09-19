@@ -1,28 +1,43 @@
-# Local study material (not published)
-learn/
-docs/
-backup/
+# ChrisOS build tree (kernel objects, ISO, host tools, disk image)
+build/
 
-# ChrisOS build outputs
+# Legacy 32-bit boot outputs
 boot/bin/
-boot/boot.img
+
+# Images and ISO at repo root (pre-build/ layout)
+*.iso
 os.img
+disk.img
+disk_v2.img
+disk.bad
 
-# Prerequisites
-*.d
+# Stale ISO staging (Limine blobs are copied from third_party/ at build time)
+iso_root/boot/kernel.elf
+iso_root/boot/limine/*.bin
+iso_root/boot/limine/*.sys
+iso_root/EFI/
 
-# Object files
+# Object / link output outside build/
 *.o
 *.ko
 *.obj
 *.elf
-
-# Linker output
 *.ilk
 *.map
 *.exp
 
-# Precompiled Headers
+# Host test binaries accidentally built at repo root
+/test_*
+
+# QEMU / debug captures
+qemu_*.log
+qemu_mon.txt
+*.ppm
+
+# Prerequisites
+*.d
+
+# Precompiled headers
 *.gch
 *.pch
 
@@ -31,14 +46,12 @@ os.img
 *.a
 *.la
 *.lo
-
-# Shared objects (inc. Windows DLLs)
 *.dll
 *.so
 *.so.*
 *.dylib
 
-# Executables
+# Executables (Windows)
 *.exe
 *.out
 *.app
@@ -46,13 +59,14 @@ os.img
 *.x86_64
 *.hex
 
-# Debug files
+# Debug
 *.dSYM/
 *.su
 *.idb
 *.pdb
+*.dwo
 
-# Kernel Module Compile Results
+# Kernel module build debris
 *.mod*
 *.cmd
 .tmp_versions/
@@ -61,5 +75,20 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
-# debug information files
-*.dwo
+# Local study material (not published)
+learn/
+docs/
+backup/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+*.swp
+
+# Scratch at repo root
+/TEST.CC

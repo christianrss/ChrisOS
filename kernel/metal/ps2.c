@@ -14,6 +14,7 @@ static bool wait_input_empty(void) {
         if ((inb(PS2_STATUS) & 0x02u) == 0) {
             return true;
         }
+        __asm__ volatile ("pause");
     }
     return false;
 }
@@ -24,8 +25,24 @@ static bool wait_output_full(void) {
         if ((inb(PS2_STATUS) & 0x01u) != 0) {
             return true;
         }
+        __asm__ volatile ("pause");
     }
     return false;
+}
+
+static void flush_output(void) {
+    uint32_t guard = 0u;
+    while ((inb(PS2_STATUS) & 0x01u) != 0 && guard < 32u) {
+        (void)inb(PS2_DATA);
+        guard += 1u;
+    }
+}
+
+static void ps2_delay(void) {
+    uint32_t i;
+    for (i = 0; i < 8u; i++) {
+        (void)inb(PS2_STATUS);
+    }
 }
 
 static bool controller_command(uint8_t command) {
@@ -33,6 +50,7 @@ static bool controller_command(uint8_t command) {
         return false;
     }
     outb(PS2_CMD, command);
+    ps2_delay();
     return true;
 }
 
@@ -41,6 +59,7 @@ static bool controller_write_data(uint8_t value) {
         return false;
     }
     outb(PS2_DATA, value);
+    ps2_delay();
     return true;
 }
 
@@ -87,16 +106,15 @@ static void mouse_irq(struct irq_frame *frame) {
     input_mouse_irq_byte(value);
 }
 
-bool ps2_init(void) {
+static bool ps2_try_init(int *mouse_ok) {
     uint8_t config;
     uint8_t result;
 
+    *mouse_ok = 0;
     if (!controller_command(0xad) || !controller_command(0xa7)) {
         return false;
     }
-    while ((inb(PS2_STATUS) & 0x01u) != 0) {
-        (void)inb(PS2_DATA);
-    }
+    flush_output();
 
     if (!controller_command(0x20) || !controller_read_data(&config)) {
         return false;
@@ -114,31 +132,56 @@ bool ps2_init(void) {
         !controller_read_data(&result) || result != 0x00) {
         return false;
     }
-    if (!controller_command(0xa9) ||
-        !controller_read_data(&result) || result != 0x00) {
-        return false;
+
+    if (controller_command(0xa9) &&
+        controller_read_data(&result) && result == 0x00) {
+        *mouse_ok = 1;
     }
 
-    if (!controller_command(0xae) || !controller_command(0xa8)) {
+    if (!controller_command(0xae)) {
         return false;
     }
+    if (*mouse_ok && !controller_command(0xa8)) {
+        *mouse_ok = 0;
+    }
     if (!controller_command(0x60) ||
-        !controller_write_data((uint8_t)(config | 0x03u))) {
+        !controller_write_data((uint8_t)(config | 0x01u | (*mouse_ok ? 0x02u : 0u)))) {
         return false;
     }
 
     if (!device_command(false, 0xf4)) {
         return false;
     }
-    if (!device_command(true, 0xf6) || !device_command(true, 0xf4)) {
-        return false;
+    if (*mouse_ok) {
+        if (!device_command(true, 0xf6) || !device_command(true, 0xf4)) {
+            *mouse_ok = 0;
+        }
     }
-
-    irq_set_handler(1, keyboard_irq);
-    irq_set_handler(12, mouse_irq);
-    pic_set_mask(1, false);
-    pic_set_mask(12, false);
     return true;
+}
+
+bool ps2_init(void) {
+    uint32_t attempt;
+    int mouse_ok = 0;
+
+    for (attempt = 0; attempt < 8u; attempt++) {
+        if (attempt > 0u) {
+            uint32_t i;
+            for (i = 0; i < 200000u; i++) {
+                __asm__ volatile ("pause");
+            }
+        }
+        if (ps2_try_init(&mouse_ok)) {
+            irq_set_handler(1, keyboard_irq);
+            pic_set_mask(1, false);
+            if (mouse_ok) {
+                irq_set_handler(12, mouse_irq);
+                pic_set_mask(12, false);
+            }
+            return true;
+        }
+    }
+    return false;
 }
 
 bool keyboard_pop(struct keyboard_event *event) {

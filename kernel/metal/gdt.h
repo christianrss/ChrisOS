@@ -10,6 +10,7 @@
 #define GDT_TSS         0x28u
 
 void gdt_init(void);
+void gdt_reload_kernel_segments(void);
 uint16_t gdt_read_tr(void);
 
 #endif

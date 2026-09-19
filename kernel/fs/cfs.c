@@ -3,18 +3,30 @@
 #include "cfs.h"
 
 #ifdef __freestanding__
+#include "heap.h"
 #include "serial.h"
+#else
+#include <stdlib.h>
 #endif
 
-#define CFS_COMP_MAX CFS_NAME_MAX
+static void *cfs_work_alloc(uint32_t size) {
+#ifdef __freestanding__
+    return kmalloc((uint64_t)size);
+#else
+    return malloc((size_t)size);
+#endif
+}
 
-typedef struct PathParts {
-    uint32_t ncomp;
-    uint32_t start[6];
-    uint32_t len[6];
-    const char *s;
-    uint32_t total;
-} PathParts;
+static void cfs_work_free(void *p) {
+    if (!p) return;
+#ifdef __freestanding__
+    kfree(p);
+#else
+    free(p);
+#endif
+}
+
+#define CFS_COMP_MAX CFS_NAME_MAX
 
 static void bytes_zero(void *dst, uint32_t n) {
     uint8_t *p = dst;
@@ -395,6 +407,10 @@ static int file_lba(Cfs *fs, CfsInode *n, uint32_t block, uint32_t *lba,
                     int alloc) {
     uint32_t idx, mid, leaf, t;
     int rc;
+
+    if (block >= CFS_MAX_BLOCKS) {
+        return alloc ? CFS_ENOSPC : CFS_ECORRUPT;
+    }
     if (block < CFS_DIRECT_COUNT) {
         if (!n->direct[block]) {
             if (!alloc) return CFS_ECORRUPT;
@@ -516,6 +532,9 @@ static int inode_ptr_prune(Cfs *fs, CfsInode *n, uint32_t need) {
     }
     idx = need - CFS_DIRECT_COUNT - CFS_PTRS_PER_BLOCK;
     if (!n->double_indirect) {
+        return CFS_OK;
+    }
+    if (idx >= CFS_PTRS_PER_BLOCK * CFS_PTRS_PER_BLOCK) {
         return CFS_OK;
     }
     mid_idx = idx / CFS_PTRS_PER_BLOCK;
@@ -1039,13 +1058,18 @@ int cfs_rename(Cfs *fs, const char *old_path, const char *new_path) {
     if (rc != CFS_OK) return rc;
     rc = walk_parent(fs, &b, &pb, &lb);
     if (rc != CFS_OK) return rc;
-    if (pa != pb) return CFS_EXDEV;
     {
         CfsInode parent_in;
         rc = inode_read(fs, pa, &parent_in);
         if (rc != CFS_OK) return rc;
         rc = cfs_perm_need(&parent_in, CFS_PERM_WRITE);
         if (rc != CFS_OK) return rc;
+        if (pa != pb) {
+            rc = inode_read(fs, pb, &parent_in);
+            if (rc != CFS_OK) return rc;
+            rc = cfs_perm_need(&parent_in, CFS_PERM_WRITE);
+            if (rc != CFS_OK) return rc;
+        }
     }
     rc = dir_find(fs, pa, a.s + a.start[la], a.len[la], &id);
     if (rc != CFS_OK) return rc;
@@ -1188,18 +1212,40 @@ out:
 }
 
 int cfs_truncate(Cfs *fs, const char *path, uint32_t size) {
-    uint32_t old_size, i;
+    uint32_t old_size;
+    uint32_t i;
     uint16_t type;
     int rc;
-    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
-    if (size > CFS_MAX_FILE_SIZE) return CFS_EFBIG;
+    uint8_t *work;
+
+    if (!fs || !fs->mounted) {
+        return CFS_ENOTMOUNTED;
+    }
+    if (size > CFS_MAX_FILE_SIZE) {
+        return CFS_EFBIG;
+    }
     rc = cfs_stat(fs, path, &old_size, &type);
-    if (rc != CFS_OK) return rc;
-    if (type != CFS_INODE_FILE) return CFS_EISDIR;
-    rc = cfs_read(fs, path, fs->work, CFS_MAX_FILE_SIZE);
-    if (rc < 0) return rc;
-    for (i = old_size; i < size; i++) fs->work[i] = 0u;
-    return cfs_write(fs, path, fs->work, size);
+    if (rc != CFS_OK) {
+        return rc;
+    }
+    if (type != CFS_INODE_FILE) {
+        return CFS_EISDIR;
+    }
+    work = (uint8_t *)cfs_work_alloc(CFS_MAX_FILE_SIZE);
+    if (!work) {
+        return CFS_ENOSPC;
+    }
+    rc = cfs_read(fs, path, work, CFS_MAX_FILE_SIZE);
+    if (rc < 0) {
+        cfs_work_free(work);
+        return rc;
+    }
+    for (i = old_size; i < size; i++) {
+        work[i] = 0u;
+    }
+    rc = cfs_write(fs, path, work, size);
+    cfs_work_free(work);
+    return rc;
 }
 
 static int list_dir_inode(Cfs *fs, uint32_t dir_id, CfsListFn fn, void *ctx) {

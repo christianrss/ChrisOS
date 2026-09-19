@@ -33,3 +33,10 @@ void outl(uint16_t port, uint32_t value) {
 void io_wait(void) {
     outb(0x80, 0);
 }
+
+void machine_reboot(void) {
+    outw(0x604, 0x2000);
+    for (;;) {
+        __asm__ volatile ("hlt");
+    }
+}

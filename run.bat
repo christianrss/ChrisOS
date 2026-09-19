@@ -1,1 +1,3 @@
-qemu-system-x86_64.exe -L "C:/qemu19" -drive format=raw,file=os.img
+@echo off
+REM Boot ChrisOS via make (build/os.iso + build/disk.img)
+make run

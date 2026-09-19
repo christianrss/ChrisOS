@@ -20,6 +20,10 @@
 #include "clvm_sys.h"
 #include "speaker.h"
 #include "net.h"
+#include "apic.h"
+#include "ioapic.h"
+#include "job.h"
+#include "smp.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -30,6 +34,7 @@ void kstart(void) {
             __asm__ volatile ("hlt");
         }
     }
+    serial_puts("ChrisOS selfhost=1\n");
 
     bootinfo_init();
     gdt_init();
@@ -40,7 +45,7 @@ void kstart(void) {
         panic("frequencia PIT invalida");
     }
     if (!ps2_init()) {
-        panic("falha ao inicializar PS/2");
+        serial_puts("ChrisOS: PS/2 unavailable (keyboard/mouse disabled)\n");
     }
 
     pmm_init();
@@ -49,6 +54,12 @@ void kstart(void) {
     mm_selftest();
     heap_init();
     heap_selftest();
+
+    apic_init();
+    ioapic_init();
+    job_init();
+    smp_init();
+    smp_job_selftest();
 
     storage_init();
     fs_init();

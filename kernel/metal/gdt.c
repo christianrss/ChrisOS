@@ -95,6 +95,33 @@ void gdt_init(void) {
     }
 }
 
+void gdt_reload_kernel_segments(void) {
+    struct gdt_pointer pointer;
+
+    pointer.limit = sizeof(gdt) - 1u;
+    pointer.base = (uint64_t)gdt;
+    __asm__ volatile (
+        "lgdt %0\n"
+        "pushq $0x08\n"
+        "leaq 1f(%%rip), %%rax\n"
+        "pushq %%rax\n"
+        "lretq\n"
+        "1:\n"
+        "movw $0x10, %%ax\n"
+        "movw %%ax, %%ds\n"
+        "movw %%ax, %%es\n"
+        "movw %%ax, %%ss\n"
+        "xorw %%ax, %%ax\n"
+        "movw %%ax, %%fs\n"
+        "movw %%ax, %%gs\n"
+        "movw $0x28, %%ax\n"
+        "ltr %%ax\n"
+        :
+        : "m"(pointer)
+        : "rax", "memory"
+    );
+}
+
 uint16_t gdt_read_tr(void) {
     uint16_t selector;
     __asm__ volatile ("str %0" : "=r"(selector));
