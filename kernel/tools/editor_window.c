@@ -64,35 +64,9 @@ static int ed_name_valid(const char *name) {
 }
 
 static void ed_status_from_rc(Editor *e, int rc) {
-    if (rc == CFS_ENOSPC) {
-        ed_set_status(e, "disk full");
-        return;
-    }
-    if (rc == CFS_ENOENT) {
-        ed_set_status(e, "not found");
-        return;
-    }
-    if (rc == CFS_EFBIG) {
-        ed_set_status(e, "file too big");
-        return;
-    }
-    if (rc == CFS_ENAMETOOLONG) {
-        ed_set_status(e, "name too long");
-        return;
-    }
-    if (rc == CFS_EINVAL) {
-        ed_set_status(e, "bad name");
-        return;
-    }
-    if (rc == CFS_EIO) {
-        ed_set_status(e, "io error");
-        return;
-    }
-    if (rc == CFS_ENOTMOUNTED) {
-        ed_set_status(e, "not mounted");
-        return;
-    }
-    ed_set_status(e, "io error");
+    char buf[80];
+    fs_err_status(buf, (int)sizeof(buf), rc, 0);
+    ed_set_status(e, buf);
 }
 
 int ed_save(Editor *e) {
@@ -521,7 +495,7 @@ static void editor_run(Task *task, uint64_t ticks) {
         }
     }
     if (ui_button(task, bx + 136, by, 44, 16, CHRIS_TASKBAR_COLOR, "Save")) {
-        (void)lang_save(e);
+        (void)ed_save(e);
     }
     if (ui_button(task, bx + 184, by, 54, 16, CHRIS_TASKBAR_COLOR, "Compile")) {
         (void)lang_compile(e);
@@ -534,7 +508,7 @@ static void editor_run(Task *task, uint64_t ticks) {
         while (input_next_event(&event)) {
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F2) {
-                (void)lang_save(e);
+                (void)ed_save(e);
                 continue;
             }
             if (event.type == INPUT_EVENT_KEY &&
@@ -549,7 +523,11 @@ static void editor_run(Task *task, uint64_t ticks) {
             }
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F5) {
-                (void)lang_compile_run(e);
+                if (input_key_down(0x2A) || input_key_down(0x36)) {
+                    (void)lang_compile_run_jit(e);
+                } else {
+                    (void)lang_compile_run(e);
+                }
                 continue;
             }
             key = map_input_event(&event);

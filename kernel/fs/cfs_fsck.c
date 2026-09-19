@@ -34,14 +34,14 @@ static void bit_set(uint8_t *map, uint32_t index) {
     map[index / 8u] |= (uint8_t)(1u << (index % 8u));
 }
 
-static int data_lba_ok(uint32_t lba) {
+static int data_lba_valid(uint32_t lba) {
     return lba >= CFS_DATA_LBA &&
            lba < CFS_DATA_LBA + CFS_DATA_SECTORS;
 }
 
 static int note_block(uint32_t lba, int *errors) {
     uint32_t idx;
-    if (!data_lba_ok(lba)) {
+    if (!data_lba_valid(lba)) {
         set_reason("block lba");
         (*errors)++;
         return -1;
@@ -57,6 +57,39 @@ static int note_block(uint32_t lba, int *errors) {
         set_reason("bitmap missing");
         (*errors)++;
         return -1;
+    }
+    return 0;
+}
+
+static int note_ptr_table(BlockDevice *dev, uint32_t lba, int *errors,
+                          int depth) {
+    uint32_t i, child;
+    int rc;
+    if (!data_lba_valid(lba)) {
+        set_reason("block lba");
+        (*errors)++;
+        return 0;
+    }
+    (void)note_block(lba, errors);
+    rc = bd_read(dev, lba, 1u, g_sec);
+    if (rc != BD_OK) {
+        set_reason("indirect io");
+        return CFS_EIO;
+    }
+    if (depth <= 0) return 0;
+    for (i = 0; i < CFS_PTRS_PER_BLOCK; i++) {
+        child = cfs_get32(g_sec + i * 4u);
+        if (!child) continue;
+        if (depth == 1)
+            (void)note_block(child, errors);
+        else {
+            uint8_t save[STOR_SECTOR_SIZE];
+            uint32_t k;
+            for (k = 0; k < STOR_SECTOR_SIZE; k++) save[k] = g_sec[k];
+            rc = note_ptr_table(dev, child, errors, depth - 1);
+            for (k = 0; k < STOR_SECTOR_SIZE; k++) g_sec[k] = save[k];
+            if (rc < 0) return rc;
+        }
     }
     return 0;
 }
@@ -86,7 +119,7 @@ static int check_dirents(BlockDevice *dev, const CfsInode *inode,
     int rc;
     (void)dir_id;
     for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!inode->direct[b] || !data_lba_ok(inode->direct[b])) {
+        if (!inode->direct[b] || !data_lba_valid(inode->direct[b])) {
             continue;
         }
         rc = bd_read(dev, inode->direct[b], 1u, g_dirsec);
@@ -207,6 +240,26 @@ int cfs_fsck(Cfs *fs) {
         return CFS_ECORRUPT;
     }
 
+    rc = bd_read(fs->dev, CFS_JOURNAL_LBA, 1u, g_sec);
+    if (rc != BD_OK) {
+        set_reason("journal io");
+        return CFS_EIO;
+    }
+    {
+        uint32_t magic = cfs_get32(g_sec + 0);
+        uint32_t state = cfs_get32(g_sec + 8);
+        if (magic && magic != JNL_MAGIC) {
+            set_reason("journal magic");
+            errors++;
+        } else if (magic == JNL_MAGIC && state == JNL_BEGIN) {
+            set_reason("journal dirty");
+            errors++;
+        } else if (magic == JNL_MAGIC && state == JNL_COMMIT) {
+            set_reason("journal pending replay");
+            errors++;
+        }
+    }
+
     for (i = 0; i < CFS_BITMAP_SECTORS; i++) {
         rc = bd_read(fs->dev, CFS_BITMAP_LBA + i, 1u,
                      g_bitmap + i * STOR_SECTOR_SIZE);
@@ -263,6 +316,10 @@ int cfs_fsck(Cfs *fs) {
                 }
             }
         }
+        if (inode.indirect)
+            (void)note_ptr_table(fs->dev, inode.indirect, &errors, 1);
+        if (inode.double_indirect)
+            (void)note_ptr_table(fs->dev, inode.double_indirect, &errors, 2);
         if (id == CFS_ROOT_INODE && inode.type != CFS_INODE_DIR) {
             set_reason("root type");
             errors++;

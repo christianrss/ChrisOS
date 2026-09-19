@@ -174,37 +174,64 @@ void pmm_init(void) {
 }
 
 uint64_t pmm_alloc(void) {
-    uint64_t page;
-    uint64_t phys;
+    return pmm_alloc_contig(1u);
+}
 
-    for (page = 0; page < PMM_PAGE_COUNT; ++page) {
-        phys = page * PMM_PAGE;
-        if (!bitmap_is_used(phys)) {
+uint64_t pmm_alloc_contig(uint32_t count) {
+    uint64_t page;
+    uint64_t start;
+    uint64_t phys;
+    uint32_t run;
+
+    if (count == 0u) {
+        return 0;
+    }
+    for (page = 0; page + count <= PMM_PAGE_COUNT; ++page) {
+        start = page * PMM_PAGE;
+        for (run = 0; run < count; ++run) {
+            phys = start + (uint64_t)run * PMM_PAGE;
+            if (bitmap_is_used(phys)) {
+                break;
+            }
+        }
+        if (run != count) {
+            continue;
+        }
+        for (run = 0; run < count; ++run) {
+            phys = start + (uint64_t)run * PMM_PAGE;
             bitmap_set_used(phys);
             if (pmm_free_count > 0) {
-                pmm_free_count -= 1;
+                pmm_free_count -= 1u;
             }
-            pmm_used += 1;
-            return phys;
+            pmm_used += 1u;
         }
+        return start;
     }
     return 0;
 }
 
 void pmm_free(uint64_t phys) {
-    if (phys == 0) {
+    pmm_free_contig(phys, 1u);
+}
+
+void pmm_free_contig(uint64_t phys, uint32_t count) {
+    uint32_t run;
+
+    if (phys == 0 || count == 0u) {
         return;
     }
-    if (!page_in_range(phys)) {
-        panic("pmm_free desalinhado ou fora de 256MiB");
-    }
-    if (!bitmap_is_used(phys)) {
-        panic("pmm_free de pagina ja livre");
-    }
-    bitmap_set_free(phys);
-    pmm_free_count += 1;
-    if (pmm_used > 0) {
-        pmm_used -= 1;
+    for (run = 0; run < count; ++run) {
+        uint64_t page_phys = phys + (uint64_t)run * PMM_PAGE;
+        if (!page_in_range(page_phys)) {
+            panic("pmm_free_contig desalinhado ou fora de 256MiB");
+        }
+        if (bitmap_is_used(page_phys)) {
+            bitmap_set_free(page_phys);
+            pmm_free_count += 1u;
+            if (pmm_used > 0) {
+                pmm_used -= 1u;
+            }
+        }
     }
 }
 

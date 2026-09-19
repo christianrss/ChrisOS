@@ -16,8 +16,10 @@
 #include "lang_pipeline.h"
 #include "serial.h"
 #include "storage.h"
+#include "syscall.h"
 #include "clvm_sys.h"
 #include "speaker.h"
+#include "net.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -32,6 +34,7 @@ void kstart(void) {
     bootinfo_init();
     gdt_init();
     idt_init();
+    syscall_init();
     pic_init();
     if (!pit_init(60)) {
         panic("frequencia PIT invalida");
@@ -51,6 +54,9 @@ void kstart(void) {
     fs_init();
     lang_init(clvm_sys_dispatch, 0);
     speaker_off();
+    if (!net_init()) {
+        serial_puts("ChrisOS: net unavailable\n");
+    }
 
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||

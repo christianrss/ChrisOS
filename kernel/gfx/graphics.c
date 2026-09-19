@@ -1,6 +1,7 @@
 #include "graphics.h"
+#include "heap.h"
 
-static uint32_t g_backbuffer[GFX_MAX_WIDTH * GFX_MAX_HEIGHT];
+static uint32_t *g_backbuffer;
 GfxFramebuffer g_gfx;
 
 static bool point_in_clip(int x, int y, int clip_x, int clip_y,
@@ -15,6 +16,16 @@ bool gfx_init(uint32_t *address, int width, int height, int pitch_bytes) {
         width > GFX_MAX_WIDTH || height > GFX_MAX_HEIGHT ||
         pitch_bytes < width * (int)sizeof(uint32_t) ||
         (pitch_bytes % (int)sizeof(uint32_t)) != 0) {
+        return false;
+    }
+
+    if (g_backbuffer) {
+        kfree(g_backbuffer);
+        g_backbuffer = 0;
+    }
+    g_backbuffer = (uint32_t *)kmalloc((uint64_t)width * (uint64_t)height *
+                                       sizeof(uint32_t));
+    if (!g_backbuffer) {
         return false;
     }
 
@@ -33,7 +44,7 @@ uint32_t gfx_rgb(uint8_t red, uint8_t green, uint8_t blue) {
 }
 
 void gfx_put_pixel(int x, int y, uint32_t color) {
-    if (x < 0 || y < 0 || x >= g_gfx.width || y >= g_gfx.height) {
+    if (!g_gfx.back || x < 0 || y < 0 || x >= g_gfx.width || y >= g_gfx.height) {
         return;
     }
     g_gfx.back[y * g_gfx.width + x] = color;
@@ -43,6 +54,9 @@ void gfx_clear(uint32_t color) {
     int x;
     int y;
 
+    if (!g_gfx.back) {
+        return;
+    }
     for (y = 0; y < g_gfx.height; ++y) {
         uint32_t *row = g_gfx.back + y * g_gfx.width;
         for (x = 0; x < g_gfx.width; ++x) {
@@ -193,6 +207,9 @@ void gfx_present(void) {
     int x;
     int y;
 
+    if (!g_gfx.front || !g_gfx.back) {
+        return;
+    }
     for (y = 0; y < g_gfx.height; ++y) {
         uint32_t *dst = g_gfx.front + y * g_gfx.pitch_pixels;
         const uint32_t *src = g_gfx.back + y * g_gfx.width;

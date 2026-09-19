@@ -1,4 +1,4 @@
-/* LEARN:STOR64-S04 */
+/* LEARN:ACL64-01 */
 #ifndef CHRIS_CFS_FORMAT_H
 #define CHRIS_CFS_FORMAT_H
 
@@ -11,9 +11,17 @@ enum {
     CFS_INODE_DIR = 2
 };
 
+#define CFS_PERM_READ  1u
+#define CFS_PERM_WRITE 2u
+#define CFS_PERM_EXEC  4u
+#define CFS_PERM_WALK  8u
+#define CFS_PERM_ALL   15u
+
 typedef struct CfsSuper {
     uint32_t generation;
     uint32_t clean;
+    uint32_t journal_lba;
+    uint32_t journal_sectors;
 } CfsSuper;
 
 typedef struct CfsInode {
@@ -22,6 +30,11 @@ typedef struct CfsInode {
     uint32_t size;
     uint32_t generation;
     uint32_t direct[CFS_DIRECT_COUNT];
+    uint32_t indirect;
+    uint32_t double_indirect;
+    uint32_t uid;
+    uint32_t gid;
+    uint32_t mode;
 } CfsInode;
 
 typedef struct CfsDirent {
@@ -87,8 +100,8 @@ static inline void cfs_super_encode(uint8_t out[512],
     cfs_put32(out + 40, CFS_ROOT_INODE);
     cfs_put32(out + 44, s->clean);
     cfs_put32(out + 48, s->generation);
-    cfs_put32(out + 52, 0u);
-    cfs_put32(out + 56, 0u);
+    cfs_put32(out + 52, CFS_JOURNAL_LBA);
+    cfs_put32(out + 56, CFS_JOURNAL_SECTORS);
     cfs_put32(out + 60, cfs_checksum(out, 60u));
 }
 
@@ -106,10 +119,13 @@ static inline int cfs_super_decode(CfsSuper *s,
     if (cfs_get32(in + 32) != CFS_DATA_LBA) return -10;
     if (cfs_get32(in + 36) != CFS_DATA_SECTORS) return -11;
     if (cfs_get32(in + 40) != CFS_ROOT_INODE) return -12;
-    if (cfs_get32(in + 52) != 0u) return -13;
+    if (cfs_get32(in + 52) != CFS_JOURNAL_LBA) return -13;
+    if (cfs_get32(in + 56) != CFS_JOURNAL_SECTORS) return -15;
     if (cfs_get32(in + 60) != cfs_checksum(in, 60u)) return -14;
     s->clean = cfs_get32(in + 44);
     s->generation = cfs_get32(in + 48);
+    s->journal_lba = cfs_get32(in + 52);
+    s->journal_sectors = cfs_get32(in + 56);
     return 0;
 }
 
@@ -123,13 +139,18 @@ static inline void cfs_inode_encode(uint8_t out[CFS_INODE_SIZE],
     cfs_put32(out + 8, n->generation);
     for (i = 0; i < CFS_DIRECT_COUNT; i++)
         cfs_put32(out + 12u + i * 4u, n->direct[i]);
-    cfs_put32(out + 60, cfs_checksum(out, 60u));
+    cfs_put32(out + 60, n->indirect);
+    cfs_put32(out + 64, n->double_indirect);
+    cfs_put32(out + 68, n->uid);
+    cfs_put32(out + 72, n->gid);
+    cfs_put32(out + 76, n->mode);
+    cfs_put32(out + 124, cfs_checksum(out, 124u));
 }
 
 static inline int cfs_inode_decode(CfsInode *n,
                                    const uint8_t in[CFS_INODE_SIZE]) {
     uint32_t i;
-    if (cfs_get32(in + 60) != cfs_checksum(in, 60u))
+    if (cfs_get32(in + 124) != cfs_checksum(in, 124u))
         return -1;
     n->type = cfs_get16(in + 0);
     n->flags = cfs_get16(in + 2);
@@ -137,6 +158,11 @@ static inline int cfs_inode_decode(CfsInode *n,
     n->generation = cfs_get32(in + 8);
     for (i = 0; i < CFS_DIRECT_COUNT; i++)
         n->direct[i] = cfs_get32(in + 12u + i * 4u);
+    n->indirect = cfs_get32(in + 60);
+    n->double_indirect = cfs_get32(in + 64);
+    n->uid = cfs_get32(in + 68);
+    n->gid = cfs_get32(in + 72);
+    n->mode = cfs_get32(in + 76);
     return 0;
 }
 

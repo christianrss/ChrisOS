@@ -35,7 +35,7 @@ SECTIONS {
         *(COMMON)
         . = ALIGN(16);
         __stack_bottom = .;
-        . += 64K;
+        . += 256K;
         __stack_top = .;
         . = ALIGN(4K);
         __kernel_end = .;

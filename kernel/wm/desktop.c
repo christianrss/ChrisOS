@@ -3,6 +3,7 @@
 
 #include "editor_window.h"
 #include "explorer.h"
+#include "shell.h"
 #include "graphics.h"
 #include "input.h"
 #include "task.h"
@@ -24,27 +25,6 @@ static TaskRect cascaded_frame(int width, int body_height) {
         g_window_cascade = 1;
     }
     return frame;
-}
-
-static void shell_run(Task *task, uint64_t ticks) {
-    int x;
-    int y;
-
-    (void)ticks;
-    if (ui_window(task, task->state.shell.body_color, "Shell")) {
-        return;
-    }
-
-    x = task->frame.x;
-    y = task->frame.y + TASK_TITLE_HEIGHT;
-    if (ui_button(task, x + 20, y, 50, 20,
-                  CHRIS_TASKBAR_COLOR, "Dark")) {
-        task->state.shell.body_color = 0x00000000u;
-    }
-    if (ui_button(task, x + 100, y, 50, 20,
-                  CHRIS_TASKBAR_COLOR, "Light")) {
-        task->state.shell.body_color = CHRIS_WINDOW_COLOR;
-    }
 }
 
 static void ball_run(Task *task, uint64_t ticks) {
@@ -76,7 +56,7 @@ static void ball_run(Task *task, uint64_t ticks) {
 }
 
 static void open_shell(void) {
-    (void)task_spawn(TASK_SHELL, cascaded_frame(300, 280), shell_run);
+    shell_window_open();
 }
 
 static void open_ball(void) {
@@ -84,8 +64,13 @@ static void open_ball(void) {
 }
 
 static void open_demos(void) {
+    Task *sh;
     open_shell();
     open_ball();
+    sh = task_find(TASK_SHELL);
+    if (sh) {
+        task_raise(sh->id);
+    }
 }
 
 static void draw_icons(void) {

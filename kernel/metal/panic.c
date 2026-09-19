@@ -12,13 +12,17 @@ _Noreturn void panic(const char *message) {
 }
 
 _Noreturn void panic_exception(uint64_t vector, uint64_t error, uint64_t rip) {
+    uint64_t cr2;
     __asm__ volatile ("cli");
+    __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
     serial_puts("\nEXCEPTION vector=");
     serial_write_u64(vector);
     serial_puts(" error=");
     serial_write_hex(error);
     serial_puts(" rip=");
     serial_write_hex(rip);
+    serial_puts(" cr2=");
+    serial_write_hex(cr2);
     serial_puts("\n");
     for (;;) {
         __asm__ volatile ("hlt");

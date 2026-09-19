@@ -113,13 +113,19 @@ static int list_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
     return 0;
 }
 
+static void exp_status_rc(int rc) {
+    char buf[80];
+    fs_err_status(buf, 80, rc, 0);
+    exp_status(buf);
+}
+
 static void exp_reload(Task *task) {
     int rc;
     g_nent = 0;
     rc = fs_list_at(task->state.explorer.cwd, list_cb, &g_nent);
     if (rc < 0) {
         g_nent = 0;
-        exp_status("list failed");
+        exp_status_rc(rc);
         return;
     }
     if (task->state.explorer.selected >= g_nent) {
@@ -205,7 +211,7 @@ static void exp_new_folder(Task *task) {
         return;
     }
     if (rc != CFS_OK) {
-        exp_status("mkdir failed");
+        exp_status_rc(rc);
         return;
     }
     exp_reload(task);
@@ -228,7 +234,7 @@ static void exp_delete_selected(Task *task) {
         rc = fs_unlink(path);
     }
     if (rc != CFS_OK) {
-        exp_status("delete failed");
+        exp_status_rc(rc);
         return;
     }
     exp_reload(task);

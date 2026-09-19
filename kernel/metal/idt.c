@@ -21,16 +21,25 @@ extern void (*isr_stub_table[256])(void);
 
 static struct idt_gate idt[256] __attribute__((aligned(16)));
 
-static void idt_set_gate(unsigned int vector, void (*handler)(void)) {
+static void idt_set_gate_attr(unsigned int vector, void (*handler)(void),
+                              uint8_t attributes) {
     uint64_t address = (uint64_t)handler;
 
     idt[vector].offset_low = (uint16_t)address;
     idt[vector].selector = GDT_KERNEL_CODE;
     idt[vector].ist = 0;
-    idt[vector].attributes = 0x8e;
+    idt[vector].attributes = attributes;
     idt[vector].offset_middle = (uint16_t)(address >> 16);
     idt[vector].offset_high = (uint32_t)(address >> 32);
     idt[vector].reserved = 0;
+}
+
+static void idt_set_gate(unsigned int vector, void (*handler)(void)) {
+    idt_set_gate_attr(vector, handler, 0x8e);
+}
+
+void idt_set_user_gate(unsigned int vector) {
+    idt_set_gate_attr(vector, isr_stub_table[vector], 0xee);
 }
 
 void idt_init(void) {

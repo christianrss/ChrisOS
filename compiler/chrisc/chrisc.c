@@ -58,6 +58,8 @@ typedef struct Compiler {
     ChrisResult *result;
 } Compiler;
 
+static Compiler g_chrisc;
+
 static const Builtin builtins[] = {
     {"pixel", 1, 3, 0}, {"rect", 2, 5, 0}, {"line", 3, 5, 0},
     {"sprite", 4, 6, 0}, {"tilemap", 5, 7, 0}, {"clear", 6, 1, 0},
@@ -936,38 +938,38 @@ static int gen_block(Compiler *c, int id) {
 
 int chrisc_compile(const char *source, size_t source_size, uint8_t *code,
                    size_t code_cap, ChrisResult *result) {
-    Compiler c;
+    Compiler *c = &g_chrisc;
     int root;
 
     if (!source || !code || !result) {
         return 0;
     }
-    c.ntok = c.pos = c.nnode = c.nargs = c.nsyms = 0;
-    c.out = code;
-    c.cap = code_cap;
-    c.pc = 0;
-    c.result = result;
+    c->ntok = c->pos = c->nnode = c->nargs = c->nsyms = 0;
+    c->out = code;
+    c->cap = code_cap;
+    c->pc = 0;
+    c->result = result;
     result->code_size = 0;
     result->entry = 0;
     result->variables = 0;
     result->diag.line = result->diag.column = 0;
     result->diag.message[0] = 0;
-    if (!lex(&c, source, source_size)) {
+    if (!lex(c, source, source_size)) {
         return 0;
     }
-    root = program(&c);
+    root = program(c);
     if (root < 0) {
         return 0;
     }
-    if (!gen_block(&c, root)) {
+    if (!gen_block(c, root)) {
         return 0;
     }
-    if (c.pc == 0 || c.out[c.pc - 1] != CL_OP_HALT) {
-        if (!byte(&c, CL_OP_HALT, &c.nodes[root])) {
+    if (c->pc == 0 || c->out[c->pc - 1] != CL_OP_HALT) {
+        if (!byte(c, CL_OP_HALT, &c->nodes[root])) {
             return 0;
         }
     }
-    result->code_size = c.pc;
-    result->variables = (unsigned)c.nsyms;
+    result->code_size = c->pc;
+    result->variables = (unsigned)c->nsyms;
     return 1;
 }

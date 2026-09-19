@@ -1,6 +1,7 @@
 #include "irq.h"
 #include "panic.h"
 #include "port.h"
+#include "syscall.h"
 
 #define PIC1_COMMAND 0x20
 #define PIC1_DATA    0x21
@@ -77,6 +78,15 @@ void irq_eoi(uint8_t irq) {
 void irq_dispatch(struct irq_frame *frame) {
     uint8_t irq;
 
+    if (frame->vector == 0x80u) {
+        syscall_dispatch(frame);
+        return;
+    }
+    if (frame->vector == 14u && (frame->cs & 3u) != 0u) {
+        uint64_t cr2;
+        __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
+        panic_user_fault(frame, cr2);
+    }
     if (frame->vector < 32) {
         panic_exception(frame->vector, frame->error, frame->rip);
     }

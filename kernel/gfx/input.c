@@ -98,6 +98,7 @@ static InputKey extended_key(uint8_t code) {
         case 0x4F: return INPUT_KEY_END;
         case 0x50: return INPUT_KEY_DOWN;
         case 0x53: return INPUT_KEY_DELETE;
+        case 0x1C: return INPUT_KEY_ENTER;
         default: return INPUT_KEY_NONE;
     }
 }

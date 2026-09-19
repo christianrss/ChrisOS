@@ -25,5 +25,6 @@ typedef int (*FsListFn)(void *ctx, const char *name, uint32_t size,
                         uint16_t type);
 int fs_list(FsListFn fn, void *ctx);
 int fs_list_at(const char *path, FsListFn fn, void *ctx);
+void fs_err_status(char *out, int cap, int rc, const char *prefix);
 
 #endif

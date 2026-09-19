@@ -3,10 +3,14 @@
 #include "chrisc/chrisc.h"
 #include "clvm/clasm.h"
 #include "clvm/clvm.h"
+#include "cfs.h"
 #include "fs.h"
 #include "gfx2d.h"
 #include "clvm_sys.h"
 #include "app_window.h"
+#include "storage.h"
+#include "jit/jit.h"
+#include "jit/jit_compile.h"
 
 #define LANG_SOURCE_MAX 32768
 #define LANG_FILE_MAX (CLVM_HEADER_SIZE + CLVM_MAX_CODE)
@@ -21,6 +25,9 @@ typedef struct LangSlot {
     uint32_t pixels[LANG_PIXELS];
     char name[LANG_NAME_MAX];
     int task_id;
+    JitBuf jit;
+    JitFn jit_fn;
+    int use_jit;
 } LangSlot;
 
 static LangSlot slots[LANG_VM_SLOTS];
@@ -174,6 +181,9 @@ void lang_init(ClvmSysFn sys, void *user) {
         slots[i].used = 0;
         slots[i].task_id = -1;
         slots[i].name[0] = 0;
+        slots[i].use_jit = 0;
+        slots[i].jit_fn = NULL;
+        slots[i].jit.phys = 0;
     }
 }
 
@@ -191,9 +201,14 @@ int lang_save(Editor *e) {
         status(e, "save: empty source");
         return 0;
     }
-    if (fs_write(e->name, source_buffer, n) < 0) {
-        status(e, "save: filesystem full");
-        return 0;
+    {
+        int rc = fs_write(e->name, source_buffer, n);
+        char buf[80];
+        if (rc < 0) {
+            fs_err_status(buf, 80, rc, "save: ");
+            status(e, buf);
+            return 0;
+        }
     }
     e->dirty = 0;
     status(e, "saved");
@@ -236,9 +251,18 @@ int lang_compile(Editor *e) {
     }
     file_size = clvm_write_image(file_buffer, sizeof(file_buffer), CLVM_FLAG_GAME,
                                  entry, code_buffer, code_size);
-    if (!file_size || fs_write(name, file_buffer, (int)file_size) < 0) {
-        status(e, "compile: cannot write .CLV");
+    if (!file_size) {
+        status(e, "compile: empty image");
         return 0;
+    }
+    {
+        int rc = fs_write(name, file_buffer, (int)file_size);
+        char buf[80];
+        if (rc < 0) {
+            fs_err_status(buf, 80, rc, "compile: ");
+            status(e, buf);
+            return 0;
+        }
     }
     {
         int n = 0;
@@ -251,7 +275,7 @@ int lang_compile(Editor *e) {
     return 1;
 }
 
-int lang_run(Editor *e, const char *name) {
+static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     int i;
     int n;
     ClvmImage image;
@@ -267,6 +291,12 @@ int lang_run(Editor *e, const char *name) {
         status(e, "run: .CLV not found");
         return 0;
     }
+    if (storage_ready() && storage_cfs()) {
+        if (cfs_perm(storage_cfs(), name, CFS_PERM_EXEC) != CFS_OK) {
+            status(e, "no exec");
+            return 0;
+        }
+    }
     slots[i].file_size = (size_t)n;
     load = clvm_parse(slots[i].file, slots[i].file_size, &image);
     if (load != CL_LOAD_OK) {
@@ -275,12 +305,32 @@ int lang_run(Editor *e, const char *name) {
     }
     gfx2d_clear(slots[i].pixels, CLVM_SYS_GAME_W, CLVM_SYS_GAME_H, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, slots[i].pixels);
+    slots[i].use_jit = 0;
+    slots[i].jit_fn = NULL;
+    if (slots[i].jit.phys != 0) {
+        jit_free(&slots[i].jit);
+    }
+    if (use_jit) {
+        if (jit_compile_image(&image, &slots[i].jit, &slots[i].jit_fn) != 0) {
+            status(e, "jit compile failed");
+            return 0;
+        }
+        slots[i].use_jit = 1;
+    }
     scopy(slots[i].name, LANG_NAME_MAX, name);
     slots[i].task_id = -1;
     slots[i].used = 1;
     app_window_open(i, name);
-    status(e, "running");
+    status(e, use_jit ? "running jit" : "running");
     return 1;
+}
+
+int lang_run(Editor *e, const char *name) {
+    return lang_run_internal(e, name, 0);
+}
+
+int lang_run_jit(Editor *e, const char *name) {
+    return lang_run_internal(e, name, 1);
 }
 
 int lang_compile_run(Editor *e) {
@@ -291,13 +341,26 @@ int lang_compile_run(Editor *e) {
     return lang_run(e, name);
 }
 
+int lang_compile_run_jit(Editor *e) {
+    char name[LANG_NAME_MAX];
+    if (!lang_compile(e) || !output_name(e->name, name)) {
+        return 0;
+    }
+    return lang_run_jit(e, name);
+}
+
 void lang_tick(uint32_t now) {
     int i;
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         if (slots[i].used) {
             ClvmStepResult r;
             clvm_vm_wake(&slots[i].vm, now);
-            r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
+            if (slots[i].use_jit && slots[i].jit_fn != NULL) {
+                jit_set_sys_context(&slots[i].vm, slots[i].pixels);
+                r = slots[i].jit_fn(&slots[i].vm, LANG_VM_BUDGET, now);
+            } else {
+                r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
+            }
             if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
                 slots[i].used = 0;
         }
@@ -319,9 +382,14 @@ int lang_kill(int slot) {
     if (slot < 0 || slot >= LANG_VM_SLOTS) {
         return 0;
     }
+    if (slots[slot].jit.phys != 0) {
+        jit_free(&slots[slot].jit);
+    }
     slots[slot].used = 0;
     slots[slot].task_id = -1;
     slots[slot].name[0] = 0;
+    slots[slot].use_jit = 0;
+    slots[slot].jit_fn = NULL;
     return 1;
 }
 

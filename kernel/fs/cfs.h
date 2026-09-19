@@ -9,6 +9,12 @@
 #define CFS_PATH_MAX 96u
 #define CFS_PATH_DEPTH 6u
 
+#define JNL_MAGIC 0x4C4E4A43u
+#define JNL_EMPTY 0u
+#define JNL_BEGIN 1u
+#define JNL_COMMIT 2u
+#define JNL_MAX_REC 30u
+
 enum {
     CFS_OK = 0,
     CFS_EINVAL = -20,
@@ -24,7 +30,8 @@ enum {
     CFS_ENOTDIR = -30,
     CFS_ENOTEMPTY = -31,
     CFS_EISDIR = -32,
-    CFS_EXDEV = -33
+    CFS_EXDEV = -33,
+    CFS_EPERM = -34
 };
 
 typedef struct CfsCacheLine {
@@ -34,6 +41,15 @@ typedef struct CfsCacheLine {
     uint8_t valid;
 } CfsCacheLine;
 
+typedef struct Cfs Cfs;
+
+typedef struct Jnl {
+    Cfs *fs;
+    uint32_t seq;
+    uint32_t nrec;
+    uint32_t rec_lba[JNL_MAX_REC];
+} Jnl;
+
 typedef struct Cfs {
     BlockDevice *dev;
     CfsSuper super;
@@ -42,6 +58,9 @@ typedef struct Cfs {
     uint8_t work[CFS_MAX_FILE_SIZE];
     uint32_t clock;
     uint8_t mounted;
+    Jnl jnl;
+    uint8_t jnl_active;
+    uint8_t jnl_data;
 } Cfs;
 
 typedef int (*CfsListFn)(void *ctx, const char *name,
@@ -63,5 +82,12 @@ int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx);
 int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type);
 int cfs_fsck(Cfs *fs);
 const char *cfs_fsck_reason(void);
+
+int jnl_begin(Jnl *j, Cfs *fs);
+int jnl_log(Jnl *j, uint32_t lba, const uint8_t data[512]);
+int jnl_commit(Jnl *j);
+int jnl_replay(Cfs *fs, uint32_t *replayed);
+int cfs_perm(Cfs *fs, const char *path, uint32_t bit);
+int cfs_chmod(Cfs *fs, const char *path, uint32_t mode);
 
 #endif

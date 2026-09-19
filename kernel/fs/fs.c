@@ -166,19 +166,27 @@ static int ram_list(FsListFn fn, void *ctx) {
     return count;
 }
 
+static void seed_log_fail(const char *name, int rc) {
+    serial_puts("fs mkdir ");
+    serial_puts(name);
+    serial_puts(" rc=");
+    serial_write_hex((uint64_t)(int64_t)rc);
+    serial_puts("\n");
+}
+
 static void seed_dirs(Cfs *fs) {
     int rc;
     rc = cfs_mkdir(fs, "GAMES");
     if (rc != CFS_OK && rc != CFS_EEXIST) {
-        serial_puts("fs mkdir GAMES failed\n");
+        seed_log_fail("GAMES", rc);
     }
     rc = cfs_mkdir(fs, "SRC");
     if (rc != CFS_OK && rc != CFS_EEXIST) {
-        serial_puts("fs mkdir SRC failed\n");
+        seed_log_fail("SRC", rc);
     }
     rc = cfs_mkdir(fs, "BIN");
     if (rc != CFS_OK && rc != CFS_EEXIST) {
-        serial_puts("fs mkdir BIN failed\n");
+        seed_log_fail("BIN", rc);
     }
 }
 
@@ -190,6 +198,15 @@ void fs_init(void) {
         fs = storage_cfs();
         if (fs) {
             seed_dirs(fs);
+            {
+                uint32_t sz = 0;
+                uint16_t ty = 0;
+                if (cfs_stat(fs, "GAMES/BIG.DAT", &sz, &ty) == CFS_OK) {
+                    serial_puts("cfs big file bytes=");
+                    serial_write_u64((uint64_t)sz);
+                    serial_puts("\n");
+                }
+            }
             (void)cfs_sync(fs);
         }
         return;
@@ -324,4 +341,51 @@ int fs_list_at(const char *path, FsListFn fn, void *ctx) {
 
 int fs_list(FsListFn fn, void *ctx) {
     return fs_list_at("", fn, ctx);
+}
+
+static void err_copy(char *out, int cap, int *n, const char *s) {
+    int i = 0;
+    if (!out || cap < 1 || !s || !n) {
+        return;
+    }
+    while (s[i] && *n + 1 < cap) {
+        out[(*n)++] = s[i++];
+    }
+    out[*n] = 0;
+}
+
+void fs_err_status(char *out, int cap, int rc, const char *prefix) {
+    const char *msg;
+    int n = 0;
+    if (!out || cap < 2) {
+        return;
+    }
+    out[0] = 0;
+    if (prefix && prefix[0]) {
+        err_copy(out, cap, &n, prefix);
+    }
+    if (rc == CFS_ENOSPC) {
+        msg = "disk full";
+    } else if (rc == CFS_ENOENT) {
+        msg = "not found";
+    } else if (rc == CFS_EFBIG) {
+        msg = "file too big";
+    } else if (rc == CFS_ENAMETOOLONG) {
+        msg = "name too long";
+    } else if (rc == CFS_EINVAL) {
+        msg = "bad name";
+    } else if (rc == CFS_EIO) {
+        msg = "io error";
+    } else if (rc == CFS_ENOTMOUNTED) {
+        msg = "not mounted";
+    } else if (rc == CFS_EEXIST) {
+        msg = "exists";
+    } else if (rc == CFS_ECORRUPT) {
+        msg = "corrupt fs";
+    } else if (rc == CFS_EPERM) {
+        msg = "denied";
+    } else {
+        msg = "io error";
+    }
+    err_copy(out, cap, &n, msg);
 }

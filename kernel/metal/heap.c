@@ -4,7 +4,7 @@
 #include "pmm.h"
 #include "serial.h"
 
-#define HEAP_PAGES     256ull
+#define HEAP_PAGES     4096ull
 #define HEAP_ALIGN     16ull
 #define HEAP_USER_OFF  16ull
 
