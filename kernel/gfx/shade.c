@@ -23,9 +23,26 @@ static float pow16(float x) {
     return x8 * x8;
 }
 
+static Vec3f g_Ln = { 0.0f, 1.0f, 0.0f };
+static Vec3f g_Vn = { 0.0f, 0.0f, 1.0f };
+static Vec3f g_cam_cached;
+static int g_lv_ready;
+
+static void refresh_lv(void) {
+    Vec3f cam;
+    g_Ln = g_light_pos;
+    vec3f_norm(&g_Ln);
+    math3d_cam_get(&cam, 0, 0);
+    g_cam_cached = cam;
+    vec3f_set(&g_Vn, -cam.x, -cam.y, -cam.z);
+    vec3f_norm(&g_Vn);
+    g_lv_ready = 1;
+}
+
 void shade_set_light(float x, float y, float z, float r, float g, float b) {
     vec3f_set(&g_light_pos, x, y, z);
     vec3f_set(&g_light_col, r, g, b);
+    g_lv_ready = 0;
 }
 
 void shade_get_light(Vec3f *pos, Vec3f *col) {
@@ -37,9 +54,8 @@ void shade_get_light(Vec3f *pos, Vec3f *col) {
 
 uint32_t shade_phong(uint32_t rgb, float nx, float ny, float nz) {
     Vec3f n;
-    Vec3f l;
-    Vec3f v;
     Vec3f h;
+    Vec3f cam;
     float diff;
     float spec;
     float ka = 0.22f;
@@ -51,18 +67,17 @@ uint32_t shade_phong(uint32_t rgb, float nx, float ny, float nz) {
     int ir;
     int ig;
     int ib;
-    Vec3f cam;
 
     vec3f_set(&n, nx, ny, nz);
     vec3f_norm(&n);
-    l = g_light_pos;
-    vec3f_norm(&l);
     math3d_cam_get(&cam, 0, 0);
-    vec3f_set(&v, -cam.x, -cam.y, -cam.z);
-    vec3f_norm(&v);
-    vec3f_add(&h, &l, &v);
+    if (!g_lv_ready || cam.x != g_cam_cached.x || cam.y != g_cam_cached.y ||
+        cam.z != g_cam_cached.z) {
+        refresh_lv();
+    }
+    vec3f_add(&h, &g_Ln, &g_Vn);
     vec3f_norm(&h);
-    diff = clampf(vec3f_dot(&n, &l), 0.0f, 1.0f);
+    diff = clampf(vec3f_dot(&n, &g_Ln), 0.0f, 1.0f);
     spec = pow16(clampf(vec3f_dot(&n, &h), 0.0f, 1.0f));
     cr = cr * (ka + kd * diff * g_light_col.x) + 255.0f * ks * spec * g_light_col.x;
     cg = cg * (ka + kd * diff * g_light_col.y) + 255.0f * ks * spec * g_light_col.y;

@@ -73,7 +73,8 @@ bool ui_icon(int x, int y, uint32_t color, const char *caption) {
     return false;
 }
 
-bool ui_window(Task *task, uint32_t body_color, const char *title) {
+bool ui_window_ex(Task *task, uint32_t body_color, const char *title,
+                  int fill_body) {
     InputMouse mouse;
     int x;
     int y;
@@ -119,8 +120,10 @@ bool ui_window(Task *task, uint32_t body_color, const char *title) {
     }
 
     gfx_fill_rect(x, y, task->frame.width, TASK_TITLE_HEIGHT, CHRIS_TITLE_COLOR);
-    gfx_fill_rect(x, y + TASK_TITLE_HEIGHT, task->frame.width,
-                  task->frame.body_height, body_color);
+    if (fill_body) {
+        gfx_fill_rect(x, y + TASK_TITLE_HEIGHT, task->frame.width,
+                      task->frame.body_height, body_color);
+    }
 
     if (title != 0) {
         gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
@@ -136,6 +139,10 @@ bool ui_window(Task *task, uint32_t body_color, const char *title) {
         return true;
     }
     return false;
+}
+
+bool ui_window(Task *task, uint32_t body_color, const char *title) {
+    return ui_window_ex(task, body_color, title, 1);
 }
 
 void ui_draw_taskbar(void) {

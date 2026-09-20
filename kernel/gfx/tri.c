@@ -39,26 +39,23 @@ static int clip_box(int *minx, int *miny, int *maxx, int *maxy,
     return *minx <= *maxx && *miny <= *maxy;
 }
 
-void tri_fill_clip(uint32_t *pixels, int w, int h,
-                   int x0, int y0, int32_t z0,
-                   int x1, int y1, int32_t z1,
-                   int x2, int y2, int32_t z2,
-                   int color,
-                   int clip_x0, int clip_y0, int clip_x1, int clip_y1) {
+void tri_fill_u32(uint32_t *pixels, int w, int h,
+                  int x0, int y0, int32_t z0,
+                  int x1, int y1, int32_t z1,
+                  int x2, int y2, int32_t z2,
+                  uint32_t rgb,
+                  int clip_x0, int clip_y0, int clip_x1, int clip_y1) {
     int minx;
     int miny;
     int maxx;
     int maxy;
     int y;
     int64_t area;
-    uint32_t rgb;
     int64_t col_step0;
     int64_t col_step1;
     int64_t col_step2;
 
     if (pixels == 0 || w <= 0 || h <= 0)
-        return;
-    if (color < 0 || color >= GFX2D_PALETTE_SIZE)
         return;
 
     area = edge(x0, y0, x1, y1, x2, y2);
@@ -84,7 +81,6 @@ void tri_fill_clip(uint32_t *pixels, int w, int h,
     if (!clip_box(&minx, &miny, &maxx, &maxy, w, h, clip_x0, clip_y0, clip_x1, clip_y1))
         return;
 
-    rgb = gfx2d_color(color);
     col_step0 = (int64_t)(y2 - y1);
     col_step1 = (int64_t)(y0 - y2);
     col_step2 = (int64_t)(y1 - y0);
@@ -113,6 +109,20 @@ void tri_fill_clip(uint32_t *pixels, int w, int h,
             w2 += col_step2;
         }
     }
+}
+
+void tri_fill_clip(uint32_t *pixels, int w, int h,
+                   int x0, int y0, int32_t z0,
+                   int x1, int y1, int32_t z1,
+                   int x2, int y2, int32_t z2,
+                   int color,
+                   int clip_x0, int clip_y0, int clip_x1, int clip_y1) {
+    if (color < 0 || color >= GFX2D_PALETTE_SIZE)
+        return;
+    tri_fill_u32(pixels, w, h,
+                 x0, y0, z0, x1, y1, z1, x2, y2, z2,
+                 gfx2d_color(color),
+                 clip_x0, clip_y0, clip_x1, clip_y1);
 }
 
 void tri_fill(uint32_t *pixels, int w, int h,

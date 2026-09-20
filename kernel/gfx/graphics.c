@@ -1,4 +1,5 @@
 #include "graphics.h"
+#include "gfx_fast.h"
 #include "heap.h"
 
 static uint32_t *g_backbuffer;
@@ -70,7 +71,6 @@ void gfx_fill_rect(int x, int y, int width, int height, uint32_t color) {
     int y0 = y < 0 ? 0 : y;
     int x1 = x + width;
     int y1 = y + height;
-    int px;
     int py;
 
     if (x1 > g_gfx.width) {
@@ -83,12 +83,8 @@ void gfx_fill_rect(int x, int y, int width, int height, uint32_t color) {
         return;
     }
 
-    for (py = y0; py < y1; ++py) {
-        uint32_t *row = g_gfx.back + py * g_gfx.width;
-        for (px = x0; px < x1; ++px) {
-            row[px] = color;
-        }
-    }
+    for (py = y0; py < y1; ++py)
+        gfx_fast_fill_u32(g_gfx.back + py * g_gfx.width + x0, x1 - x0, color);
 }
 
 void gfx_fill_circle(int cx, int cy, int radius, uint32_t color) {
@@ -244,12 +240,12 @@ void gfx_mark_dirty(int x, int y, int w, int h) {
 }
 
 void gfx_present(void) {
-    int x;
     int y;
     int x0;
     int y0;
     int x1;
     int y1;
+    int n;
 
     if (!g_gfx.front || !g_gfx.back) {
         return;
@@ -266,11 +262,20 @@ void gfx_present(void) {
         x1 = g_gfx.width;
         y1 = g_gfx.height;
     }
+    if (x0 < 0)
+        x0 = 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (x1 > g_gfx.width)
+        x1 = g_gfx.width;
+    if (y1 > g_gfx.height)
+        y1 = g_gfx.height;
+    if (x0 >= x1 || y0 >= y1)
+        return;
+    n = x1 - x0;
     for (y = y0; y < y1; ++y) {
-        uint32_t *dst = g_gfx.front + y * g_gfx.pitch_pixels;
-        const uint32_t *src = g_gfx.back + y * g_gfx.width;
-        for (x = x0; x < x1; ++x) {
-            dst[x] = src[x];
-        }
+        uint32_t *dst = g_gfx.front + y * g_gfx.pitch_pixels + x0;
+        const uint32_t *src = g_gfx.back + y * g_gfx.width + x0;
+        gfx_fast_copy_u32(dst, src, n);
     }
 }

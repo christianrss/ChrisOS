@@ -1,6 +1,8 @@
 #include "mesh.h"
 
+#include "gfx2d.h"
 #include "math3d.h"
+#include "shade.h"
 #include "tile.h"
 #include "tri.h"
 #include "zbuf.h"
@@ -190,11 +192,21 @@ int mesh_draw_f(ClvmVm *vm, int32_t addr, int32_t vertices, int32_t triangles,
         vec3f_set(&e1, g_wx[c] - g_wx[a], g_wy[c] - g_wy[a], g_wz[c] - g_wz[a]);
         vec3f_cross(&nn, &e0, &e1);
         vec3f_norm(&nn);
-        tri_fill_lit(pixels, w, h,
-                     g_sx[a], g_sy[a], (int32_t)g_sz[a], 0.0f, 0.0f, nn.x, nn.y, nn.z,
-                     g_sx[b], g_sy[b], (int32_t)g_sz[b], 1.0f, 0.0f, nn.x, nn.y, nn.z,
-                     g_sx[c], g_sy[c], (int32_t)g_sz[c], 0.0f, 1.0f, nn.x, nn.y, nn.z,
-                     color < 16 ? color : 7, texid, 0, 0, w, h);
+        if (texid < 0) {
+            uint32_t rgb = gfx2d_color(color < 16 ? color : 7);
+            rgb = shade_phong(rgb, nn.x, nn.y, nn.z);
+            tri_fill_u32(pixels, w, h,
+                         g_sx[a], g_sy[a], (int32_t)g_sz[a],
+                         g_sx[b], g_sy[b], (int32_t)g_sz[b],
+                         g_sx[c], g_sy[c], (int32_t)g_sz[c],
+                         rgb, 0, 0, w, h);
+        } else {
+            tri_fill_lit(pixels, w, h,
+                         g_sx[a], g_sy[a], (int32_t)g_sz[a], 0.0f, 0.0f, nn.x, nn.y, nn.z,
+                         g_sx[b], g_sy[b], (int32_t)g_sz[b], 1.0f, 0.0f, nn.x, nn.y, nn.z,
+                         g_sx[c], g_sy[c], (int32_t)g_sz[c], 0.0f, 1.0f, nn.x, nn.y, nn.z,
+                         color < 16 ? color : 7, texid, 0, 0, w, h);
+        }
     }
     return 0;
 }

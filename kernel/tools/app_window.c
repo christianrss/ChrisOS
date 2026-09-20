@@ -17,7 +17,8 @@ static void app_run(Task *task, uint64_t ticks) {
         return;
     }
     slot = task->state.app.lang_slot;
-    if (ui_window(task, 0x00000000u, task_title(task))) {
+    if (ui_window_ex(task, 0x00000000u, task_title(task),
+                     lang_slot_fullscreen(slot) ? 0 : 1)) {
         lang_kill(slot);
         return;
     }

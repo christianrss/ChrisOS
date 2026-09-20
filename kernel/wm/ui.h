@@ -27,6 +27,8 @@ bool ui_button(Task *owner, int x, int y, int width, int height,
                uint32_t color, const char *text);
 bool ui_icon(int x, int y, uint32_t color, const char *caption);
 bool ui_window(Task *task, uint32_t body_color, const char *title);
+bool ui_window_ex(Task *task, uint32_t body_color, const char *title,
+                  int fill_body);
 void ui_draw_taskbar(void);
 TaskbarAction ui_take_taskbar_action(void);
 void ui_draw_cursor(void);

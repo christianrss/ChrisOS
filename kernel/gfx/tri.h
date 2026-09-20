@@ -16,6 +16,13 @@ void tri_fill_clip(uint32_t *pixels, int w, int h,
                    int color,
                    int clip_x0, int clip_y0, int clip_x1, int clip_y1);
 
+void tri_fill_u32(uint32_t *pixels, int w, int h,
+                  int x0, int y0, int32_t z0,
+                  int x1, int y1, int32_t z1,
+                  int x2, int y2, int32_t z2,
+                  uint32_t rgb,
+                  int clip_x0, int clip_y0, int clip_x1, int clip_y1);
+
 void tri_fill_lit(uint32_t *pixels, int w, int h,
                   int x0, int y0, int32_t z0, float u0, float v0,
                   float nx0, float ny0, float nz0,

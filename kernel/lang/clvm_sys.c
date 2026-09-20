@@ -2,6 +2,7 @@
 #include "clvm_sys.h"
 #include "bench.h"
 #include "gfx2d.h"
+#include "gfx_fast.h"
 #include "gfx_slot.h"
 #include "graphics.h"
 #include "math3d.h"
@@ -371,6 +372,9 @@ void clvm_sys_blit_to(const uint32_t *src, int dx, int dy, int sw, int sh,
     int y;
     int dw;
     int dh;
+    static int sxmap[1920];
+    static int map_sw = -1;
+    static int map_dw = -1;
 
     if (!src || g_gfx.back == 0 || g_gfx.width <= 0 || g_gfx.height <= 0)
         return;
@@ -388,7 +392,7 @@ void clvm_sys_blit_to(const uint32_t *src, int dx, int dy, int sw, int sh,
         dw = g_gfx.width - dx;
     if (dy + dh > g_gfx.height)
         dh = g_gfx.height - dy;
-    if (dw <= 0 || dh <= 0)
+    if (dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0)
         return;
 
     gfx_mark_dirty(dx, dy, dw, dh);
@@ -396,21 +400,26 @@ void clvm_sys_blit_to(const uint32_t *src, int dx, int dy, int sw, int sh,
         for (y = 0; y < dh; ++y) {
             uint32_t *dst = g_gfx.back + (dy + y) * g_gfx.width + dx;
             const uint32_t *row = src + (size_t)y * (size_t)sw;
-            int x;
-            for (x = 0; x < dw; ++x)
-                dst[x] = row[x];
+            gfx_fast_copy_u32(dst, row, dw);
         }
         return;
+    }
+    if (dw > 1920)
+        dw = 1920;
+    if (map_sw != sw || map_dw != dw) {
+        int x;
+        for (x = 0; x < dw; ++x)
+            sxmap[x] = x * sw / dw;
+        map_sw = sw;
+        map_dw = dw;
     }
     for (y = 0; y < dh; ++y) {
         uint32_t *dst = g_gfx.back + (dy + y) * g_gfx.width + dx;
         int sy = y * sh / dh;
         const uint32_t *row = src + (size_t)sy * (size_t)sw;
         int x;
-        for (x = 0; x < dw; ++x) {
-            int sx = x * sw / dw;
-            dst[x] = row[sx];
-        }
+        for (x = 0; x < dw; ++x)
+            dst[x] = row[sxmap[x]];
     }
 }
 
