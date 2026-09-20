@@ -92,6 +92,16 @@ int main(void) {
                cfs_write(&fs, "GAMES/A.TXT", "hello", 5u), 5);
     expect_int("write slash",
                cfs_write(&fs, "/SRC/B.TXT", "world", 5u), 5);
+    expect_int("case a", cfs_write(&fs, "GAMES/foo", "lo", 2u), 2);
+    expect_int("case A", cfs_write(&fs, "GAMES/Foo", "HI", 2u), 2);
+    memset(got, 0, sizeof(got));
+    expect_int("read foo", cfs_read(&fs, "GAMES/foo", got, 16u), 2);
+    expect_int("foo byte", (int)got[0], (int)'l');
+    memset(got, 0, sizeof(got));
+    expect_int("read Foo", cfs_read(&fs, "GAMES/Foo", got, 16u), 2);
+    expect_int("Foo byte", (int)got[0], (int)'H');
+    expect_int("unlink foo", cfs_unlink(&fs, "GAMES/foo"), CFS_OK);
+    expect_int("unlink Foo", cfs_unlink(&fs, "GAMES/Foo"), CFS_OK);
     memset(got, 0, sizeof(got));
     expect_int("read path", cfs_read(&fs, "GAMES/A.TXT", got, 16u), 5);
     expect_int("byte0", (int)got[0], (int)'h');

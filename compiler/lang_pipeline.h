@@ -31,6 +31,8 @@ int lang_find_slot_by_task(int task_id);
 int lang_compile_file(const char *src_path, const char *clv_path);
 int lang_compile_many(const char **paths, int npaths);
 int lang_compile_list(const char *lst_path);
+const char *lang_last_clv(void);
+const char *lang_last_error(void);
 int lang_splash_start(const char *clv_path);
 void lang_splash_frame(uint32_t now);
 void lang_splash_stop(void);

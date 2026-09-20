@@ -62,6 +62,8 @@ static char source_buffer[LANG_SOURCE_MAX];
 static uint8_t code_buffer[LANG_CODE_MAX];
 static uint8_t file_buffer[LANG_FILE_MAX];
 static ChrisResult g_chris_result;
+static char g_last_clv[LANG_NAME_MAX];
+static char g_last_err[160];
 static int g_want_debug;
 static ClvmSysFn system_fn;
 static void *system_user;
@@ -118,6 +120,13 @@ static void append_u(char *out, int cap, int *n, unsigned v) {
     out[*n] = 0;
 }
 
+static char lowc(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return (char)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
 static int suffix(const char *s, const char *ext) {
     int a = slen(s);
     int b = slen(ext);
@@ -126,7 +135,7 @@ static int suffix(const char *s, const char *ext) {
         return 0;
     }
     for (i = 0; i < b; ++i) {
-        if (s[a - b + i] != ext[i]) {
+        if (lowc(s[a - b + i]) != lowc(ext[i])) {
             return 0;
         }
     }
@@ -146,7 +155,48 @@ static int slot_ensure_file(int i) {
 }
 
 static int starts_src(const char *s) {
-    return s[0] == 'S' && s[1] == 'R' && s[2] == 'C' && s[3] == '/';
+    return s && (s[0] == 'S' || s[0] == 's') &&
+           (s[1] == 'R' || s[1] == 'r') &&
+           (s[2] == 'C' || s[2] == 'c') && s[3] == '/';
+}
+
+static int last_dot_at(const char *s) {
+    int i;
+    int d = -1;
+    if (!s) {
+        return -1;
+    }
+    for (i = 0; s[i]; ++i) {
+        if (s[i] == '.') {
+            d = i;
+        }
+    }
+    return d;
+}
+
+static void clv_to_map(const char *clv, char mapn[LANG_NAME_MAX]) {
+    int k = 0;
+    int dot;
+    if (!clv || !mapn) {
+        if (mapn) {
+            mapn[0] = 0;
+        }
+        return;
+    }
+    while (clv[k] && k + 1 < LANG_NAME_MAX) {
+        mapn[k] = clv[k];
+        ++k;
+    }
+    mapn[k] = 0;
+    dot = last_dot_at(mapn);
+    if (dot >= 0 && dot + 4 < LANG_NAME_MAX) {
+        int upper_ext = mapn[dot + 1] >= 'A' && mapn[dot + 1] <= 'Z';
+        mapn[dot] = '.';
+        mapn[dot + 1] = (char)(upper_ext ? 'M' : 'm');
+        mapn[dot + 2] = (char)(upper_ext ? 'A' : 'a');
+        mapn[dot + 3] = (char)(upper_ext ? 'P' : 'p');
+        mapn[dot + 4] = 0;
+    }
 }
 
 static int basename_start(const char *s) {
@@ -162,44 +212,119 @@ static int basename_start(const char *s) {
 }
 
 static int output_name(const char *in, char out[LANG_NAME_MAX]) {
-    int n = slen(in);
-    int base;
+    int n;
+    int dot;
     int i;
     int dst = 0;
-    if (n < 4) {
+    int upper_ext;
+    const char *stem;
+    if (!in || !out) {
         return 0;
     }
+    n = slen(in);
+    if (n < 2) {
+        return 0;
+    }
+    stem = in;
     if (starts_src(in)) {
-        out[dst++] = 'B';
-        out[dst++] = 'I';
-        out[dst++] = 'N';
-        out[dst++] = '/';
-        base = basename_start(in);
-        n = slen(in + base);
-        in = in + base;
-        if (n < 4) {
-            return 0;
+        if (in[0] >= 'a') {
+            out[dst++] = 'b';
+            out[dst++] = 'i';
+            out[dst++] = 'n';
+            out[dst++] = '/';
+        } else {
+            out[dst++] = 'B';
+            out[dst++] = 'I';
+            out[dst++] = 'N';
+            out[dst++] = '/';
         }
-        for (i = 0; i < n - 3 && dst < LANG_NAME_MAX - 4; ++i) {
-            out[dst++] = in[i];
-        }
+        stem = in + basename_start(in);
+    }
+    dot = last_dot_at(stem);
+    if (dot <= 0) {
+        return 0;
+    }
+    upper_ext = stem[dot + 1] >= 'A' && stem[dot + 1] <= 'Z';
+    if (dst + dot + 4 >= LANG_NAME_MAX) {
+        return 0;
+    }
+    for (i = 0; i < dot; ++i) {
+        out[dst++] = stem[i];
+    }
+    out[dst++] = '.';
+    if (upper_ext) {
         out[dst++] = 'C';
         out[dst++] = 'L';
         out[dst++] = 'V';
-        out[dst] = 0;
-        return 1;
+    } else {
+        out[dst++] = 'c';
+        out[dst++] = 'l';
+        out[dst++] = 'v';
     }
-    base = n - 3;
-    if (base + 3 >= LANG_NAME_MAX) {
+    out[dst] = 0;
+    return 1;
+}
+
+static void clear_last_lang(void) {
+    g_last_clv[0] = 0;
+    g_last_err[0] = 0;
+}
+
+static void set_err_diag(const ChrisDiag *d) {
+    int n = 0;
+    g_last_err[0] = 0;
+    if (!d) {
+        return;
+    }
+    if (d->file[0]) {
+        append(g_last_err, (int)sizeof(g_last_err), &n, d->file);
+        append(g_last_err, (int)sizeof(g_last_err), &n, ":");
+    }
+    append_u(g_last_err, (int)sizeof(g_last_err), &n, (unsigned)d->line);
+    append(g_last_err, (int)sizeof(g_last_err), &n, ":");
+    append_u(g_last_err, (int)sizeof(g_last_err), &n, (unsigned)d->column);
+    append(g_last_err, (int)sizeof(g_last_err), &n, " ");
+    append(g_last_err, (int)sizeof(g_last_err), &n, d->message);
+}
+
+const char *lang_last_clv(void) {
+    return g_last_clv;
+}
+
+const char *lang_last_error(void) {
+    return g_last_err;
+}
+
+static int emit_game_clv(const char *outn) {
+    size_t code_size;
+    uint32_t entry;
+    size_t file_size;
+    int n;
+    if (!outn || !outn[0]) {
         return 0;
     }
-    for (i = 0; i < base; ++i) {
-        out[i] = in[i];
+    scopy(g_last_clv, LANG_NAME_MAX, outn);
+    code_size = g_chris_result.code_size;
+    entry = g_chris_result.entry;
+    lang_write_map(outn, &g_chris_result);
+    if (code_size > 65535u || entry > 65535u)
+        file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
+                                       CLVM_FLAG_GAME, entry, 0,
+                                       code_buffer, code_size);
+    else
+        file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
+                                    CLVM_FLAG_GAME, (uint16_t)entry,
+                                    code_buffer, code_size);
+    if (!file_size) {
+        n = 0;
+        append(g_last_err, (int)sizeof(g_last_err), &n, "clv image fail");
+        return 0;
     }
-    out[base++] = 'C';
-    out[base++] = 'L';
-    out[base++] = 'V';
-    out[base] = 0;
+    if (fs_write(outn, file_buffer, (int)file_size) < 0) {
+        n = 0;
+        append(g_last_err, (int)sizeof(g_last_err), &n, "clv write fail");
+        return 0;
+    }
     return 1;
 }
 
@@ -339,20 +464,11 @@ static void lang_load_map(int slot, const char *clv) {
     char buf[8192];
     int n;
     int i;
-    int k;
     slots[slot].map_n = 0;
     slots[slot].step_line = 0;
     if (!clv)
         return;
-    k = 0;
-    while (clv[k] && k + 1 < LANG_NAME_MAX)
-        mapn[k] = clv[k], ++k;
-    mapn[k] = 0;
-    if (k > 4) {
-        mapn[k - 3] = 'M';
-        mapn[k - 2] = 'A';
-        mapn[k - 1] = 'P';
-    }
+    clv_to_map(clv, mapn);
     n = fs_read(mapn, buf, (int)sizeof(buf) - 1);
     if (n < 0)
         return;
@@ -527,6 +643,7 @@ int lang_compile(Editor *e) {
             status(e, buf);
             return 0;
         }
+        scopy(g_last_clv, LANG_NAME_MAX, name);
     }
     {
         ClaImage img;
@@ -594,7 +711,10 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     }
     n = fs_read(name, slots[i].file, (int)slots[i].file_cap);
     if (n < 0) {
-        status(e, "run: .CLV not found");
+        int k = 0;
+        e->status[0] = 0;
+        append(e->status, 80, &k, "run: not found ");
+        append(e->status, 80, &k, name ? name : "");
         return 0;
     }
     if (storage_ready() && storage_cfs()) {
@@ -717,30 +837,17 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
 
 int lang_compile_many(const char **paths, int npaths) {
     char outn[LANG_NAME_MAX];
-    size_t code_size;
-    uint32_t entry;
-    size_t file_size;
+    clear_last_lang();
     if (!paths || npaths < 1)
         return 0;
     if (!output_name(paths[0], outn))
         return 0;
     if (!chrisc_compile_files(paths, npaths, chrisc_fs_read, 0, code_buffer,
-                              sizeof(code_buffer), &g_chris_result))
+                              sizeof(code_buffer), &g_chris_result)) {
+        set_err_diag(&g_chris_result.diag);
         return 0;
-    code_size = g_chris_result.code_size;
-    entry = g_chris_result.entry;
-    lang_write_map(outn, &g_chris_result);
-    if (code_size > 65535u || entry > 65535u)
-        file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
-                                       CLVM_FLAG_GAME, entry, 0,
-                                       code_buffer, code_size);
-    else
-        file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
-                                    CLVM_FLAG_GAME, (uint16_t)entry,
-                                    code_buffer, code_size);
-    if (!file_size)
-        return 0;
-    return fs_write(outn, file_buffer, (int)file_size) >= 0;
+    }
+    return emit_game_clv(outn);
 }
 
 int lang_compile_list(const char *lst_path) {
@@ -753,8 +860,13 @@ int lang_compile_list(const char *lst_path) {
     if (!lst_path)
         return 0;
     n = fs_read(lst_path, lst, (int)sizeof(lst) - 1);
-    if (n < 0)
+    if (n < 0) {
+        int k = 0;
+        clear_last_lang();
+        append(g_last_err, (int)sizeof(g_last_err), &k, "lst not found ");
+        append(g_last_err, (int)sizeof(g_last_err), &k, lst_path);
         return 0;
+    }
     lst[n] = 0;
     p = 0;
     while (p < n && npaths < LANG_LST_MAX) {
@@ -785,7 +897,21 @@ int lang_compile_list(const char *lst_path) {
     }
     if (npaths < 1)
         return 0;
-    return lang_compile_many(pp, npaths);
+    clear_last_lang();
+    if (!chrisc_compile_files(pp, npaths, chrisc_fs_read, 0, code_buffer,
+                              sizeof(code_buffer), &g_chris_result)) {
+        set_err_diag(&g_chris_result.diag);
+        return 0;
+    }
+    {
+        char outn[LANG_NAME_MAX];
+        if (!output_name(lst_path, outn)) {
+            int k = 0;
+            append(g_last_err, (int)sizeof(g_last_err), &k, "bad lst name");
+            return 0;
+        }
+        return emit_game_clv(outn);
+    }
 }
 
 int lang_splash_start(const char *name) {
@@ -1022,18 +1148,9 @@ void lang_write_map(const char *clv_path, const ChrisResult *r) {
     char buf[8192];
     int n = 0;
     int i;
-    int k;
     if (!clv_path || !r)
         return;
-    k = 0;
-    while (clv_path[k] && k + 1 < LANG_NAME_MAX)
-        mapn[k] = clv_path[k], ++k;
-    mapn[k] = 0;
-    if (k > 4) {
-        mapn[k - 3] = 'M';
-        mapn[k - 2] = 'A';
-        mapn[k - 1] = 'P';
-    }
+    clv_to_map(clv_path, mapn);
     buf[0] = 0;
     for (i = 0; i < r->map_n && n + 32 < (int)sizeof(buf); ++i) {
         unsigned v = r->map[i].pc;

@@ -65,7 +65,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/wm/task.o kernel/wm/ui.o kernel/wm/desktop.o kernel/wm/main.o \
 	kernel/wm/boot_splash.o \
 	kernel/tools/editor.o kernel/tools/editor_window.o kernel/tools/explorer.o \
-	kernel/tools/shell.o kernel/tools/chrisbuild.o kernel/tools/native_link.o \
+	kernel/tools/shell.o kernel/tools/chrisbuild.o kernel/tools/chrismake.o kernel/tools/native_link.o \
 	compiler/chrisld/chriso.o compiler/chrisasm/chrisasm.o \
 	compiler/chrisld/chrisld.o compiler/kcc/kcc.o \
 	kernel/fs/ata_pio.o kernel/fs/cfs.o kernel/fs/cfs_fsck.o \
@@ -482,6 +482,8 @@ disk-doom: $(DISK_IMG) host-cfs-put-file GAMES/DOOM/DOOM1.WAD
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/MAIN.CC GAMES/DOOM/MAIN.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.LST GAMES/DOOM/DOOM.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/ENGINE.LST GAMES/DOOM/ENGINE.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/Makefile GAMES/DOOM/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) Makefile GAMES/DOOM/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM1.WAD GAMES/DOOM/DOOM1.WAD
 	@while IFS= read -r f; do \
 		f=$$(printf '%s' "$$f" | tr -d '\r'); \
@@ -560,6 +562,13 @@ disk-lib: $(DISK_IMG) host-cfs-put-file
 disk: disk-hello disk-fault disk-cube disk-world disk-watch disk-blink disk-exit42 disk-lib disk-doom host-cfs-put
 	$(HOST_BIN)/cfs_put $(DISK_IMG)
 
+test_chrismake: tools/test_chrismake.c kernel/tools/chrismake.c kernel/tools/chrismake.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/tools \
+		tools/test_chrismake.c kernel/tools/chrismake.c \
+		-o $(HOST_BIN)/test_chrismake
+	$(HOST_BIN)/test_chrismake
+
 test_clasm: tools/test_clasm.c compiler/clvm/clasm.c compiler/clvm/clvm.h compiler/clvm/clasm.h
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/clvm \
@@ -588,7 +597,7 @@ host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mes
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
 	host-jit-test host-jit-vm-test host-jit-native-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
-	host-kcc-test test_native_link host-gfx3d
+	host-kcc-test test_native_link host-gfx3d test_chrismake
 
 host-chrisasm-test: tools/test_chrisasm.c compiler/chrisasm/chrisasm.c \
 		compiler/chrisld/chriso.c
