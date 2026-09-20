@@ -6,6 +6,8 @@
 
 #define CLVM_SYS_GAME_W 320
 #define CLVM_SYS_GAME_H 200
+#define CLVM_SYS_GAME_MAX_W 1920
+#define CLVM_SYS_GAME_MAX_H 1080
 
 typedef struct ClvmGfxCtx {
     uint32_t *pixels;

@@ -19,6 +19,7 @@ void main() {
   a=0.0;
   viewport(320,200);
   while(1){
+    if(key(1)){ return; }
     clear(1);
     cam(0.0,1.5,5.0,0.0,0.0);
     light(2.5,6.0,4.0,1.0,1.0,1.0);

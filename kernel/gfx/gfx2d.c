@@ -3,6 +3,7 @@
 #include "gfx_fast.h"
 #include "zbuf.h"
 #ifdef __freestanding__
+#include "smp.h"
 #include "tile.h"
 #endif
 
@@ -49,7 +50,7 @@ void gfx2d_clear(uint32_t *pixels, int w, int h, int color) {
         return;
     rgb = gfx2d_palette[color];
 #ifdef __freestanding__
-    if (w * h >= 512 * 512) {
+    if (w * h >= 512 * 512 && cpu_online_count >= 2u) {
         tile_parallel_clear(pixels, w, h, rgb);
         zbuf_set_size(w, h);
         zbuf_clear();

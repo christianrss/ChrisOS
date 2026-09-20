@@ -39,7 +39,7 @@ int job_submit(JobFn fn, void *arg) {
     g_queue[g_q_tail].arg = arg;
     g_q_tail = (g_q_tail + 1u) % JOB_QUEUE_CAP;
     g_q_count += 1u;
-    g_inflight += 1u;
+    atomic_add_u32(&g_inflight, 1u);
     spin_unlock(&g_q_lock);
     return 1;
 }
@@ -71,7 +71,8 @@ void job_worker_forever(uint32_t cpu_index) {
 }
 
 void job_wait_idle(void) {
-    while (g_inflight != 0u) {
+    while (atomic_add_u32(&g_inflight, 0u) != 0u) {
+        job_worker_once(0);
         __asm__ volatile ("pause");
     }
 }
@@ -90,6 +91,7 @@ static void add_one(void *arg, uint32_t cpu_index) {
 
 void smp_job_selftest(void) {
     uint32_t i;
+    uint32_t wave;
 
     g_job_sum = 0u;
     if (cpu_online_count < 2u) {
@@ -107,6 +109,21 @@ void smp_job_selftest(void) {
         serial_write_u64(g_job_sum);
         serial_puts(" expected 16\n");
         panic("job_sum");
+    }
+    for (wave = 0u; wave < 32u; ++wave) {
+        g_job_sum = 0u;
+        for (i = 0u; i < 128u; ++i) {
+            if (!job_submit(add_one, 0)) {
+                panic("job_submit failed");
+            }
+        }
+        job_wait_idle();
+        if (g_job_sum != 128u) {
+            serial_puts("job_sum=");
+            serial_write_u64(g_job_sum);
+            serial_puts(" expected 128\n");
+            panic("job_sum");
+        }
     }
     serial_puts("job selftest ok sum=16\n");
 }

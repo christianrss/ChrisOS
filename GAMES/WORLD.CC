@@ -35,6 +35,7 @@ void main() {
   eye.z=22.0;
   viewport(320,200);
   while(1){
+    if(key(1)){ return; }
     if(key(2)){ scene=0; }
     if(key(3)){ scene=1; }
     clear(1);
@@ -66,6 +67,10 @@ void main() {
       if(key(31)){ eye.z=eye.z+0.25; }
       if(key(30)){ eye.x=eye.x-0.25; }
       if(key(32)){ eye.x=eye.x+0.25; }
+      if(key(72)){ eye.z=eye.z-0.25; }
+      if(key(80)){ eye.z=eye.z+0.25; }
+      if(key(75)){ eye.x=eye.x-0.25; }
+      if(key(77)){ eye.x=eye.x+0.25; }
       if(key(16)){ eye.y=eye.y+0.2; }
       if(key(18)){ eye.y=eye.y-0.2; }
       cam(eye.x,eye.y,eye.z,0.0,0.0);

@@ -25,6 +25,7 @@
 #include "job.h"
 #include "smp.h"
 #include "sse_init.h"
+#include "boot_splash.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -57,20 +58,6 @@ void kstart(void) {
     sse_bsp_init();
     heap_selftest();
 
-    apic_init();
-    ioapic_init();
-    job_init();
-    smp_init();
-    smp_job_selftest();
-
-    storage_init();
-    fs_init();
-    lang_init(clvm_sys_dispatch, 0);
-    speaker_off();
-    if (!net_init()) {
-        serial_puts("ChrisOS: net unavailable\n");
-    }
-
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||
         !gfx_init((uint32_t *)(uintptr_t)boot->fb_addr,
@@ -79,10 +66,30 @@ void kstart(void) {
                   (int)boot->fb_pitch)) {
         panic("gfx_init recusou o framebuffer");
     }
+    gfx_clear(0x00101828u);
+    gfx_present();
 
-    desktop_init();
-    serial_puts("ChrisOS: desktop 60Hz\n");
+    apic_init();
+    ioapic_init();
+    job_init();
+    smp_init();
+    smp_job_selftest();
+
+    __asm__ volatile ("cli");
+    storage_init();
+    fs_init();
+    lang_init(clvm_sys_dispatch, 0);
+    speaker_off();
+    if (!net_init()) {
+        serial_puts("ChrisOS: net unavailable\n");
+    }
+
     __asm__ volatile ("sti");
+    boot_splash_load();
+    desktop_init();
+    boot_splash_run(120);
+    boot_splash_stop();
+    serial_puts("ChrisOS: desktop 60Hz\n");
     desktop_run();
 }
 

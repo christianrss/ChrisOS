@@ -78,6 +78,10 @@ void tile_parallel_clear(uint32_t *dest, int w, int h, uint32_t color) {
 
     for (ty = 0; ty < tys; ++ty) {
         for (tx = 0; tx < txs; ++tx) {
+            if (n >= (int)JOB_QUEUE_CAP) {
+                job_wait_idle();
+                n = 0;
+            }
             args[n].dest = dest;
             args[n].w = w;
             args[n].h = h;

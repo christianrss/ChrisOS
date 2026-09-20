@@ -39,12 +39,26 @@ static void ata_delay_400ns(const AtaPio *a) {
     (void)inb(a->ctrl);
 }
 
+static int ata_wait_not_busy(const AtaPio *a) {
+    uint32_t i;
+    uint8_t s;
+    for (i = 0; i < a->poll_limit; i++) {
+        s = inb(a->ctrl);
+        if (s == 0xffu)
+            return BD_ENODEV;
+        if (!(s & ATA_SR_BSY))
+            return BD_OK;
+        __asm__ volatile ("pause");
+    }
+    return BD_ETIMEOUT;
+}
+
 static int ata_poll(const AtaPio *a, int need_drq) {
     uint32_t i;
     uint8_t s;
     for (i = 0; i < a->poll_limit; i++) {
         s = inb((uint16_t)(a->io + ATA_REG_STATUS));
-        if (s == 0u || s == 0xffu)
+        if (s == 0xffu)
             return BD_ENODEV;
         if (s & (ATA_SR_ERR | ATA_SR_DF))
             return BD_EIO;
@@ -160,11 +174,22 @@ void ata_pio_configure(AtaPio *a, uint32_t sectors) {
     a->poll_limit = 1000000u;
 }
 
-static void ata_soft_reset(const AtaPio *a) {
-    outb(a->ctrl, 0x04u);
-    ata_delay_400ns(a);
-    outb(a->ctrl, 0x00u);
-    ata_delay_400ns(a);
+static void ata_soft_reset_port(uint16_t ctrl) {
+    outb(ctrl, 0x04u);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+    outb(ctrl, 0x02u);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+    (void)inb(ctrl);
+}
+
+static void ata_soft_reset_all(void) {
+    ata_soft_reset_port(0x3f6u);
+    ata_soft_reset_port(0x376u);
 }
 
 static int ata_try_identify(AtaPio *a, uint32_t *reported_sectors) {
@@ -173,6 +198,9 @@ static int ata_try_identify(AtaPio *a, uint32_t *reported_sectors) {
     int rc;
 
     ata_select(a, 0u);
+    rc = ata_wait_not_busy(a);
+    if (rc != BD_OK)
+        return rc;
     outb((uint16_t)(a->io + ATA_REG_COUNT), 0u);
     outb((uint16_t)(a->io + ATA_REG_LBA0), 0u);
     outb((uint16_t)(a->io + ATA_REG_LBA1), 0u);
@@ -211,7 +239,11 @@ int ata_pio_identify(AtaPio *a, uint32_t *reported_sectors) {
     }
     for (attempt = 0; attempt < 8u; attempt++) {
         if (attempt > 0u) {
-            ata_soft_reset(a);
+            ata_soft_reset_all();
+            a->io = ports[0].io;
+            a->ctrl = ports[0].ctrl;
+            a->drive = 0u;
+            (void)ata_wait_not_busy(a);
             for (i = 0; i < 200000u; i++) {
                 __asm__ volatile ("pause");
             }

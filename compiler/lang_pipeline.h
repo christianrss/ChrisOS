@@ -6,6 +6,7 @@
 
 #define LANG_VM_SLOTS 8
 #define LANG_VM_BUDGET 64000u
+#define LANG_SPLASH_SLOT 0
 
 void lang_init(ClvmSysFn sys, void *sys_user);
 int lang_save(Editor *editor);
@@ -26,5 +27,9 @@ int lang_slot_fullscreen(int slot);
 int lang_slot_task(int slot);
 void lang_bind_task(int slot, int task_id);
 int lang_find_slot_by_task(int task_id);
+int lang_compile_file(const char *src_path, const char *clv_path);
+int lang_splash_start(const char *clv_path);
+void lang_splash_frame(uint32_t now);
+void lang_splash_stop(void);
 
 #endif

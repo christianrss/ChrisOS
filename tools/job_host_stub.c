@@ -85,7 +85,7 @@ int job_submit(JobFn fn, void *arg) {
     g_queue[g_tail].arg = arg;
     g_tail = (g_tail + 1u) % JOB_Q_CAP;
     g_count += 1u;
-    g_inflight += 1u;
+    __sync_fetch_and_add(&g_inflight, 1u);
     pthread_cond_signal(&g_nonempty);
     pthread_mutex_unlock(&g_lock);
     return 1;

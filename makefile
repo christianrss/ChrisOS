@@ -2,6 +2,7 @@ CC := gcc
 LD := ld
 QEMU := qemu-system-x86_64
 # zoom-to-fit: guest 1080p cabe no monitor; grab-on-hover: mouse sem clique preciso.
+# Clicar na janela do QEMU (grab-on-hover) para o guest receber teclas.
 # Windows sem GTK: make run QEMU_DISPLAY=sdl,grab-mod=lshift-lshift
 QEMU_DISPLAY ?= gtk,zoom-to-fit=on,grab-on-hover=on,show-cursor=on
 XORRISO := xorriso
@@ -61,6 +62,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/gfx/graphics.o kernel/gfx/font.o kernel/gfx/input.o \
 	kernel/gfx/speaker.o kernel/gfx/gfx2d.o \
 	kernel/wm/task.o kernel/wm/ui.o kernel/wm/desktop.o kernel/wm/main.o \
+	kernel/wm/boot_splash.o \
 	kernel/tools/editor.o kernel/tools/editor_window.o kernel/tools/explorer.o \
 	kernel/tools/shell.o kernel/tools/chrisbuild.o \
 	compiler/chrisld/chriso.o compiler/chrisasm/chrisasm.o \
@@ -258,6 +260,18 @@ test_chrisc_games: tools/test_chrisc_games.c compiler/chrisc/chrisc.c
 		-o $(HOST_BIN)/test_chrisc_games
 	$(HOST_BIN)/test_chrisc_games
 
+test_chrisc_trig: tools/test_chrisc_trig.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		kernel/gfx/math3d.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		-Ikernel/gfx -msse2 -mfpmath=sse -ffast-math \
+		tools/test_chrisc_trig.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		kernel/gfx/math3d.c -lm \
+		-o $(HOST_BIN)/test_chrisc_trig
+	$(HOST_BIN)/test_chrisc_trig
+
 test_tri: kernel/gfx/gfx2d.c tools/test_tri.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/shade.c kernel/gfx/tex.c kernel/gfx/math3d.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -msse2 -ffast-math \
@@ -409,10 +423,13 @@ disk-cube: $(DISK_IMG) host-cfs-put-file
 disk-world: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/WORLD.CC GAMES/WORLD.CC
 
-disk: disk-hello disk-fault disk-cube disk-world host-cfs-put
+disk-watch: $(DISK_IMG) host-cfs-put-file
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/WATCH.CC GAMES/WATCH.CC
+
+disk: disk-hello disk-fault disk-cube disk-world disk-watch host-cfs-put
 	$(HOST_BIN)/cfs_put $(DISK_IMG)
 
-host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_games test_tile test_tile_bin
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
@@ -614,11 +631,13 @@ run: $(ISO) run-stop
 	@sleep 1
 	$(QEMU) -M pc -m 1G -smp 4 -boot order=dc \
 		-display $(QEMU_DISPLAY) \
+		-usb -device usb-tablet \
 		-drive file=$(DISK_IMG),format=raw,if=ide,index=0 \
 		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
 		-device virtio-net-pci,netdev=n0 \
 		-netdev user,id=n0,hostfwd=udp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_XFER_PORT)-:9016 \
-		-serial stdio -no-reboot -no-shutdown
+		-serial stdio -no-reboot -no-shutdown \
+		-cpu qemu64 -accel kvm
 
 clean:
 	rm -rf $(BUILD_DIR)

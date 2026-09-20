@@ -226,14 +226,10 @@ static int lang_setup_viewport(int i, const ClvmImage *image, const char *name) 
     int slot;
     (void)name;
     lang_slot_release_gfx(i);
-    clvm_gfx_native_size(&w, &h);
+    w = CLVM_SYS_GAME_W;
+    h = CLVM_SYS_GAME_H;
     if ((image->flags & CLVM_FLAG_GAME) != 0) {
         slot = gfx_slot_alloc(w, h, &pix, &zb);
-        if (slot < 0) {
-            w = 1280;
-            h = 720;
-            slot = gfx_slot_alloc(w, h, &pix, &zb);
-        }
         if (slot >= 0) {
             slots[i].gfx_slot_id = slot;
             slots[i].gfx.pixels = pix;
@@ -421,6 +417,117 @@ int lang_compile_run_jit(Editor *e) {
         return 0;
     }
     return lang_run_jit(e, name);
+}
+
+int lang_compile_file(const char *src_path, const char *clv_path) {
+    size_t file_size = 0;
+    size_t code_size = 0;
+    uint16_t entry = 0;
+    int n;
+
+    if (!src_path || !clv_path) {
+        return 0;
+    }
+    if (!suffix(src_path, ".CVA") && !suffix(src_path, ".CC")) {
+        return 0;
+    }
+    n = fs_read(src_path, source_buffer, (int)sizeof(source_buffer) - 1);
+    if (n < 0) {
+        return 0;
+    }
+    source_buffer[n] = 0;
+    if (suffix(src_path, ".CVA")) {
+        ClasmResult r;
+        if (!clasm_compile(source_buffer, (size_t)n, code_buffer,
+                           sizeof(code_buffer), &r)) {
+            return 0;
+        }
+        code_size = r.code_size;
+        entry = r.entry;
+    } else {
+        ChrisResult r;
+        if (!chrisc_compile(source_buffer, (size_t)n, code_buffer,
+                            sizeof(code_buffer), &r)) {
+            return 0;
+        }
+        code_size = r.code_size;
+        entry = r.entry;
+    }
+    file_size = clvm_write_image(file_buffer, sizeof(file_buffer), CLVM_FLAG_GAME,
+                                 entry, code_buffer, code_size);
+    if (!file_size) {
+        return 0;
+    }
+    return fs_write(clv_path, file_buffer, (int)file_size) >= 0;
+}
+
+int lang_splash_start(const char *name) {
+    int i = LANG_SPLASH_SLOT;
+    int n;
+    ClvmImage image;
+    ClvmLoadError load;
+
+    if (!name) {
+        return 0;
+    }
+    if (slots[i].used) {
+        lang_kill(i);
+    }
+    n = fs_read(name, slots[i].file, sizeof(slots[i].file));
+    if (n < 0) {
+        return 0;
+    }
+    if (storage_ready() && storage_cfs()) {
+        if (cfs_perm(storage_cfs(), name, CFS_PERM_EXEC) != CFS_OK) {
+            return 0;
+        }
+    }
+    slots[i].file_size = (size_t)n;
+    load = clvm_parse(slots[i].file, slots[i].file_size, &image);
+    if (load != CL_LOAD_OK) {
+        return 0;
+    }
+    if (!lang_setup_viewport(i, &image, name)) {
+        return 0;
+    }
+    gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
+    clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
+    slots[i].use_jit = 0;
+    slots[i].jit_fn = NULL;
+    if (slots[i].jit.phys != 0) {
+        jit_free(&slots[i].jit);
+    }
+    scopy(slots[i].name, LANG_NAME_MAX, name);
+    slots[i].task_id = -1;
+    slots[i].used = 1;
+    return 1;
+}
+
+void lang_splash_frame(uint32_t now) {
+    int i = LANG_SPLASH_SLOT;
+    int w;
+    int h;
+    int dx;
+    int dy;
+    uint32_t *pix;
+
+    if (!slots[i].used) {
+        return;
+    }
+    clvm_vm_wake(&slots[i].vm, now);
+    (void)clvm_step(&slots[i].vm, LANG_VM_BUDGET);
+    pix = slots[i].gfx.pixels;
+    w = slots[i].gfx.w;
+    h = slots[i].gfx.h;
+    dx = (g_gfx.width - w) / 2;
+    dy = (g_gfx.height - h) / 2;
+    gfx_clear(0x00101828u);
+    clvm_sys_blit_to(pix, dx, dy, w, h, w, h);
+    gfx_present();
+}
+
+void lang_splash_stop(void) {
+    lang_kill(LANG_SPLASH_SLOT);
 }
 
 void lang_tick(uint32_t now) {

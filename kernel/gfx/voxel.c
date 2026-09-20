@@ -7,6 +7,9 @@
 static void *kmalloc(uint64_t n) {
     return malloc((size_t)n);
 }
+static void kfree(void *p) {
+    free(p);
+}
 #endif
 #include "math3d.h"
 #include "tex.h"
@@ -20,11 +23,28 @@ static void *kmalloc(uint64_t n) {
 #define WORLD_SX (WORLD_CX * CHUNK_N)
 #define WORLD_SY (WORLD_CY * CHUNK_N)
 #define WORLD_SZ (WORLD_CZ * CHUNK_N)
-#define CHUNK_VOL (CHUNK_N * CHUNK_N * CHUNK_N)
+#define CHUNK_COUNT (WORLD_CX * WORLD_CY * WORLD_CZ)
+#define FACE_CAP_MAX 8192
+
+typedef struct {
+    uint8_t lx;
+    uint8_t ly;
+    uint8_t lz;
+    uint8_t face;
+    uint8_t id;
+} MeshFace;
+
+typedef struct {
+    MeshFace *faces;
+    int n;
+    int cap;
+} ChunkMesh;
 
 static uint8_t *g_blocks;
-static uint8_t g_dirty[WORLD_CX * WORLD_CY * WORLD_CZ];
+static uint8_t g_dirty[CHUNK_COUNT];
+static ChunkMesh g_mesh[CHUNK_COUNT];
 static int g_ready;
+static int g_rebuilds;
 
 static const int FACE[6][3] = {
     { 1, 0, 0 }, { -1, 0, 0 },
@@ -40,6 +60,10 @@ static int in_world(int x, int y, int z) {
     return x >= 0 && y >= 0 && z >= 0 && x < WORLD_SX && y < WORLD_SY && z < WORLD_SZ;
 }
 
+static int chunk_index(int cx, int cy, int cz) {
+    return cy * WORLD_CX * WORLD_CZ + cz * WORLD_CX + cx;
+}
+
 static int voxel_init(void) {
     int n;
     if (g_ready)
@@ -52,15 +76,24 @@ static int voxel_init(void) {
         int i;
         for (i = 0; i < n; ++i)
             g_blocks[i] = 0;
-    }
-    {
-        int i;
-        for (i = 0; i < WORLD_CX * WORLD_CY * WORLD_CZ; ++i)
+        for (i = 0; i < CHUNK_COUNT; ++i) {
             g_dirty[i] = 1;
+            g_mesh[i].faces = 0;
+            g_mesh[i].n = 0;
+            g_mesh[i].cap = 0;
+        }
     }
     tex_init();
+    g_rebuilds = 0;
     g_ready = 1;
     return 1;
+}
+
+static void mark_chunk(int cx, int cy, int cz) {
+    if (cx < 0 || cy < 0 || cz < 0 || cx >= WORLD_CX || cy >= WORLD_CY ||
+        cz >= WORLD_CZ)
+        return;
+    g_dirty[chunk_index(cx, cy, cz)] = 1;
 }
 
 int voxel_set(int x, int y, int z, int id) {
@@ -79,7 +112,19 @@ int voxel_set(int x, int y, int z, int id) {
     cx = x / CHUNK_N;
     cy = y / CHUNK_N;
     cz = z / CHUNK_N;
-    g_dirty[cy * WORLD_CX * WORLD_CZ + cz * WORLD_CX + cx] = 1;
+    mark_chunk(cx, cy, cz);
+    if (x % CHUNK_N == 0)
+        mark_chunk(cx - 1, cy, cz);
+    if (x % CHUNK_N == CHUNK_N - 1)
+        mark_chunk(cx + 1, cy, cz);
+    if (y % CHUNK_N == 0)
+        mark_chunk(cx, cy - 1, cz);
+    if (y % CHUNK_N == CHUNK_N - 1)
+        mark_chunk(cx, cy + 1, cz);
+    if (z % CHUNK_N == 0)
+        mark_chunk(cx, cy, cz - 1);
+    if (z % CHUNK_N == CHUNK_N - 1)
+        mark_chunk(cx, cy, cz + 1);
     return 0;
 }
 
@@ -97,26 +142,76 @@ static int empty_at(int x, int y, int z) {
     return g_blocks[world_index(x, y, z)] == 0;
 }
 
-static void emit_face(uint32_t *pixels, int w, int h,
-                      int x, int y, int z, int face, int id, const Mat4f *view) {
-    float px[4];
-    float py[4];
-    float pz[4];
-    float nx = (float)FACE[face][0];
-    float ny = (float)FACE[face][1];
-    float nz = (float)FACE[face][2];
+static int mesh_push(ChunkMesh *m, uint8_t lx, uint8_t ly, uint8_t lz,
+                     uint8_t face, uint8_t id) {
+    if (m->n == m->cap) {
+        int ncap = m->cap == 0 ? 64 : m->cap * 2;
+        MeshFace *nf;
+        int i;
+        if (ncap > FACE_CAP_MAX)
+            ncap = FACE_CAP_MAX;
+        if (m->n >= ncap)
+            return 0;
+        nf = (MeshFace *)kmalloc((uint64_t)ncap * sizeof(MeshFace));
+        if (nf == 0)
+            return 0;
+        for (i = 0; i < m->n; ++i)
+            nf[i] = m->faces[i];
+        if (m->faces)
+            kfree(m->faces);
+        m->faces = nf;
+        m->cap = ncap;
+    }
+    m->faces[m->n].lx = lx;
+    m->faces[m->n].ly = ly;
+    m->faces[m->n].lz = lz;
+    m->faces[m->n].face = face;
+    m->faces[m->n].id = id;
+    m->n++;
+    return 1;
+}
+
+static void rebuild_chunk(int cx, int cy, int cz) {
+    int ci = chunk_index(cx, cy, cz);
+    ChunkMesh *m = &g_mesh[ci];
+    int ox = cx * CHUNK_N;
+    int oy = cy * CHUNK_N;
+    int oz = cz * CHUNK_N;
+    int lx;
+    int ly;
+    int lz;
+    int face;
+
+    m->n = 0;
+    for (ly = 0; ly < CHUNK_N; ++ly) {
+        for (lz = 0; lz < CHUNK_N; ++lz) {
+            for (lx = 0; lx < CHUNK_N; ++lx) {
+                int x = ox + lx;
+                int y = oy + ly;
+                int z = oz + lz;
+                int id = (int)g_blocks[world_index(x, y, z)];
+                if (id == 0)
+                    continue;
+                for (face = 0; face < 6; ++face) {
+                    if (!empty_at(x + FACE[face][0], y + FACE[face][1],
+                                  z + FACE[face][2]))
+                        continue;
+                    if (!mesh_push(m, (uint8_t)lx, (uint8_t)ly, (uint8_t)lz,
+                                   (uint8_t)face, (uint8_t)id))
+                        return;
+                }
+            }
+        }
+    }
+    g_dirty[ci] = 0;
+    g_rebuilds++;
+}
+
+static void face_verts(int x, int y, int z, int face, float *px, float *py,
+                       float *pz) {
     float fx = (float)x;
     float fy = (float)y;
     float fz = (float)z;
-    int sx[4];
-    int sy[4];
-    uint32_t sz[4];
-    int vis[4];
-    int i;
-    float u[4];
-    float v[4];
-    Vec3f wn;
-    Vec3f vn;
 
     if (face == 0) {
         px[0] = fx + 1; py[0] = fy;     pz[0] = fz;
@@ -149,26 +244,48 @@ static void emit_face(uint32_t *pixels, int w, int h,
         px[2] = fx + 1; py[2] = fy + 1; pz[2] = fz;
         px[3] = fx;     py[3] = fy + 1; pz[3] = fz;
     }
+}
+
+static void draw_face(uint32_t *pixels, int w, int h, int x, int y, int z,
+                      int face, int id, const Mat4f *view) {
+    float px[4];
+    float py[4];
+    float pz[4];
+    float nx = (float)FACE[face][0];
+    float ny = (float)FACE[face][1];
+    float nz = (float)FACE[face][2];
+    int sx[4];
+    int sy[4];
+    uint32_t sz[4];
+    int vis[4];
+    int i;
+    Vec3f wn;
+    Vec3f vn;
+    float u[4];
+    float v[4];
+
+    face_verts(x, y, z, face, px, py, pz);
     u[0] = 0.0f; v[0] = 1.0f;
     u[1] = 1.0f; v[1] = 1.0f;
     u[2] = 1.0f; v[2] = 0.0f;
     u[3] = 0.0f; v[3] = 0.0f;
     vec3f_set(&wn, nx, ny, nz);
     mat4f_transform_dir(view, &wn, &vn);
+    vec3f_norm(&vn);
     for (i = 0; i < 4; ++i)
         vis[i] = project_vertex(view, px[i], py[i], pz[i], &sx[i], &sy[i], &sz[i]);
     if (vis[0] && vis[1] && vis[2])
-        tri_fill_lit(pixels, w, h,
-                     sx[0], sy[0], (int32_t)sz[0], u[0], v[0], vn.x, vn.y, vn.z,
-                     sx[1], sy[1], (int32_t)sz[1], u[1], v[1], vn.x, vn.y, vn.z,
-                     sx[2], sy[2], (int32_t)sz[2], u[2], v[2], vn.x, vn.y, vn.z,
-                     -1, id, 0, 0, w, h);
+        tri_fill_tex(pixels, w, h,
+                     sx[0], sy[0], (int32_t)sz[0], u[0], v[0],
+                     sx[1], sy[1], (int32_t)sz[1], u[1], v[1],
+                     sx[2], sy[2], (int32_t)sz[2], u[2], v[2],
+                     id, vn.x, vn.y, vn.z, 0, 0, w, h);
     if (vis[0] && vis[2] && vis[3])
-        tri_fill_lit(pixels, w, h,
-                     sx[0], sy[0], (int32_t)sz[0], u[0], v[0], vn.x, vn.y, vn.z,
-                     sx[2], sy[2], (int32_t)sz[2], u[2], v[2], vn.x, vn.y, vn.z,
-                     sx[3], sy[3], (int32_t)sz[3], u[3], v[3], vn.x, vn.y, vn.z,
-                     -1, id, 0, 0, w, h);
+        tri_fill_tex(pixels, w, h,
+                     sx[0], sy[0], (int32_t)sz[0], u[0], v[0],
+                     sx[2], sy[2], (int32_t)sz[2], u[2], v[2],
+                     sx[3], sy[3], (int32_t)sz[3], u[3], v[3],
+                     id, vn.x, vn.y, vn.z, 0, 0, w, h);
 }
 
 int voxel_world_draw(uint32_t *pixels, int w, int h) {
@@ -180,10 +297,9 @@ int voxel_world_draw(uint32_t *pixels, int w, int h) {
     int x1;
     int y1;
     int z1;
-    int x;
-    int y;
-    int z;
-    int face;
+    int cx;
+    int cy;
+    int cz;
 
     if (pixels == 0 || !voxel_init())
         return -1;
@@ -209,20 +325,37 @@ int voxel_world_draw(uint32_t *pixels, int w, int h) {
         y1 = WORLD_SY;
     if (z1 > WORLD_SZ)
         z1 = WORLD_SZ;
-    for (y = y0; y < y1; ++y) {
-        for (z = z0; z < z1; ++z) {
-            for (x = x0; x < x1; ++x) {
-                int id = (int)g_blocks[world_index(x, y, z)];
-                if (id == 0)
+
+    for (cy = 0; cy < WORLD_CY; ++cy) {
+        int oy = cy * CHUNK_N;
+        if (oy + CHUNK_N <= y0 || oy >= y1)
+            continue;
+        for (cz = 0; cz < WORLD_CZ; ++cz) {
+            int oz = cz * CHUNK_N;
+            if (oz + CHUNK_N <= z0 || oz >= z1)
+                continue;
+            for (cx = 0; cx < WORLD_CX; ++cx) {
+                int ox = cx * CHUNK_N;
+                int ci;
+                ChunkMesh *m;
+                int i;
+                if (ox + CHUNK_N <= x0 || ox >= x1)
                     continue;
-                for (face = 0; face < 6; ++face) {
-                    if (!empty_at(x + FACE[face][0], y + FACE[face][1],
-                                  z + FACE[face][2]))
-                        continue;
-                    emit_face(pixels, w, h, x, y, z, face, id, &view);
+                ci = chunk_index(cx, cy, cz);
+                if (g_dirty[ci])
+                    rebuild_chunk(cx, cy, cz);
+                m = &g_mesh[ci];
+                for (i = 0; i < m->n; ++i) {
+                    MeshFace *f = &m->faces[i];
+                    draw_face(pixels, w, h, ox + f->lx, oy + f->ly, oz + f->lz,
+                              f->face, f->id, &view);
                 }
             }
         }
     }
     return 0;
+}
+
+int voxel_mesh_rebuilds(void) {
+    return g_rebuilds;
 }

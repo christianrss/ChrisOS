@@ -79,10 +79,10 @@ static void clamp_view(int *w, int *h) {
         *w = CLVM_SYS_GAME_W;
     if (*h < CLVM_SYS_GAME_H)
         *h = CLVM_SYS_GAME_H;
-    if (*w > 1920)
-        *w = 1920;
-    if (*h > 1080)
-        *h = 1080;
+    if (*w > CLVM_SYS_GAME_MAX_W)
+        *w = CLVM_SYS_GAME_MAX_W;
+    if (*h > CLVM_SYS_GAME_MAX_H)
+        *h = CLVM_SYS_GAME_MAX_H;
 }
 
 void clvm_gfx_native_size(int *w, int *h) {
@@ -125,9 +125,9 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h) {
         slot = gfx_slot_resize(ctx->slot_id, nw, nh, &pix, &zb);
     if (slot < 0)
         slot = gfx_slot_alloc(nw, nh, &pix, &zb);
-    if (slot < 0 && (nw != 1280 || nh != 720)) {
-        nw = 1280;
-        nh = 720;
+    if (slot < 0 && (nw != CLVM_SYS_GAME_W || nh != CLVM_SYS_GAME_H)) {
+        nw = CLVM_SYS_GAME_W;
+        nh = CLVM_SYS_GAME_H;
         if (ctx->slot_id >= 0)
             slot = gfx_slot_resize(ctx->slot_id, nw, nh, &pix, &zb);
         if (slot < 0)
@@ -330,7 +330,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
         if (clvm_gfx_viewport(ctx, a, b) != 0)
-            clvm_gfx_viewport(ctx, 1280, 720);
+            clvm_gfx_viewport(ctx, CLVM_SYS_GAME_W, CLVM_SYS_GAME_H);
         return 0;
     case 40:
         if (!clvm_vm_push(vm, ctx->w))

@@ -78,7 +78,7 @@ typedef struct CallPatch {
 
 typedef struct Builtin {
     const char *name;
-    uint8_t id, argc, returns;
+    uint8_t id, argc, returns, ret_float;
 } Builtin;
 
 typedef struct Compiler {
@@ -107,16 +107,16 @@ typedef struct Compiler {
 static Compiler g_chrisc;
 
 static const Builtin builtins[] = {
-    {"pixel", 1, 3, 0}, {"rect", 2, 5, 0}, {"line", 3, 5, 0},
-    {"sprite", 4, 6, 0}, {"tilemap", 5, 7, 0}, {"clear", 6, 1, 0},
-    {"key", 10, 1, 1}, {"ticks", 11, 0, 1}, {"wait", 12, 1, 0},
-    {"tone", 13, 2, 0}, {"tri", 20, 10, 0}, {"mesh", 21, 5, 0},
-    {"transform", 22, 3, 0}, {"meshf", 23, 8, 0},
-    {"sin", 31, 1, 1}, {"cos", 32, 1, 1},
-    {"cam", 33, 5, 0}, {"light", 34, 6, 0}, {"tex", 35, 1, 0},
-    {"voxel", 36, 4, 0}, {"voxel_get", 37, 3, 1}, {"world", 38, 0, 0},
-    {"viewport", 39, 2, 0}, {"screen_w", 40, 0, 1}, {"screen_h", 41, 0, 1},
-    {"fps", 30, 0, 1}
+    {"pixel", 1, 3, 0, 0}, {"rect", 2, 5, 0, 0}, {"line", 3, 5, 0, 0},
+    {"sprite", 4, 6, 0, 0}, {"tilemap", 5, 7, 0, 0}, {"clear", 6, 1, 0, 0},
+    {"key", 10, 1, 1, 0}, {"ticks", 11, 0, 1, 0}, {"wait", 12, 1, 0, 0},
+    {"tone", 13, 2, 0, 0}, {"tri", 20, 10, 0, 0}, {"mesh", 21, 5, 0, 0},
+    {"transform", 22, 3, 0, 0}, {"meshf", 23, 8, 0, 0},
+    {"sin", 31, 1, 1, 1}, {"cos", 32, 1, 1, 1},
+    {"cam", 33, 5, 0, 0}, {"light", 34, 6, 0, 0}, {"tex", 35, 1, 0, 0},
+    {"voxel", 36, 4, 0, 0}, {"voxel_get", 37, 3, 1, 0}, {"world", 38, 0, 0, 0},
+    {"viewport", 39, 2, 0, 0}, {"screen_w", 40, 0, 1, 0}, {"screen_h", 41, 0, 1, 0},
+    {"fps", 30, 0, 1, 0}
 };
 
 static int alpha(int c) {
@@ -678,6 +678,18 @@ static int primary(Compiler *c) {
         }
         c->nodes[id].left = first;
         c->nodes[id].value = count;
+        {
+            const Builtin *b = builtin(t->name);
+            int fn;
+            if (b && b->ret_float) {
+                c->nodes[id].is_float = 1;
+            } else {
+                fn = func_find(c, t->name);
+                if (fn >= 0 && c->funcs[fn].ret == 2) {
+                    c->nodes[id].is_float = 1;
+                }
+            }
+        }
         return id;
     }
     sym = sym_find(c, t->name);
@@ -1624,11 +1636,15 @@ static int gen_call(Compiler *c, Node *n) {
             fail(c, n->line, n->column, "argument has no value");
             return -1;
         }
+        if (b->ret_float && !c->nodes[c->args[n->left + i]].is_float &&
+            !byte(c, CL_OP_ITOF, n)) {
+            return -1;
+        }
     }
     if (!push(c, b->id, n) || !byte(c, CL_OP_SYS, n)) {
         return -1;
     }
-    if (b->id == 31 || b->id == 32) {
+    if (b->ret_float) {
         n->is_float = 1;
     }
     return b->returns ? 1 : 0;

@@ -39,6 +39,8 @@ int main(void) {
 
     assert(compile_file("GAMES/CUBE.CC"));
     assert(compile_file("GAMES/WORLD.CC"));
+    assert(compile_file("GAMES/SPHERE.CC"));
+    assert(compile_file("GAMES/WATCH.CC"));
     memset(&res, 0, sizeof(res));
     assert(chrisc_compile(src, strlen(src), code, sizeof(code), &res));
     puts("test_chrisc_games: ok");

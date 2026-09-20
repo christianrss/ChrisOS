@@ -104,7 +104,14 @@ int storage_init(void) {
     ata_pio_configure(&g_ata, STOR_DISK_SECTORS);
     rc = ata_pio_identify(&g_ata, &reported);
     if (rc != BD_OK) {
-        serial_puts("ata missing\n");
+        serial_puts("ata missing rc=");
+        if (rc < 0) {
+            serial_puts("-");
+            serial_write_u64((uint64_t)(-rc));
+        } else {
+            serial_write_u64((uint64_t)rc);
+        }
+        serial_puts("\n");
         return rc;
     }
     ata_pio_make_device(&g_ata, &g_disk);

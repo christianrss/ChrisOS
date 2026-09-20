@@ -225,3 +225,103 @@ void tri_fill_lit(uint32_t *pixels, int w, int h,
         }
     }
 }
+
+void tri_fill_tex(uint32_t *pixels, int w, int h,
+                  int x0, int y0, int32_t z0, float u0, float v0,
+                  int x1, int y1, int32_t z1, float u1, float v1,
+                  int x2, int y2, int32_t z2, float u2, float v2,
+                  int texid, float nx, float ny, float nz,
+                  int clip_x0, int clip_y0, int clip_x1, int clip_y1) {
+    int minx;
+    int miny;
+    int maxx;
+    int maxy;
+    int y;
+    int64_t area;
+    int64_t col_step0;
+    int64_t col_step1;
+    int64_t col_step2;
+    float ia;
+    uint32_t lit;
+    uint32_t lr;
+    uint32_t lg;
+    uint32_t lb;
+
+    if (pixels == 0 || w <= 0 || h <= 0)
+        return;
+
+    area = edge(x0, y0, x1, y1, x2, y2);
+    if (area == 0)
+        return;
+    if (area < 0) {
+        int tx = x1;
+        int ty = y1;
+        int32_t tz = z1;
+        float tu = u1;
+        float tv = v1;
+        x1 = x2;
+        y1 = y2;
+        z1 = z2;
+        u1 = u2;
+        v1 = v2;
+        x2 = tx;
+        y2 = ty;
+        z2 = tz;
+        u2 = tu;
+        v2 = tv;
+        area = -area;
+    }
+
+    minx = imin(x0, imin(x1, x2));
+    miny = imin(y0, imin(y1, y2));
+    maxx = imax(x0, imax(x1, x2));
+    maxy = imax(y0, imax(y1, y2));
+    if (!clip_box(&minx, &miny, &maxx, &maxy, w, h, clip_x0, clip_y0, clip_x1, clip_y1))
+        return;
+
+    lit = shade_phong(0xFFFFFFu, nx, ny, nz);
+    lr = (lit >> 16) & 0xffu;
+    lg = (lit >> 8) & 0xffu;
+    lb = lit & 0xffu;
+    ia = 1.0f / (float)area;
+    col_step0 = (int64_t)(y2 - y1);
+    col_step1 = (int64_t)(y0 - y2);
+    col_step2 = (int64_t)(y1 - y0);
+
+    for (y = miny; y <= maxy; ++y) {
+        int x;
+        int64_t w0 = edge(x1, y1, x2, y2, minx, y);
+        int64_t w1 = edge(x2, y2, x0, y0, minx, y);
+        int64_t w2 = edge(x0, y0, x1, y1, minx, y);
+        uint32_t *row = pixels + y * w;
+
+        for (x = minx; x <= maxx; ++x) {
+            if (w0 >= 0 && w1 >= 0 && w2 >= 0) {
+                int32_t z;
+                float bw0 = (float)w0 * ia;
+                float bw1 = (float)w1 * ia;
+                float bw2 = (float)w2 * ia;
+                float u = bw0 * u0 + bw1 * u1 + bw2 * u2;
+                float v = bw0 * v0 + bw1 * v1 + bw2 * v2;
+                uint32_t texel;
+                uint32_t r;
+                uint32_t g;
+                uint32_t b;
+                z = (int32_t)((w0 * (int64_t)z0 + w1 * (int64_t)z1 +
+                               w2 * (int64_t)z2) / area);
+                if (z < 0)
+                    z = 0;
+                if (zbuf_test(x, y, (uint32_t)z)) {
+                    texel = tex_sample(texid, u, v);
+                    r = (((texel >> 16) & 0xffu) * lr) / 255u;
+                    g = (((texel >> 8) & 0xffu) * lg) / 255u;
+                    b = ((texel & 0xffu) * lb) / 255u;
+                    row[x] = (r << 16) | (g << 8) | b;
+                }
+            }
+            w0 += col_step0;
+            w1 += col_step1;
+            w2 += col_step2;
+        }
+    }
+}

@@ -19,12 +19,6 @@ bool ui_hit_rect(int px, int py, int x, int y, int width, int height) {
            py >= y && py < y + height;
 }
 
-static bool ui_hit_circle(int px, int py, int cx, int cy, int radius) {
-    int dx = px - cx;
-    int dy = py - cy;
-    return dx * dx + dy * dy <= radius * radius;
-}
-
 void ui_label(int x, int y, int w, int h, const char *text, uint32_t color) {
     if (!text) {
         return;
@@ -78,8 +72,8 @@ bool ui_window_ex(Task *task, uint32_t body_color, const char *title,
     InputMouse mouse;
     int x;
     int y;
-    int close_x;
-    int close_y;
+    int close_bx;
+    int close_w = 22;
     bool close_hover;
     bool title_hover;
 
@@ -90,13 +84,18 @@ bool ui_window_ex(Task *task, uint32_t body_color, const char *title,
     mouse = input_mouse_snapshot();
     x = task->frame.x;
     y = task->frame.y;
-    close_x = x + task->frame.width - 10;
-    close_y = y + 10;
-    close_hover = task_is_focused(task) &&
-                  ui_hit_circle(mouse.x, mouse.y, close_x, close_y, 8);
+    if (task->frame.width < close_w + 8) {
+        close_w = task->frame.width / 3;
+        if (close_w < 16) {
+            close_w = 16;
+        }
+    }
+    close_bx = x + task->frame.width - close_w;
+    close_hover = ui_hit_rect(mouse.x, mouse.y, close_bx, y,
+                              close_w, TASK_TITLE_HEIGHT);
     title_hover = task_is_focused(task) &&
                   ui_hit_rect(mouse.x, mouse.y, x, y,
-                              task->frame.width - 30, TASK_TITLE_HEIGHT);
+                              task->frame.width - close_w, TASK_TITLE_HEIGHT);
 
     if (!mouse.left_down) {
         task->window.dragging = false;
@@ -110,8 +109,7 @@ bool ui_window_ex(Task *task, uint32_t body_color, const char *title,
         }
         x = task->frame.x;
         y = task->frame.y;
-        close_x = x + task->frame.width - 10;
-        close_y = y + 10;
+        close_bx = x + task->frame.width - close_w;
     } else if (title_hover && input_left_pressed()) {
         task->window.dragging = true;
         task->window.drag_offset_x = mouse.x - x;
@@ -128,11 +126,14 @@ bool ui_window_ex(Task *task, uint32_t body_color, const char *title,
     if (title != 0) {
         gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
                               title, x + 6, y + 2, 0x00FFFFFFu,
-                              x, y, task->frame.width - 30, TASK_TITLE_HEIGHT);
+                              x, y, task->frame.width - close_w, TASK_TITLE_HEIGHT);
     }
 
-    gfx_fill_circle(close_x, close_y, 8,
-                    close_hover ? 0x00FF0000u : 0x00400000u);
+    gfx_fill_rect(close_bx, y, close_w, TASK_TITLE_HEIGHT,
+                  close_hover ? 0x00FF4444u : 0x00E02020u);
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
+                          "X", close_bx + 6, y + 2, 0x00FFFFFFu,
+                          close_bx, y, close_w, TASK_TITLE_HEIGHT);
     if (close_hover && input_left_pressed()) {
         input_consume_left_press();
         task_close(task->id);

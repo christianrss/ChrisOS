@@ -33,4 +33,11 @@ void tri_fill_lit(uint32_t *pixels, int w, int h,
                   int color, int texid,
                   int clip_x0, int clip_y0, int clip_x1, int clip_y1);
 
+void tri_fill_tex(uint32_t *pixels, int w, int h,
+                  int x0, int y0, int32_t z0, float u0, float v0,
+                  int x1, int y1, int32_t z1, float u1, float v1,
+                  int x2, int y2, int32_t z2, float u2, float v2,
+                  int texid, float nx, float ny, float nz,
+                  int clip_x0, int clip_y0, int clip_x1, int clip_y1);
+
 #endif
