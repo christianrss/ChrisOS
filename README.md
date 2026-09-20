@@ -53,7 +53,7 @@ Limine (BIOS/UEFI)
           ├── gfx: framebuffer Limine 32 bpp, gfx2d, input PS/2
           ├── wm: desktop, taskbar 40px, até 32 janelas
           ├── fs: ATA PIO → cache 16 linhas → ChrisFS v3
-          ├── lang: ChrisC → CLVM; SYS 2D na janela App 320×200
+          ├── lang: ChrisC → CLVM; SYS 2D/3D na janela App (320×200 hoje; até 1080p — ver fase6-gfxfast64)
           ├── net: virtio-net, UDP echo :7, protocolo CFS1 TCP :9016
           └── tools: editor, explorer, shell (cc, mk, kcc, reboot)
 ```
@@ -102,10 +102,24 @@ Alocação: PMM para páginas e contíguas; heap bump+free para objetos do kerne
 | Taskbar | 40 px no topo; ícones do desktop abaixo de y=40 |
 | Janelas | até 32 tasks (`TASK_MAX`); título 20 px, 24 caracteres |
 | Cor de fundo desktop | `rgb(181, 232, 255)` |
-| Jogos CLVM | viewport **320×200** na janela `TASK_APP`; blit via `clvm_sys_blit_to` |
+| Jogos CLVM (hoje) | viewport **320×200** na janela `TASK_APP`; blit via `clvm_sys_blit_to` |
+| Jogos CLVM (meta T3) | slot escalável até **1920×1080** fullscreen; ver trilha `learn/fase6-gfxfast64/` |
 | Paleta jogos 2D | índices 0–15 mapeados para RGB32 |
+| Desktop | PIT **60 Hz** (`pit_init(60)`); compositor uma vez por tick |
+| 3D no kernel | **planejado** em `kernel/gfx/` — float BSP (`math3d`, `mesh`) + raster int SSE2 nos APs; passos 00–05 |
 
-Programas **não** recebem ponteiro do framebuffer; desenham no buffer da janela ou via SYS.
+Programas **não** recebem ponteiro do framebuffer; desenham no buffer do slot ou via SYS.
+
+#### Metas de performance (trilha gfxfast64)
+
+| Tier | Viewport | CPUs QEMU | Meta FPS (cubo 12 tris) | Passos |
+|------|----------|-----------|-------------------------|--------|
+| **T0** | 320×200 janela App | 1–2 | ≥ 30 | 00–07 |
+| **T1** | 640×480 | 2 | **60** | 08–15 |
+| **T2** | 1280×720 fullscreen | 4 | ≥ 45 | 16–17 |
+| **T3** | **1920×1080** fullscreen | 8 | **60** | 18–21 |
+
+Material didático local (não versionado): `learn/fase6-gfxfast64/INDEX.md` — substitui `fase6-jogos3d`, gfx de `fase7-smp64` e JIT de jogos em `fase14-jit64`.
 
 ### ChrisFS (CFS v3)
 
@@ -159,8 +173,9 @@ I/O: ATA PIO (primary/secondary, master/slave); sem DMA.
 | RAM da VM | 65 536 bytes (`CLVM_MEMORY_SIZE`) |
 | Stack | 256 entradas (`CLVM_STACK_MAX`) |
 | Profundidade de call | 64 (`CLVM_CALL_MAX`) |
-| Flag `CLVM_FLAG_GAME` | 0x01 — runtime usa buffer 320×200 |
-| Execução | cooperativa; budget por frame; estados `YIELD`, `HALT`, erro |
+| Flag `CLVM_FLAG_GAME` | 0x01 — runtime usa buffer do slot (320×200 hoje; escalável até 1080p) |
+| Execução | cooperativa; budget por frame (`LANG_VM_BUDGET` = 2000 hoje; ≥ 32000 @ T3); estados `YIELD`, `HALT`, erro |
+| JIT | stub (`jit_compile` chama `clvm_step`); lowering real na trilha gfxfast64 passos 13–15 |
 
 #### SYS 2D (ids estáveis)
 
@@ -177,18 +192,33 @@ I/O: ATA PIO (primary/secondary, master/slave); sem DMA.
 | 12 | `ms` | — (wait cooperativo) |
 | 13 | `freq ms` | — (PC speaker) |
 
-Endereços `addr` em SYS 4/5 são **offsets na RAM da VM**, não ponteiros do kernel.
+#### SYS 3D e performance (planejados — trilha gfxfast64)
+
+| id | ChrisC | Stack (antes do id) | Retorno |
+|----|--------|---------------------|---------|
+| 20 | `tri` | `x0 y0 z0 x1 y1 z1 x2 y2 z2 color` | — |
+| 21 | `mesh` | `addr vertices triangles angle color` | — |
+| 22 | `transform` | `addr mat_addr n_verts` | — |
+| 30 | `fps` | — | frames/s estimado |
+
+- Raster 3D: projeção **float** no BSP (`math3d.o`, `mesh.o` com `GFX_FLOAT_CFLAGS`); raster **int** + SSE2 nos APs; z menor = mais perto; vazio = `0xFFFFFFFF`.
+- Vértices na RAM CLVM: milli-unidades (`1000` = 1.0f modelo); ChrisC permanece só `int`.
+- @ T3: cor + zbuf @ 1080p ≈ 16 MiB por slot; máximo **1 slot Full HD** simultâneo (`gfx_slot_alloc` no heap de 64 MiB).
+
+Endereços `addr` em SYS 4/5/21/22 são **offsets na RAM da VM**, não ponteiros do kernel.
 
 #### ChrisC (fonte `.CC` → `.CLV`)
 
 | Item | Valor |
 |------|-------|
-| Tipos | `void`, `int` (`i32`) |
+| Tipos | `void`, `int` (`i32`); `int v[N]` na trilha gfxfast64 (sem tipo `float`) |
 | Controle | `if`/`else`, `while`, `return` |
 | Identificadores | até 24 caracteres |
 | Símbolos | 128 por compilação |
 | AST / tokens | 2048 nós, 4096 tokens |
-| Builtins SYS | mapeados para ids acima (+ `tri`/`mesh` reservados para 3D) |
+| Arrays | `v[i]`, `v[i]=x`; endereço = `base + i×4` na RAM CLVM (passo 10) |
+| Mat4 via SYS 22 | 16 ints na RAM VM = bits IEEE-754 de `Mat4f`; kernel aplica float no BSP (passos 11–12) |
+| Builtins SYS | ids 1–13 (2D), 20–22 (3D), 30 (`fps`) — ver tabelas acima |
 
 #### Toolchain nativa (self-host)
 
@@ -248,7 +278,7 @@ Hardware: `virtio-net-pci` com stack mínima in-kernel (sem BSD sockets completo
 | `third_party/limine` | Binários Limine |
 | `build/` | **Gerado** — não versionado |
 
-Material didático, scripts de debug e geradores de capítulos ficam em `learn/` e padrões listados no `.gitignore` — não são versionados.
+Material didático, scripts de debug e geradores de capítulos ficam em `learn/` e padrões listados no `.gitignore` — não são versionados. Trilha ativa de gráficos 3D e performance: `learn/fase6-gfxfast64/` (22 passos, float híbrido BSP + SSE2 int AP, stubs em `stubs/`).
 
 ## Licença
 

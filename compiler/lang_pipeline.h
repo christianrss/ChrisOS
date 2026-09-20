@@ -5,7 +5,7 @@
 #include "editor.h"
 
 #define LANG_VM_SLOTS 8
-#define LANG_VM_BUDGET 2000u
+#define LANG_VM_BUDGET 64000u
 
 void lang_init(ClvmSysFn sys, void *sys_user);
 int lang_save(Editor *editor);
@@ -20,6 +20,9 @@ int lang_kill(int slot);
 int lang_slot_used(int slot);
 const char *lang_slot_name(int slot);
 uint32_t *lang_slot_pixels(int slot);
+int lang_slot_w(int slot);
+int lang_slot_h(int slot);
+int lang_slot_fullscreen(int slot);
 int lang_slot_task(int slot);
 void lang_bind_task(int slot, int task_id);
 int lang_find_slot_by_task(int task_id);

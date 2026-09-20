@@ -1,14 +1,21 @@
 /* LEARN:WS64-W08 */
 #include "lang_pipeline.h"
+#include "bench.h"
 #include "chrisc/chrisc.h"
 #include "clvm/clasm.h"
 #include "clvm/clvm.h"
 #include "cfs.h"
 #include "fs.h"
 #include "gfx2d.h"
+#include "gfx_slot.h"
+#include "graphics.h"
+#include "math3d.h"
+#include "tex.h"
 #include "clvm_sys.h"
 #include "app_window.h"
 #include "storage.h"
+#include "task.h"
+#include "ui.h"
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
 
@@ -16,15 +23,17 @@
 #define LANG_FILE_MAX (CLVM_HEADER_SIZE + CLVM_MAX_CODE)
 #define LANG_NAME_MAX 96
 #define LANG_PIXELS (CLVM_SYS_GAME_W * CLVM_SYS_GAME_H)
-
 typedef struct LangSlot {
     int used;
     uint8_t file[LANG_FILE_MAX];
     size_t file_size;
     ClvmVm vm;
     uint32_t pixels[LANG_PIXELS];
+    ClvmGfxCtx gfx;
     char name[LANG_NAME_MAX];
     int task_id;
+    int gfx_slot_id;
+    int fullscreen;
     JitBuf jit;
     JitFn jit_fn;
     int use_jit;
@@ -180,11 +189,72 @@ void lang_init(ClvmSysFn sys, void *user) {
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         slots[i].used = 0;
         slots[i].task_id = -1;
+        slots[i].gfx_slot_id = -1;
+        slots[i].fullscreen = 0;
         slots[i].name[0] = 0;
         slots[i].use_jit = 0;
         slots[i].jit_fn = NULL;
         slots[i].jit.phys = 0;
+        slots[i].gfx.pixels = slots[i].pixels;
+        slots[i].gfx.zbuf = 0;
+        slots[i].gfx.w = CLVM_SYS_GAME_W;
+        slots[i].gfx.h = CLVM_SYS_GAME_H;
+        slots[i].gfx.slot_id = -1;
     }
+}
+
+static void lang_slot_release_gfx(int i) {
+    int id = slots[i].gfx.slot_id;
+    if (id < 0)
+        id = slots[i].gfx_slot_id;
+    if (id >= 0)
+        gfx_slot_free(id);
+    slots[i].gfx_slot_id = -1;
+    slots[i].gfx.pixels = slots[i].pixels;
+    slots[i].gfx.zbuf = 0;
+    slots[i].gfx.w = CLVM_SYS_GAME_W;
+    slots[i].gfx.h = CLVM_SYS_GAME_H;
+    slots[i].gfx.slot_id = -1;
+    slots[i].fullscreen = 0;
+}
+
+static int lang_setup_viewport(int i, const ClvmImage *image, const char *name) {
+    int w;
+    int h;
+    uint32_t *pix;
+    uint32_t *zb;
+    int slot;
+    (void)name;
+    lang_slot_release_gfx(i);
+    clvm_gfx_native_size(&w, &h);
+    if ((image->flags & CLVM_FLAG_GAME) != 0) {
+        slot = gfx_slot_alloc(w, h, &pix, &zb);
+        if (slot < 0) {
+            w = 1280;
+            h = 720;
+            slot = gfx_slot_alloc(w, h, &pix, &zb);
+        }
+        if (slot >= 0) {
+            slots[i].gfx_slot_id = slot;
+            slots[i].gfx.pixels = pix;
+            slots[i].gfx.zbuf = zb;
+            slots[i].gfx.w = w;
+            slots[i].gfx.h = h;
+            slots[i].gfx.slot_id = slot;
+            slots[i].fullscreen = 1;
+            tex_init();
+            math3d_cam_reset();
+            math3d_set_screen(w, h);
+            return 1;
+        }
+    }
+    slots[i].gfx.pixels = slots[i].pixels;
+    slots[i].gfx.zbuf = 0;
+    slots[i].gfx.w = CLVM_SYS_GAME_W;
+    slots[i].gfx.h = CLVM_SYS_GAME_H;
+    slots[i].gfx.slot_id = -1;
+    slots[i].fullscreen = 0;
+    return 1;
 }
 
 int lang_save(Editor *e) {
@@ -303,8 +373,12 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
         status(e, clvm_load_error(load));
         return 0;
     }
-    gfx2d_clear(slots[i].pixels, CLVM_SYS_GAME_W, CLVM_SYS_GAME_H, 0);
-    clvm_vm_init(&slots[i].vm, &image, system_fn, slots[i].pixels);
+    if (!lang_setup_viewport(i, &image, name)) {
+        status(e, "run: gfx slot failed");
+        return 0;
+    }
+    gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
+    clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
     slots[i].use_jit = 0;
     slots[i].jit_fn = NULL;
     if (slots[i].jit.phys != 0) {
@@ -351,12 +425,14 @@ int lang_compile_run_jit(Editor *e) {
 
 void lang_tick(uint32_t now) {
     int i;
+
+    bench_frame_tick();
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         if (slots[i].used) {
             ClvmStepResult r;
             clvm_vm_wake(&slots[i].vm, now);
             if (slots[i].use_jit && slots[i].jit_fn != NULL) {
-                jit_set_sys_context(&slots[i].vm, slots[i].pixels);
+                jit_set_sys_context(&slots[i].vm, &slots[i].gfx);
                 r = slots[i].jit_fn(&slots[i].vm, LANG_VM_BUDGET, now);
             } else {
                 r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
@@ -385,6 +461,7 @@ int lang_kill(int slot) {
     if (slots[slot].jit.phys != 0) {
         jit_free(&slots[slot].jit);
     }
+    lang_slot_release_gfx(slot);
     slots[slot].used = 0;
     slots[slot].task_id = -1;
     slots[slot].name[0] = 0;
@@ -411,7 +488,28 @@ uint32_t *lang_slot_pixels(int slot) {
     if (slot < 0 || slot >= LANG_VM_SLOTS) {
         return 0;
     }
-    return slots[slot].pixels;
+    return slots[slot].gfx.pixels;
+}
+
+int lang_slot_w(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return CLVM_SYS_GAME_W;
+    }
+    return slots[slot].gfx.w;
+}
+
+int lang_slot_h(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return CLVM_SYS_GAME_H;
+    }
+    return slots[slot].gfx.h;
+}
+
+int lang_slot_fullscreen(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return 0;
+    }
+    return slots[slot].fullscreen;
 }
 
 int lang_slot_task(int slot) {

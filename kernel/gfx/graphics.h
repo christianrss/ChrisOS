@@ -44,6 +44,7 @@ void gfx_draw_text_clipped(GfxFontRowFn font, int glyph_width, int glyph_height,
                            int clip_x, int clip_y, int clip_w, int clip_h);
 int gfx_text_advance(int glyph_width);
 void gfx_draw_mouse(int x, int y);
+void gfx_mark_dirty(int x, int y, int w, int h);
 void gfx_present(void);
 
 #endif

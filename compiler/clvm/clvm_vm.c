@@ -1,5 +1,10 @@
 #include "clvm_vm.h"
 
+typedef union {
+    uint32_t u;
+    float f;
+} Fbits;
+
 static void bytes_zero(uint8_t *p, size_t n) {
     size_t i;
     for (i = 0; i < n; ++i) p[i] = 0;
@@ -17,6 +22,30 @@ static int16_t read_i16(const uint8_t *p) {
 static void write_u32(uint8_t *p, uint32_t value) {
     p[0] = (uint8_t)value; p[1] = (uint8_t)(value >> 8);
     p[2] = (uint8_t)(value >> 16); p[3] = (uint8_t)(value >> 24);
+}
+
+static int32_t fbinop_bits(uint8_t op, int32_t abits, int32_t bbits) {
+    Fbits fa;
+    Fbits fb;
+    Fbits fr;
+
+    fa.u = (uint32_t)abits;
+    fb.u = (uint32_t)bbits;
+    if (op == CL_OP_FADD)
+        fr.f = fa.f + fb.f;
+    else if (op == CL_OP_FSUB)
+        fr.f = fa.f - fb.f;
+    else if (op == CL_OP_FMUL)
+        fr.f = fa.f * fb.f;
+    else if (op == CL_OP_FDIV)
+        fr.f = fa.f / fb.f;
+    else if (op == CL_OP_FEQ)
+        return fa.f == fb.f;
+    else if (op == CL_OP_FLT)
+        return fa.f < fb.f;
+    else
+        return fa.f <= fb.f;
+    return (int32_t)fr.u;
 }
 
 static ClvmStepResult fail(ClvmVm *vm, ClvmFault fault, uint32_t pc) {
@@ -219,6 +248,70 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
                 return fail(vm, CLVM_FAULT_BAD_SYS, op_pc);
             if (vm->state == CLVM_WAITING) return CLVM_STEP_YIELD;
             break;
+        case CL_OP_FLOAD:
+            if (!clvm_vm_pop(vm, &a))
+                return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
+            if (a < 0 || (uint32_t)a > CLVM_MEMORY_SIZE - 4)
+                return fail(vm, CLVM_FAULT_BAD_ADDRESS, op_pc);
+            if (!clvm_vm_push(vm, (int32_t)read_u32(vm->memory + (uint32_t)a)))
+                return fail(vm, CLVM_FAULT_STACK_OVERFLOW, op_pc);
+            break;
+        case CL_OP_FSTORE:
+            if (!clvm_vm_pop(vm, &a) || !clvm_vm_pop(vm, &b))
+                return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
+            if (a < 0 || (uint32_t)a > CLVM_MEMORY_SIZE - 4)
+                return fail(vm, CLVM_FAULT_BAD_ADDRESS, op_pc);
+            write_u32(vm->memory + (uint32_t)a, (uint32_t)b);
+            break;
+        case CL_OP_FPUSH:
+            if (!fetch(vm, 4, &arg))
+                return fail(vm, CLVM_FAULT_TRUNCATED, op_pc);
+            if (!clvm_vm_push(vm, (int32_t)read_u32(arg)))
+                return fail(vm, CLVM_FAULT_STACK_OVERFLOW, op_pc);
+            break;
+        case CL_OP_FADD: case CL_OP_FSUB: case CL_OP_FMUL: case CL_OP_FDIV:
+        case CL_OP_FEQ: case CL_OP_FLT: case CL_OP_FLE: {
+            Fbits fb;
+            if (!clvm_vm_pop(vm, &b) || !clvm_vm_pop(vm, &a))
+                return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
+            if (op == CL_OP_FDIV) {
+                fb.u = (uint32_t)b;
+                if (fb.f == 0.0f)
+                    return fail(vm, CLVM_FAULT_DIV_ZERO, op_pc);
+            }
+            a = fbinop_bits(op, a, b);
+            if (!clvm_vm_push(vm, a))
+                return fail(vm, CLVM_FAULT_STACK_OVERFLOW, op_pc);
+            break;
+        }
+        case CL_OP_FNEG: {
+            Fbits v;
+            if (!clvm_vm_pop(vm, &a))
+                return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
+            v.u = (uint32_t)a;
+            v.f = -v.f;
+            if (!clvm_vm_push(vm, (int32_t)v.u))
+                return fail(vm, CLVM_FAULT_STACK_OVERFLOW, op_pc);
+            break;
+        }
+        case CL_OP_FTOI: {
+            Fbits v;
+            if (!clvm_vm_pop(vm, &a))
+                return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
+            v.u = (uint32_t)a;
+            if (!clvm_vm_push(vm, (int32_t)v.f))
+                return fail(vm, CLVM_FAULT_STACK_OVERFLOW, op_pc);
+            break;
+        }
+        case CL_OP_ITOF: {
+            Fbits v;
+            if (!clvm_vm_pop(vm, &a))
+                return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
+            v.f = (float)a;
+            if (!clvm_vm_push(vm, (int32_t)v.u))
+                return fail(vm, CLVM_FAULT_STACK_OVERFLOW, op_pc);
+            break;
+        }
         case CL_OP_HALT:
             vm->state = CLVM_HALTED;
             return CLVM_STEP_HALT;

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define JOB_QUEUE_CAP 32u
+#define JOB_QUEUE_CAP 1024u
 
 typedef void (*JobFn)(void *arg, uint32_t cpu_index);
 

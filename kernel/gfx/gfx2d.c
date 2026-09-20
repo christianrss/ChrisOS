@@ -1,5 +1,11 @@
 #include "gfx2d.h"
 
+#include "gfx_fast.h"
+#include "zbuf.h"
+#ifdef __freestanding__
+#include "tile.h"
+#endif
+
 const uint32_t gfx2d_palette[GFX2D_PALETTE_SIZE] = {
     0x000000u, 0x000080u, 0x008000u, 0x008080u,
     0x800000u, 0x800080u, 0x808000u, 0xC0C0C0u,
@@ -34,7 +40,6 @@ void gfx2d_put(uint32_t *pixels, int w, int h, int x, int y, int color) {
 }
 
 void gfx2d_clear(uint32_t *pixels, int w, int h, int color) {
-    int x;
     int y;
     uint32_t rgb;
 
@@ -43,11 +48,18 @@ void gfx2d_clear(uint32_t *pixels, int w, int h, int color) {
     if (color < 0 || color >= GFX2D_PALETTE_SIZE)
         return;
     rgb = gfx2d_palette[color];
-    for (y = 0; y < h; ++y) {
-        uint32_t *row = pixels + y * w;
-        for (x = 0; x < w; ++x)
-            row[x] = rgb;
+#ifdef __freestanding__
+    if (w * h >= 512 * 512) {
+        tile_parallel_clear(pixels, w, h, rgb);
+        zbuf_set_size(w, h);
+        zbuf_clear();
+        return;
     }
+#endif
+    for (y = 0; y < h; ++y)
+        gfx_fast_fill_u32(pixels + y * w, w, rgb);
+    zbuf_set_size(w, h);
+    zbuf_clear();
 }
 
 void gfx2d_fill(uint32_t *pixels, int w, int h, int x, int y, int rw, int rh,

@@ -1,6 +1,9 @@
 CC := gcc
 LD := ld
 QEMU := qemu-system-x86_64
+# zoom-to-fit: guest 1080p cabe no monitor; grab-on-hover: mouse sem clique preciso.
+# Windows sem GTK: make run QEMU_DISPLAY=sdl,grab-mod=lshift-lshift
+QEMU_DISPLAY ?= gtk,zoom-to-fit=on,grab-on-hover=on,show-cursor=on
 XORRISO := xorriso
 LIMINE_DIR := third_party/limine
 
@@ -27,6 +30,26 @@ CFLAGS := -std=c11 -m64 -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	-z noexecstack -T kernel/metal/linker.ld
 
+GFX_3D_OBJS := \
+	kernel/gfx/sse_init.o \
+	kernel/gfx/gfx_fast.o \
+	kernel/gfx/math3d.o \
+	kernel/gfx/zbuf.o \
+	kernel/gfx/tri.o \
+	kernel/gfx/mesh.o \
+	kernel/gfx/tile.o \
+	kernel/gfx/bench.o \
+	kernel/gfx/tri_bin.o \
+	kernel/gfx/gfx_slot.o \
+	kernel/gfx/shade.o \
+	kernel/gfx/tex.o \
+	kernel/gfx/voxel.o
+
+# kernel C usa -mno-sse; gfx 3D compila com SSE2 + FPU XMM (fxsave nos ISRs).
+GFX_CFLAGS_BASE := $(filter-out -mno-mmx -mno-sse -mno-sse2,$(CFLAGS))
+GFX_FLOAT_CFLAGS := $(GFX_CFLAGS_BASE) -msse2 -mfpmath=sse -ffast-math
+GFX_SSE2_CFLAGS := $(GFX_CFLAGS_BASE) -msse2
+
 C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o \
 	kernel/metal/string.o \
 	kernel/metal/panic.o kernel/metal/gdt.o kernel/metal/idt.o \
@@ -49,9 +72,11 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	compiler/clvm/clasm.o compiler/clvm/clvm_format.o \
 	compiler/clvm/clvm_vm.o kernel/tools/app_window.o \
 	compiler/jit/jit.o compiler/jit/jit_emit.o compiler/jit/jit_compile.o \
+	compiler/jit/jit_runtime.o \
 	kernel/tools/taskmgr.o kernel/metal/apic.o kernel/metal/ioapic.o \
 	kernel/metal/spin.o kernel/metal/smp.o kernel/metal/job.o \
-	kernel/metal/kcc_job.o kernel/net/net_xfer.o
+	kernel/metal/kcc_job.o kernel/net/net_xfer.o \
+	$(GFX_3D_OBJS)
 
 ASM_OBJECTS_REL := kernel/metal/idt_stubs.o
 C_OBJECTS := $(addprefix $(OBJ_DIR)/,$(C_OBJECTS_REL))
@@ -64,6 +89,63 @@ HOST_CFLAGS := -std=c11 -Wall -Wextra -Werror -Ikernel/tools -Ikernel/fs -Itools
 HOST_NET_PORT ?= 7007
 HOST_XFER_PORT ?= 9016
 
+$(OBJ_DIR)/kernel/gfx/sse_init.o: kernel/gfx/sse_init.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/gfx_fast.o: kernel/gfx/gfx_fast.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/math3d.o: kernel/gfx/math3d.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/mesh.o: kernel/gfx/mesh.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/zbuf.o: kernel/gfx/zbuf.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/tri.o: kernel/gfx/tri.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/tile.o: kernel/gfx/tile.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/bench.o: kernel/gfx/bench.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/tri_bin.o: kernel/gfx/tri_bin.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/gfx_slot.o: kernel/gfx/gfx_slot.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/shade.o: kernel/gfx/shade.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/tex.o: kernel/gfx/tex.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/voxel.o: kernel/gfx/voxel.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/lang/clvm_sys.o: kernel/lang/clvm_sys.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+
 .PHONY: all iso run run-stop clean disk disk.img host-gates seed-selfhost disk-seed
 
 disk-seed: seed-selfhost
@@ -74,6 +156,130 @@ run-stop:
 all: iso
 
 iso: $(ISO)
+
+test_sse_init: tools/test_sse_init.c kernel/gfx/sse_init.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx \
+		tools/test_sse_init.c kernel/gfx/sse_init.c -o $(HOST_BIN)/test_sse_init
+	$(HOST_BIN)/test_sse_init
+
+test_math3d: tools/test_math3d.c kernel/gfx/math3d.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -ffast-math \
+		tools/test_math3d.c kernel/gfx/math3d.c -lm -o $(HOST_BIN)/test_math3d
+	$(HOST_BIN)/test_math3d
+
+test_zbuf: tools/test_zbuf.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -msse2 \
+		tools/test_zbuf.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c \
+		-o $(HOST_BIN)/test_zbuf
+	$(HOST_BIN)/test_zbuf
+
+test_mesh: tools/test_mesh.c kernel/gfx/mesh.c kernel/gfx/math3d.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c kernel/gfx/shade.c kernel/gfx/tex.c compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -Icompiler/clvm -Icompiler \
+		-ffast-math -msse2 -mfpmath=sse tools/test_mesh.c kernel/gfx/mesh.c kernel/gfx/math3d.c \
+		kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c \
+		kernel/gfx/shade.c kernel/gfx/tex.c \
+		compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c \
+		-o $(HOST_BIN)/test_mesh
+	$(HOST_BIN)/test_mesh
+
+test_cube_mesh: tools/test_cube_mesh.c kernel/gfx/mesh.c kernel/gfx/math3d.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c kernel/gfx/shade.c kernel/gfx/tex.c compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -Icompiler/clvm -Icompiler \
+		-ffast-math -msse2 -mfpmath=sse tools/test_cube_mesh.c kernel/gfx/mesh.c kernel/gfx/math3d.c \
+		kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c \
+		kernel/gfx/shade.c kernel/gfx/tex.c \
+		compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c \
+		-o $(HOST_BIN)/test_cube_mesh
+	$(HOST_BIN)/test_cube_mesh
+
+test_cube_mesh_f: tools/test_cube_mesh_f.c kernel/gfx/mesh.c kernel/gfx/math3d.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c kernel/gfx/shade.c kernel/gfx/tex.c compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -Icompiler/clvm -Icompiler \
+		-ffast-math -msse2 -mfpmath=sse tools/test_cube_mesh_f.c kernel/gfx/mesh.c kernel/gfx/math3d.c \
+		kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c \
+		kernel/gfx/shade.c kernel/gfx/tex.c \
+		compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c \
+		-o $(HOST_BIN)/test_cube_mesh_f
+	$(HOST_BIN)/test_cube_mesh_f
+
+test_chunk_mesh: tools/test_chunk_mesh.c kernel/gfx/voxel.c kernel/gfx/math3d.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c kernel/gfx/shade.c kernel/gfx/tex.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -Icompiler/clvm -Icompiler \
+		-ffast-math -msse2 -mfpmath=sse tools/test_chunk_mesh.c kernel/gfx/voxel.c \
+		kernel/gfx/math3d.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c \
+		kernel/gfx/gfx2d.c kernel/gfx/shade.c kernel/gfx/tex.c \
+		-o $(HOST_BIN)/test_chunk_mesh
+	$(HOST_BIN)/test_chunk_mesh
+
+test_chrisc_arrays: tools/test_chrisc_arrays.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_arrays.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_arrays
+	$(HOST_BIN)/test_chrisc_arrays
+
+test_chrisc_float: tools/test_chrisc_float.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_float.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_float
+	$(HOST_BIN)/test_chrisc_float
+
+test_chrisc_fn: tools/test_chrisc_fn.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_fn.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_fn
+	$(HOST_BIN)/test_chrisc_fn
+
+test_chrisc_struct: tools/test_chrisc_struct.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_struct.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_struct
+	$(HOST_BIN)/test_chrisc_struct
+
+test_chrisc_games: tools/test_chrisc_games.c compiler/chrisc/chrisc.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_games.c compiler/chrisc/chrisc.c \
+		-o $(HOST_BIN)/test_chrisc_games
+	$(HOST_BIN)/test_chrisc_games
+
+test_tri: kernel/gfx/gfx2d.c tools/test_tri.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/shade.c kernel/gfx/tex.c kernel/gfx/math3d.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -msse2 -ffast-math \
+		kernel/gfx/gfx2d.c kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c \
+		kernel/gfx/shade.c kernel/gfx/tex.c kernel/gfx/math3d.c \
+		tools/test_tri.c -o $(HOST_BIN)/test_tri
+	$(HOST_BIN)/test_tri
+
+test_tile: tools/test_tile.c kernel/gfx/tile.c tools/job_host_stub.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -Ikernel/metal -Itools -msse2 -pthread \
+		-ffast-math tools/test_tile.c kernel/gfx/tile.c kernel/gfx/tri.c kernel/gfx/zbuf.c \
+		kernel/gfx/gfx_fast.c kernel/gfx/gfx2d.c kernel/gfx/tri_bin.c kernel/gfx/shade.c \
+		kernel/gfx/tex.c kernel/gfx/math3d.c tools/job_host_stub.c \
+		-o $(HOST_BIN)/test_tile
+	$(HOST_BIN)/test_tile
+
+test_tile_bin: tools/test_tile_bin.c kernel/gfx/tri_bin.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx \
+		tools/test_tile_bin.c kernel/gfx/tri_bin.c -o $(HOST_BIN)/test_tile_bin
+	$(HOST_BIN)/test_tile_bin
 
 send:
 	@test -n "$(CFS_PATH)" || (echo "usage: make send CFS_PATH=SYS/FILE.C HOST_FILE=foo.c" && exit 1)
@@ -116,10 +322,11 @@ host-cfs-migrate-v2v3: tools/cfs_migrate_v2v3.c kernel/fs/cfs.c
 	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/fs \
 		-o $(HOST_BIN)/cfs_migrate_v2v3 tools/cfs_migrate_v2v3.c kernel/fs/cfs.c
 
-test_gfx2d: kernel/gfx/gfx2d.c tools/test_gfx2d.c kernel/gfx/gfx2d.h
+test_gfx2d: kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c tools/test_gfx2d.c kernel/gfx/gfx2d.h
 	mkdir -p $(HOST_BIN)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx \
-		kernel/gfx/gfx2d.c tools/test_gfx2d.c -o $(HOST_BIN)/test_gfx2d
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -msse2 \
+		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c tools/test_gfx2d.c \
+		-o $(HOST_BIN)/test_gfx2d
 
 test_keystate: tools/test_keystate.c
 	mkdir -p $(HOST_BIN)
@@ -196,13 +403,21 @@ disk-hello: $(DISK_IMG) $(USER_BIN)/hello.elf host-cfs-put-file
 disk-fault: $(DISK_IMG) $(USER_BIN)/fault.elf host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) BIN/FAULT.ELF $(USER_BIN)/fault.elf
 
-disk: disk-hello disk-fault host-cfs-put
+disk-cube: $(DISK_IMG) host-cfs-put-file
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/CUBE.CC GAMES/CUBE.CC
+
+disk-world: $(DISK_IMG) host-cfs-put-file
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/WORLD.CC GAMES/WORLD.CC
+
+disk: disk-hello disk-fault disk-cube disk-world host-cfs-put
 	$(HOST_BIN)/cfs_put $(DISK_IMG)
+
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
-	host-jit-test host-chriso-test host-chrisasm-test host-chrisld-test \
-	host-kcc-test
+	host-jit-test host-jit-vm-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
+	host-kcc-test host-gfx3d
 
 host-chrisasm-test: tools/test_chrisasm.c compiler/chrisasm/chrisasm.c \
 		compiler/chrisld/chriso.c
@@ -262,6 +477,34 @@ host-jit-test: tools/test_jit_enc.c tools/jit_host_stub.c compiler/jit/jit_emit.
 		-o $(HOST_BIN)/test_jit_enc
 	$(HOST_BIN)/test_jit_enc
 
+host-jit-vm-test: tools/test_jit_vm.c tools/jit_host_stub.c compiler/jit/jit_emit.c \
+		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
+		compiler/chrisc/chrisc.c compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
+		compiler/clvm/clvm_vm.c kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/jit -Icompiler/chrisc \
+		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -msse2 \
+		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
+		compiler/jit/jit_runtime.c tools/test_jit_vm.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c \
+		-o $(HOST_BIN)/test_jit_vm
+	$(HOST_BIN)/test_jit_vm
+
+host-jit-bench-test: tools/test_jit_bench.c tools/jit_host_stub.c compiler/jit/jit_emit.c \
+		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
+		compiler/chrisc/chrisc.c compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
+		compiler/clvm/clvm_vm.c kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -Icompiler/jit -Icompiler/chrisc \
+		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -msse2 \
+		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
+		compiler/jit/jit_runtime.c tools/test_jit_bench.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c \
+		-o $(HOST_BIN)/test_jit_bench
+	$(HOST_BIN)/test_jit_bench
+
 disk-put: host-cfs-put-file run-stop
 	@test -n "$(CFS_PATH)" || (echo "usage: make disk-put CFS_PATH=SYS/FILE.C HOST_FILE=foo.c" && exit 1)
 	@test -n "$(HOST_FILE)" || (echo "usage: make disk-put CFS_PATH=SYS/FILE.C HOST_FILE=foo.c" && exit 1)
@@ -301,7 +544,7 @@ $(OBJ_DIR)/compiler/%.o: compiler/%.c
 
 $(OBJ_DIR)/compiler/chrisc/%.o: compiler/chrisc/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/compiler/clvm/%.o: compiler/clvm/%.c
 	@mkdir -p $(dir $@)
@@ -369,7 +612,8 @@ $(ISO): $(KERNEL) $(ISO_ROOT)/boot/limine/limine.conf \
 run: $(ISO) run-stop
 	@test -f $(DISK_IMG) || $(MAKE) disk.img
 	@sleep 1
-	$(QEMU) -M pc -m 1G -smp 2 -boot order=dc \
+	$(QEMU) -M pc -m 1G -smp 4 -boot order=dc \
+		-display $(QEMU_DISPLAY) \
 		-drive file=$(DISK_IMG),format=raw,if=ide,index=0 \
 		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
 		-device virtio-net-pci,netdev=n0 \

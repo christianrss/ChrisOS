@@ -37,7 +37,20 @@ enum ClvmOpcode {
     CL_OP_GT    = 0x17,
     CL_OP_GE    = 0x18,
     CL_OP_NEG   = 0x19,
-    CL_OP_SYS   = 0x20
+    CL_OP_SYS   = 0x20,
+    CL_OP_FLOAD = 0x28,
+    CL_OP_FSTORE = 0x29,
+    CL_OP_FPUSH = 0x2a,
+    CL_OP_FADD  = 0x2b,
+    CL_OP_FSUB  = 0x2c,
+    CL_OP_FMUL  = 0x2d,
+    CL_OP_FDIV  = 0x2e,
+    CL_OP_FNEG  = 0x2f,
+    CL_OP_FTOI  = 0x30,
+    CL_OP_ITOF  = 0x31,
+    CL_OP_FEQ   = 0x32,
+    CL_OP_FLT   = 0x33,
+    CL_OP_FLE   = 0x34
 };
 
 typedef enum ClvmLoadError {

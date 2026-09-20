@@ -203,17 +203,73 @@ void gfx_draw_mouse(int x, int y) {
     draw_mouse_shape(x, y, CHRIS_MOUSE_COLOR);
 }
 
+static int g_dirty_x0;
+static int g_dirty_y0;
+static int g_dirty_x1;
+static int g_dirty_y1;
+static int g_dirty_valid;
+
+void gfx_mark_dirty(int x, int y, int w, int h) {
+    int x1;
+    int y1;
+
+    if (w <= 0 || h <= 0)
+        return;
+    x1 = x + w;
+    y1 = y + h;
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x1 > g_gfx.width)
+        x1 = g_gfx.width;
+    if (y1 > g_gfx.height)
+        y1 = g_gfx.height;
+    if (!g_dirty_valid) {
+        g_dirty_x0 = x;
+        g_dirty_y0 = y;
+        g_dirty_x1 = x1;
+        g_dirty_y1 = y1;
+        g_dirty_valid = 1;
+        return;
+    }
+    if (x < g_dirty_x0)
+        g_dirty_x0 = x;
+    if (y < g_dirty_y0)
+        g_dirty_y0 = y;
+    if (x1 > g_dirty_x1)
+        g_dirty_x1 = x1;
+    if (y1 > g_dirty_y1)
+        g_dirty_y1 = y1;
+}
+
 void gfx_present(void) {
     int x;
     int y;
+    int x0;
+    int y0;
+    int x1;
+    int y1;
 
     if (!g_gfx.front || !g_gfx.back) {
         return;
     }
-    for (y = 0; y < g_gfx.height; ++y) {
+    if (g_dirty_valid) {
+        x0 = g_dirty_x0;
+        y0 = g_dirty_y0;
+        x1 = g_dirty_x1;
+        y1 = g_dirty_y1;
+        g_dirty_valid = 0;
+    } else {
+        x0 = 0;
+        y0 = 0;
+        x1 = g_gfx.width;
+        y1 = g_gfx.height;
+    }
+    for (y = y0; y < y1; ++y) {
         uint32_t *dst = g_gfx.front + y * g_gfx.pitch_pixels;
         const uint32_t *src = g_gfx.back + y * g_gfx.width;
-        for (x = 0; x < g_gfx.width; ++x) {
+        for (x = x0; x < x1; ++x) {
             dst[x] = src[x];
         }
     }

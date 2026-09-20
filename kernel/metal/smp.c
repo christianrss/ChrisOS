@@ -10,6 +10,7 @@
 #include "pmm.h"
 #include "serial.h"
 #include "smp.h"
+#include "sse_init.h"
 
 volatile uint32_t cpu_online_count = 1u;
 uint64_t kernel_cr3;
@@ -97,6 +98,7 @@ static void ap_entry(struct limine_mp_info *info) {
         : "r"(stack_top)
         : "memory");
     idt_load();
+    sse_bsp_init();
     if (lapic_id == 0u) {
         lapic_id = lapic_id_read();
     }

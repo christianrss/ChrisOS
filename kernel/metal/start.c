@@ -24,6 +24,7 @@
 #include "ioapic.h"
 #include "job.h"
 #include "smp.h"
+#include "sse_init.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -53,6 +54,7 @@ void kstart(void) {
     mm_init();
     mm_selftest();
     heap_init();
+    sse_bsp_init();
     heap_selftest();
 
     apic_init();

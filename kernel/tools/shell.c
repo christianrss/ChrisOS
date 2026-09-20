@@ -19,6 +19,7 @@
 #include "heap.h"
 #include "kcc.h"
 #include "chriso.h"
+#include "bench.h"
 
 #define SH_COLS 48
 #define SH_ROWS 24
@@ -141,7 +142,7 @@ static int ls_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
 static void cmd_help(void) {
     sh_emit("help ls cd pwd cat mkdir rmdir");
     sh_emit("rm mv ed cc kcc mk reboot run jit runelf");
-    sh_emit("ps kill clear ticks net");
+    sh_emit("ps kill clear ticks net bench");
 }
 
 static void cmd_ls(void) {
@@ -432,6 +433,29 @@ static void cmd_reboot(void) {
     machine_reboot();
 }
 
+static void cmd_bench(void) {
+    uint32_t fps = bench_fps_estimate();
+    char line[24];
+    int k = 0;
+    unsigned v = fps;
+    char d[12];
+    int n = 0;
+    int i;
+    const char *pfx = "fps ";
+    for (i = 0; pfx[i]; ++i)
+        line[k++] = pfx[i];
+    if (v == 0)
+        d[n++] = '0';
+    while (v && n < 10) {
+        d[n++] = (char)('0' + v % 10);
+        v /= 10;
+    }
+    while (n)
+        line[k++] = d[--n];
+    line[k] = 0;
+    sh_emit(line);
+}
+
 static void cmd_ticks(void) {
     unsigned t = (unsigned)pit_ticks();
     char line[12];
@@ -470,6 +494,7 @@ static void sh_exec(const char *line) {
     else if (sh_eq(cmd, "kill")) cmd_kill(arg);
     else if (sh_eq(cmd, "clear")) cmd_clear();
     else if (sh_eq(cmd, "ticks")) cmd_ticks();
+    else if (sh_eq(cmd, "bench")) cmd_bench();
     else if (sh_eq(cmd, "net")) cmd_net();
     else sh_emit("unknown");
 }

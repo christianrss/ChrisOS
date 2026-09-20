@@ -28,6 +28,8 @@ isr%1:
 %assign vector vector + 1
 %endrep
 
+; irq_frame (rdi -> r15): r15..rbx, rax, vector@+120, error@+128, rip@+136
+; rbx = frame pointer for the whole ISR (callee-saved, survives irq_dispatch).
 isr_common:
     cld
     push rax
@@ -46,11 +48,22 @@ isr_common:
     push r14
     push r15
 
-    mov rdi, rsp
     mov rbx, rsp
+    sub rsp, 528
+    lea rcx, [rsp + 16]
+    and rcx, -16
+    fxsave [rcx]
+    mov qword [rbx - 528], rcx
+
+    mov rdi, rbx
+    mov r12, rsp
     and rsp, -16
     call irq_dispatch
-    mov rsp, rbx
+    mov rsp, r12
+
+    mov rcx, [rbx - 528]
+    fxrstor [rcx]
+    lea rsp, [rbx]
 
     pop r15
     pop r14
@@ -67,6 +80,7 @@ isr_common:
     pop rcx
     pop rbx
     pop rax
+
     add rsp, 16
     iretq
 

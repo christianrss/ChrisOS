@@ -10,6 +10,8 @@
 static void app_run(Task *task, uint64_t ticks) {
     int slot;
     uint32_t *pix;
+    int gw;
+    int gh;
     (void)ticks;
     if (!task) {
         return;
@@ -27,9 +29,13 @@ static void app_run(Task *task, uint64_t ticks) {
     if (!pix) {
         return;
     }
+    gw = lang_slot_w(slot);
+    gh = lang_slot_h(slot);
     clvm_sys_blit_to(pix,
                      task->frame.x,
                      task->frame.y + TASK_TITLE_HEIGHT,
+                     gw,
+                     gh,
                      task->frame.width,
                      task->frame.body_height);
 }
@@ -46,10 +52,17 @@ void app_window_open(int lang_slot, const char *title) {
             return;
         }
     }
-    frame.x = 48;
-    frame.y = UI_TASKBAR_HEIGHT + 24;
-    frame.width = CLVM_SYS_GAME_W + 8;
-    frame.body_height = CLVM_SYS_GAME_H;
+    if (lang_slot_fullscreen(lang_slot)) {
+        frame.x = 0;
+        frame.y = UI_TASKBAR_HEIGHT;
+        frame.width = g_gfx.width;
+        frame.body_height = g_gfx.height - UI_TASKBAR_HEIGHT - TASK_TITLE_HEIGHT;
+    } else {
+        frame.x = 48;
+        frame.y = UI_TASKBAR_HEIGHT + 24;
+        frame.width = CLVM_SYS_GAME_W + 8;
+        frame.body_height = CLVM_SYS_GAME_H;
+    }
     id = task_spawn(TASK_APP, frame, app_run);
     if (id < 0) {
         lang_kill(lang_slot);

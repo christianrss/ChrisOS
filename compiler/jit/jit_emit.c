@@ -127,6 +127,22 @@ int jit_emit_cmp_r32_r32(JitBuf *j, int a, int breg) {
     return jit_emit(j, b, 2);
 }
 
+int jit_emit_cmp_r32_imm32(JitBuf *j, int reg, int32_t imm) {
+    uint8_t b[7];
+    int n = 0;
+
+    if (reg >= 8) {
+        b[n++] = (uint8_t)(0x40 | ((reg & 8) ? 4 : 0));
+    }
+    b[n++] = 0x81;
+    b[n++] = (uint8_t)(0xF8 | reg_lo(reg));
+    b[n++] = (uint8_t)imm;
+    b[n++] = (uint8_t)(imm >> 8);
+    b[n++] = (uint8_t)(imm >> 16);
+    b[n++] = (uint8_t)(imm >> 24);
+    return jit_emit(j, b, (uint32_t)n);
+}
+
 int jit_emit_cmp_r32_imm8(JitBuf *j, int reg, int8_t imm) {
     uint8_t b[4];
     if (reg >= 8) {
@@ -229,4 +245,83 @@ int jit_emit_prologue(JitBuf *j, int locals) {
 int jit_emit_epilogue(JitBuf *j) {
     static const uint8_t leave_ret[] = { 0xC9, 0xC3 };
     return jit_emit(j, leave_ret, 2);
+}
+
+int jit_emit_mov_r32_from_mem_disp(JitBuf *j, int dst, int base, uint32_t disp) {
+    uint8_t b[7];
+    int n = 0;
+
+    if (dst >= 8 || base >= 8) {
+        b[n++] = (uint8_t)(0x40 | ((dst & 8) ? 4 : 0) | ((base & 8) ? 1 : 0));
+    }
+    b[n++] = 0x8B;
+    b[n++] = (uint8_t)(0x80 | ((dst & 7) << 3) | (base & 7));
+    b[n++] = (uint8_t)disp;
+    b[n++] = (uint8_t)(disp >> 8);
+    b[n++] = (uint8_t)(disp >> 16);
+    b[n++] = (uint8_t)(disp >> 24);
+    return jit_emit(j, b, (uint32_t)n);
+}
+
+int jit_emit_mov_mem_disp_r32(JitBuf *j, uint32_t disp, int base, int src) {
+    uint8_t b[7];
+    int n = 0;
+
+    if (src >= 8 || base >= 8) {
+        b[n++] = (uint8_t)(0x40 | ((src & 8) ? 4 : 0) | ((base & 8) ? 1 : 0));
+    }
+    b[n++] = 0x89;
+    b[n++] = (uint8_t)(0x80 | ((src & 7) << 3) | (base & 7));
+    b[n++] = (uint8_t)disp;
+    b[n++] = (uint8_t)(disp >> 8);
+    b[n++] = (uint8_t)(disp >> 16);
+    b[n++] = (uint8_t)(disp >> 24);
+    return jit_emit(j, b, (uint32_t)n);
+}
+
+int jit_emit_cmp_mem_disp_imm8(JitBuf *j, uint32_t disp, int base, int8_t imm) {
+    uint8_t b[8];
+    int n = 0;
+
+    if (base >= 8) {
+        b[n++] = (uint8_t)(0x40 | ((base & 8) ? 1 : 0));
+    }
+    b[n++] = 0x83;
+    b[n++] = (uint8_t)(0xB8 | (base & 7));
+    b[n++] = (uint8_t)disp;
+    b[n++] = (uint8_t)(disp >> 8);
+    b[n++] = (uint8_t)(disp >> 16);
+    b[n++] = (uint8_t)(disp >> 24);
+    b[n++] = (uint8_t)imm;
+    return jit_emit(j, b, (uint32_t)n);
+}
+
+int jit_emit_test_r32_imm(JitBuf *j, int reg, int32_t imm) {
+    if (imm == 0) {
+        return jit_emit_test_r32_r32(j, reg, reg);
+    }
+    return jit_emit_cmp_r32_imm8(j, reg, (int8_t)imm);
+}
+
+int jit_emit_je_rel8(JitBuf *j, int8_t rel) {
+    uint8_t b[2] = { 0x74, (uint8_t)rel };
+    return jit_emit(j, b, 2);
+}
+
+int jit_emit_jmp_rel8(JitBuf *j, int8_t rel) {
+    uint8_t b[2] = { 0xEB, (uint8_t)rel };
+    return jit_emit(j, b, 2);
+}
+
+void jit_patch_rel32(JitBuf *j, uint32_t site, uint32_t target) {
+    int32_t rel;
+
+    if (j == 0 || j->w == 0 || site + 4u > j->used) {
+        return;
+    }
+    rel = (int32_t)(target - (site + 4u));
+    j->w[site] = (uint8_t)rel;
+    j->w[site + 1u] = (uint8_t)(rel >> 8);
+    j->w[site + 2u] = (uint8_t)(rel >> 16);
+    j->w[site + 3u] = (uint8_t)(rel >> 24);
 }
