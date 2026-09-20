@@ -13,7 +13,7 @@
 #define PT_LOAD 1u
 
 #define USER_LOAD_LO 0x400000ull
-#define USER_LOAD_HI 0x401000ull
+#define USER_LOAD_HI 0x500000ull
 
 static uint32_t elf_u32(const uint8_t *p) {
     return (uint32_t)p[0] |

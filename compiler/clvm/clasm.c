@@ -3,7 +3,7 @@
 
 typedef enum ArgKind { ARG_NONE, ARG_I32, ARG_LABEL } ArgKind;
 typedef struct OpInfo { const char *name; uint8_t op, size; ArgKind arg; } OpInfo;
-typedef struct Label { char name[CLASM_NAME_MAX]; uint16_t address; } Label;
+typedef struct Label { char name[CLASM_NAME_MAX]; uint32_t address; } Label;
 typedef struct Context {
     const char *source;
     size_t size;
@@ -29,7 +29,27 @@ static const OpInfo ops[] = {
     {"MOD",CL_OP_MOD,1,ARG_NONE},{"NE",CL_OP_NE,1,ARG_NONE},
     {"LE",CL_OP_LE,1,ARG_NONE},{"GT",CL_OP_GT,1,ARG_NONE},
     {"GE",CL_OP_GE,1,ARG_NONE},{"NEG",CL_OP_NEG,1,ARG_NONE},
-    {"SYS",CL_OP_SYS,1,ARG_NONE}
+    {"SYS",CL_OP_SYS,1,ARG_NONE},
+    {"CALLI",CL_OP_CALLI,1,ARG_NONE},
+    {"UDIV",CL_OP_UDIV,1,ARG_NONE},{"UMOD",CL_OP_UMOD,1,ARG_NONE},
+    {"ULT",CL_OP_ULT,1,ARG_NONE},
+    {"JMP32",CL_OP_JMP32,5,ARG_LABEL},{"JZ32",CL_OP_JZ32,5,ARG_LABEL},
+    {"JNZ32",CL_OP_JNZ32,5,ARG_LABEL},{"CALL32",CL_OP_CALL32,5,ARG_LABEL},
+    {"PUSH64",CL_OP_PUSH64,9,ARG_I32},
+    {"LOAD64",CL_OP_LOAD64,1,ARG_NONE},{"STORE64",CL_OP_STORE64,1,ARG_NONE},
+    {"AND",CL_OP_AND,1,ARG_NONE},{"OR",CL_OP_OR,1,ARG_NONE},
+    {"XOR",CL_OP_XOR,1,ARG_NONE},{"SHL",CL_OP_SHL,1,ARG_NONE},
+    {"SHR",CL_OP_SHR,1,ARG_NONE},{"SAR",CL_OP_SAR,1,ARG_NONE},
+    {"NOT",CL_OP_NOT,1,ARG_NONE},
+    {"SAFEPOINT",CL_OP_SAFEPOINT,1,ARG_NONE},
+    {"LOADB",CL_OP_LOADB,1,ARG_NONE},{"STOREB",CL_OP_STOREB,1,ARG_NONE},
+    {"FLOAD",CL_OP_FLOAD,1,ARG_NONE},{"FSTORE",CL_OP_FSTORE,1,ARG_NONE},
+    {"FPUSH",CL_OP_FPUSH,5,ARG_I32},{"FADD",CL_OP_FADD,1,ARG_NONE},
+    {"FSUB",CL_OP_FSUB,1,ARG_NONE},{"FMUL",CL_OP_FMUL,1,ARG_NONE},
+    {"FDIV",CL_OP_FDIV,1,ARG_NONE},{"FNEG",CL_OP_FNEG,1,ARG_NONE},
+    {"FTOI",CL_OP_FTOI,1,ARG_NONE},{"ITOF",CL_OP_ITOF,1,ARG_NONE},
+    {"FEQ",CL_OP_FEQ,1,ARG_NONE},{"FLT",CL_OP_FLT,1,ARG_NONE},
+    {"FLE",CL_OP_FLE,1,ARG_NONE}
 };
 
 static int upper(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
@@ -107,7 +127,7 @@ static int add_label(Context *c, const char *name, int line, int column) {
     while (name[i]) ++i;
     if (i >= CLASM_NAME_MAX) return error(c, line, column, "label too long");
     copy_text(c->labels[c->label_count].name, CLASM_NAME_MAX, name);
-    c->labels[c->label_count].address = (uint16_t)c->pc;
+    c->labels[c->label_count].address = (uint32_t)c->pc;
     ++c->label_count;
     return 1;
 }
@@ -169,7 +189,13 @@ static int parse_line(Context *c, const char *line, size_t n,
             return error(c, line_no, arg_col, "expected i32");
         if (!tail_empty(line, n, at))
             return error(c, line_no, (int)at + 1, "extra text after operand");
-        if (pass == 2) emit32(c->out + c->pc + 1, (uint32_t)immediate);
+        if (pass == 2) {
+            emit32(c->out + c->pc + 1, (uint32_t)immediate);
+            if (op->size == 9) {
+                uint32_t hi = immediate < 0 ? 0xffffffffu : 0;
+                emit32(c->out + c->pc + 5, hi);
+            }
+        }
     } else if (op->arg == ARG_LABEL) {
         int index;
         int32_t rel;
@@ -180,11 +206,15 @@ static int parse_line(Context *c, const char *line, size_t n,
         if (pass == 2) {
             index = find_label(c, arg);
             if (index < 0) return error(c, line_no, arg_col, "undefined label");
-            rel = (int32_t)c->labels[index].address - (int32_t)(c->pc + 3);
-            if (rel < -32768 || rel > 32767)
-                return error(c, line_no, arg_col, "relative jump too far");
-            c->out[c->pc + 1] = (uint8_t)rel;
-            c->out[c->pc + 2] = (uint8_t)((uint32_t)rel >> 8);
+            rel = (int32_t)c->labels[index].address - (int32_t)(c->pc + op->size);
+            if (op->size == 3) {
+                if (rel < -32768 || rel > 32767)
+                    return error(c, line_no, arg_col, "relative jump too far");
+                c->out[c->pc + 1] = (uint8_t)rel;
+                c->out[c->pc + 2] = (uint8_t)((uint32_t)rel >> 8);
+            } else {
+                emit32(c->out + c->pc + 1, (uint32_t)rel);
+            }
         }
     } else if (!tail_empty(line, n, at)) {
         return error(c, line_no, (int)at + 1, "instruction takes no operand");

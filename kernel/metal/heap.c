@@ -4,17 +4,24 @@
 #include "pmm.h"
 #include "serial.h"
 
-#define HEAP_PAGES     16384ull
-#define HEAP_ALIGN     16ull
-#define HEAP_USER_OFF  16ull
+#define HEAP_ALIGN          16ull
+#define HEAP_USER_OFF       16ull
+#define HEAP_ARENA_MAX      32
+#define HEAP_MIN_ARENA_PAGES 16ull
 
 struct heap_block {
-    uint32_t size;
+    uint64_t size;
     uint32_t used;
+    uint32_t pad;
 };
 
-static uint8_t *heap_base;
-static uint64_t heap_limit;
+struct heap_arena {
+    uint8_t *base;
+    uint64_t limit;
+};
+
+static struct heap_arena arenas[HEAP_ARENA_MAX];
+static int narenas;
 static int heap_ready;
 
 static uint64_t align_up(uint64_t value, uint64_t align) {
@@ -33,97 +40,210 @@ static struct heap_block *next_block(struct heap_block *block) {
     return (struct heap_block *)(user_from_block(block) + block->size);
 }
 
-static int block_in_arena(struct heap_block *block) {
+static int block_in_arena(struct heap_arena *a, struct heap_block *block) {
     uint8_t *ptr;
 
     ptr = (uint8_t *)block;
-    if (ptr < heap_base) {
+    if (ptr < a->base) {
         return 0;
     }
-    if (ptr + HEAP_USER_OFF > heap_base + heap_limit) {
+    if (ptr + HEAP_USER_OFF > a->base + a->limit) {
         return 0;
     }
     return 1;
 }
 
+static struct heap_arena *arena_of_user(uint8_t *user) {
+    int i;
+
+    for (i = 0; i < narenas; ++i) {
+        if (user >= arenas[i].base + HEAP_USER_OFF &&
+            user < arenas[i].base + arenas[i].limit) {
+            return &arenas[i];
+        }
+    }
+    return 0;
+}
+
 static void heap_tally(uint64_t *used_bytes, uint64_t *free_bytes) {
+    int i;
     struct heap_block *block;
     uint64_t used;
     uint64_t free_size;
 
     used = 0;
     free_size = 0;
-    block = (struct heap_block *)heap_base;
-    while (block_in_arena(block) && (uint8_t *)block < heap_base + heap_limit) {
-        if (block->used) {
-            used += block->size;
-        } else {
-            free_size += block->size;
+    for (i = 0; i < narenas; ++i) {
+        block = (struct heap_block *)arenas[i].base;
+        while (block_in_arena(&arenas[i], block) &&
+               (uint8_t *)block < arenas[i].base + arenas[i].limit) {
+            if (block->used) {
+                used += block->size;
+            } else {
+                free_size += block->size;
+            }
+            block = next_block(block);
         }
-        block = next_block(block);
     }
     *used_bytes = used;
     *free_bytes = free_size;
 }
 
-static void coalesce_forward(struct heap_block *block) {
+static void coalesce_forward(struct heap_arena *a, struct heap_block *block) {
     struct heap_block *next;
 
     next = next_block(block);
-    while (block_in_arena(next) &&
-           (uint8_t *)next < heap_base + heap_limit &&
+    while (block_in_arena(a, next) &&
+           (uint8_t *)next < a->base + a->limit &&
            next->used == 0) {
-        block->size = (uint32_t)(block->size + HEAP_USER_OFF + next->size);
+        block->size = block->size + HEAP_USER_OFF + next->size;
         next = next_block(block);
     }
 }
 
-void heap_init(void) {
-    uint64_t first;
-    uint64_t phys;
-    uint64_t index;
+static int add_arena_phys(uint64_t phys, uint64_t bytes) {
     struct heap_block *block;
-    uint64_t payload;
 
-    first = 0;
-    for (index = 0; index < HEAP_PAGES; ++index) {
-        phys = pmm_alloc();
-        if (phys == 0) {
-            panic("heap_init: pmm_alloc falhou");
-        }
-        if (index == 0) {
-            first = phys;
-        } else if (phys != first + index * PMM_PAGE) {
-            panic("heap_init: paginas nao contiguas");
-        }
+    if (narenas == HEAP_ARENA_MAX || phys == 0 || bytes < HEAP_USER_OFF + HEAP_ALIGN) {
+        return 0;
     }
-
-    heap_base = (uint8_t *)bootinfo_phys_to_virt(first);
-    heap_limit = HEAP_PAGES * PMM_PAGE;
-    if (((uint64_t)heap_base & (HEAP_ALIGN - 1ull)) != 0) {
-        panic("heap_init: arena desalinhada");
+    arenas[narenas].base = (uint8_t *)bootinfo_phys_to_virt(phys);
+    arenas[narenas].limit = bytes;
+    if (((uint64_t)arenas[narenas].base & (HEAP_ALIGN - 1ull)) != 0) {
+        panic("heap: arena desalinhada");
     }
-
-    payload = heap_limit - HEAP_USER_OFF;
-    block = (struct heap_block *)heap_base;
-    block->size = (uint32_t)payload;
+    block = (struct heap_block *)arenas[narenas].base;
+    block->size = bytes - HEAP_USER_OFF;
     block->used = 0;
+    block->pad = 0;
+    narenas++;
+    return 1;
+}
+
+static uint64_t keep_pages(void) {
+    return PMM_KEEP / PMM_PAGE;
+}
+
+static int heap_grow(uint64_t need) {
+    uint64_t pages;
+    uint64_t available;
+    uint64_t phys;
+
+    pages = (need + HEAP_USER_OFF + PMM_PAGE - 1ull) / PMM_PAGE;
+    if (pages < HEAP_MIN_ARENA_PAGES) {
+        pages = HEAP_MIN_ARENA_PAGES;
+    }
+    if (pmm_free_pages() <= keep_pages()) {
+        return 0;
+    }
+    available = pmm_free_pages() - keep_pages();
+    if (pages > available) {
+        pages = available;
+    }
+    if (pages < HEAP_MIN_ARENA_PAGES) {
+        return 0;
+    }
+    phys = pmm_alloc_contig(pages);
+    if (phys == 0) {
+        phys = pmm_alloc_contig(HEAP_MIN_ARENA_PAGES);
+        if (phys == 0) {
+            return 0;
+        }
+        pages = HEAP_MIN_ARENA_PAGES;
+    }
+    return add_arena_phys(phys, pages * PMM_PAGE);
+}
+
+static int heap_claim_run(uint64_t phys, uint64_t pages, void *user) {
+    uint64_t take;
+    uint64_t budget;
+    (void)user;
+
+    if (narenas >= HEAP_ARENA_MAX) {
+        return 0;
+    }
+    if (pmm_free_pages() <= keep_pages()) {
+        return 0;
+    }
+    budget = pmm_free_pages() - keep_pages();
+    take = pages;
+    if (take > budget) {
+        take = budget;
+    }
+    if (take < HEAP_MIN_ARENA_PAGES) {
+        return 1;
+    }
+    if (pmm_claim_at(phys, take) == 0) {
+        return 1;
+    }
+    if (!add_arena_phys(phys, take * PMM_PAGE)) {
+        pmm_free_contig(phys, take);
+        return 0;
+    }
+    return 1;
+}
+
+void heap_init(void) {
+    uint64_t used;
+    uint64_t free_size;
+
+    narenas = 0;
+    heap_ready = 0;
+
+    if (pmm_free_pages() <= keep_pages()) {
+        panic("heap_init: RAM insuficiente para KEEP");
+    }
+    pmm_foreach_free_run(heap_claim_run, 0);
+    if (narenas == 0) {
+        if (!heap_grow(HEAP_MIN_ARENA_PAGES * PMM_PAGE)) {
+            panic("heap_init: nenhuma arena");
+        }
+    }
     heap_ready = 1;
 
-    serial_puts("heap arena phys=");
-    serial_write_hex(first);
-    serial_puts(" virt=");
-    serial_write_hex((uint64_t)heap_base);
-    serial_puts(" bytes=");
-    serial_write_u64(heap_limit);
+    heap_tally(&used, &free_size);
+    serial_puts("heap arenas=");
+    serial_write_u64((uint64_t)narenas);
+    serial_puts(" used=");
+    serial_write_u64(used);
+    serial_puts(" free=");
+    serial_write_u64(free_size);
+    serial_puts(" pmm_free=");
+    serial_write_u64(pmm_free_pages() * PMM_PAGE);
     serial_puts("\n");
 }
 
-void *kmalloc(uint64_t size) {
+static void *kmalloc_in_arenas(uint64_t need) {
+    int i;
     struct heap_block *block;
     struct heap_block *split;
-    uint64_t need;
     uint64_t leftover;
+
+    for (i = 0; i < narenas; ++i) {
+        block = (struct heap_block *)arenas[i].base;
+        while (block_in_arena(&arenas[i], block) &&
+               (uint8_t *)block < arenas[i].base + arenas[i].limit) {
+            if (block->used == 0 && block->size >= need) {
+                leftover = block->size - need;
+                if (leftover >= HEAP_USER_OFF + HEAP_ALIGN) {
+                    split = (struct heap_block *)(user_from_block(block) + need);
+                    split->size = leftover - HEAP_USER_OFF;
+                    split->used = 0;
+                    split->pad = 0;
+                    block->size = need;
+                }
+                block->used = 1;
+                return user_from_block(block);
+            }
+            block = next_block(block);
+        }
+    }
+    return 0;
+}
+
+void *kmalloc(uint64_t size) {
+    uint64_t need;
+    void *p;
 
     if (!heap_ready) {
         panic("kmalloc antes de heap_init");
@@ -132,36 +252,23 @@ void *kmalloc(uint64_t size) {
         return 0;
     }
     need = align_up(size, HEAP_ALIGN);
-    if (need > 0xffffffffull) {
-        serial_puts("kmalloc OOM size demasiado grande\n");
+    p = kmalloc_in_arenas(need);
+    if (p) {
+        return p;
+    }
+    if (!heap_grow(need)) {
+        serial_puts("kmalloc OOM need=");
+        serial_write_u64(need);
+        serial_puts("\n");
         return 0;
     }
-
-    block = (struct heap_block *)heap_base;
-    while (block_in_arena(block) && (uint8_t *)block < heap_base + heap_limit) {
-        if (block->used == 0 && block->size >= (uint32_t)need) {
-            leftover = (uint64_t)block->size - need;
-            if (leftover >= HEAP_USER_OFF + HEAP_ALIGN) {
-                split = (struct heap_block *)(user_from_block(block) + need);
-                split->size = (uint32_t)(leftover - HEAP_USER_OFF);
-                split->used = 0;
-                block->size = (uint32_t)need;
-            }
-            block->used = 1;
-            return user_from_block(block);
-        }
-        block = next_block(block);
-    }
-
-    serial_puts("kmalloc OOM need=");
-    serial_write_u64(need);
-    serial_puts("\n");
-    return 0;
+    return kmalloc_in_arenas(need);
 }
 
 void kfree(void *ptr) {
     uint8_t *user;
     struct heap_block *block;
+    struct heap_arena *a;
 
     if (ptr == 0) {
         return;
@@ -170,18 +277,19 @@ void kfree(void *ptr) {
         panic("kfree antes de heap_init");
     }
     user = (uint8_t *)ptr;
-    if (user < heap_base + HEAP_USER_OFF || user >= heap_base + heap_limit) {
-        panic("kfree fora da arena");
-    }
     if (((uint64_t)user & (HEAP_ALIGN - 1ull)) != 0) {
         panic("kfree ponteiro desalinhado");
+    }
+    a = arena_of_user(user);
+    if (a == 0) {
+        panic("kfree fora da arena");
     }
     block = block_from_user(user);
     if (block->used == 0) {
         panic("kfree double-free");
     }
     block->used = 0;
-    coalesce_forward(block);
+    coalesce_forward(a, block);
 }
 
 uint64_t heap_used_bytes(void) {
@@ -204,6 +312,10 @@ uint64_t heap_free_bytes(void) {
     }
     heap_tally(&used, &free_size);
     return free_size;
+}
+
+uint64_t heap_arena_count(void) {
+    return (uint64_t)narenas;
 }
 
 void heap_selftest(void) {

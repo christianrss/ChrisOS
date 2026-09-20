@@ -227,6 +227,99 @@ static void editor_draw_status(const Task *task, const Editor *e) {
                           e->status[0] ? e->status : "ready",
                           x + EDITOR_PAD_X, y + 1, CHRIS_TEXT_COLOR,
                           x, y, w, EDITOR_STATUS_H);
+    if (lang_debug_paused()) {
+        char dbg[40];
+        unsigned pc = lang_debug_pc();
+        int n = 0;
+        dbg[n++] = 'p';
+        dbg[n++] = 'c';
+        dbg[n++] = '=';
+        if (pc == 0) {
+            dbg[n++] = '0';
+        } else {
+            char hex[8];
+            int h = 0;
+            unsigned v = pc;
+            while (v && h < 8) {
+                hex[h++] = "0123456789abcdef"[v & 15];
+                v >>= 4;
+            }
+            while (h--)
+                dbg[n++] = hex[h];
+        }
+        dbg[n] = 0;
+        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, dbg,
+                              x + w / 2, y + 1, CHRIS_TEXT_COLOR,
+                              x, y, w, EDITOR_STATUS_H);
+    }
+}
+
+static void dbg_hex(char *dst, int cap, const char *lab, uint32_t v) {
+    int n = 0;
+    char hex[8];
+    int h = 0;
+    if (cap < 2) {
+        return;
+    }
+    while (lab[n] && n + 1 < cap) {
+        dst[n] = lab[n];
+        n++;
+    }
+    if (v == 0) {
+        if (n + 1 < cap)
+            dst[n++] = '0';
+        dst[n] = 0;
+        return;
+    }
+    while (v && h < 8) {
+        hex[h++] = "0123456789abcdef"[v & 15];
+        v >>= 4;
+    }
+    while (h && n + 1 < cap)
+        dst[n++] = hex[--h];
+    dst[n] = 0;
+}
+
+static void editor_draw_debug(const Task *task) {
+    int x;
+    int y;
+    int w = 108;
+    int i;
+    if (!task || !lang_debug_paused()) {
+        return;
+    }
+    x = task->frame.x + task->frame.width - w - 2;
+    y = task->frame.y + TASK_TITLE_HEIGHT + EDITOR_CHROME_H + 2;
+    gfx_fill_rect(x, y, w, 86, 0x00202830u);
+    {
+        char line[24];
+        dbg_hex(line, 24, "pc ", lang_debug_pc());
+        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                              x + 2, y + 2, 0x00E0E0E0u, x, y, w, 86);
+        {
+            unsigned ln = (unsigned)lang_debug_line();
+            dbg_hex(line, 24, "ln ", ln);
+            gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                                  x + 2, y + 16, 0x00E0E0E0u, x, y, w, 86);
+        }
+        for (i = 0; i < 2; ++i) {
+            char lab[4];
+            lab[0] = 's';
+            lab[1] = (char)('0' + i);
+            lab[2] = ' ';
+            lab[3] = 0;
+            dbg_hex(line, 24, lab, (uint32_t)lang_debug_stack(i));
+            gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
+                                  line, x + 2, y + 30 + i * 14, 0x00E0E0E0u,
+                                  x, y, w, 86);
+        }
+        dbg_hex(line, 24, "m0 ", (uint32_t)lang_debug_mem(0));
+        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                              x + 2, y + 58, 0x00E0E0E0u, x, y, w, 86);
+        dbg_hex(line, 24, "m8 ", (uint32_t)lang_debug_mem(8));
+        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                              x + 2, y + 72, 0x00E0E0E0u, x, y, w, 86);
+    }
 }
 
 static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
@@ -530,6 +623,31 @@ static void editor_run(Task *task, uint64_t ticks) {
                 }
                 continue;
             }
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F7) {
+                (void)lang_bp_toggle_line(e->row + 1);
+                continue;
+            }
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F9) {
+                lang_debug_enable(1);
+                (void)lang_compile_run(e);
+                continue;
+            }
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F10) {
+                if (lang_debug_paused())
+                    lang_debug_step();
+                else
+                    lang_debug_continue();
+                continue;
+            }
+            if (event.type == INPUT_EVENT_KEY &&
+                event.key == INPUT_KEY_F8) {
+                lang_debug_enable(0);
+                lang_debug_continue();
+                continue;
+            }
             key = map_input_event(&event);
             if (key) {
                 (void)ed_handle(e, key);
@@ -538,6 +656,7 @@ static void editor_run(Task *task, uint64_t ticks) {
     }
 
     editor_draw_text(task, e, ticks);
+    editor_draw_debug(task);
     editor_draw_status(task, e);
 }
 

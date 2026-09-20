@@ -16,11 +16,15 @@
 #include "storage.h"
 #include "task.h"
 #include "ui.h"
+#include "cla/cla.h"
+#include "heap.h"
+#include "gc/gc.h"
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
 
-#define LANG_SOURCE_MAX 262144
-#define LANG_FILE_MAX (CLVM_HEADER_SIZE + CLVM_MAX_CODE)
+#define LANG_SOURCE_MAX 524288
+#define LANG_CODE_MAX (1024u * 1024u)
+#define LANG_FILE_MAX (CLVM_HEADER_SIZE_V2 + LANG_CODE_MAX)
 #define LANG_NAME_MAX 96
 #define LANG_PIXELS (CLVM_SYS_GAME_W * CLVM_SYS_GAME_H)
 typedef struct LangSlot {
@@ -37,12 +41,25 @@ typedef struct LangSlot {
     JitBuf jit;
     JitFn jit_fn;
     int use_jit;
+    uint8_t *heap_ram;
+    uint64_t heap_ram_sz;
+    int debug_on;
+    int paused;
+    int step_one;
+    uint32_t breakpoints[32];
+    int nbreak;
+    uint32_t map_pc[CHRIS_MAP_MAX];
+    uint16_t map_line[CHRIS_MAP_MAX];
+    int map_n;
+    int step_line;
+    uint16_t last_line;
 } LangSlot;
 
 static LangSlot slots[LANG_VM_SLOTS];
 static char source_buffer[LANG_SOURCE_MAX];
-static uint8_t code_buffer[CLVM_MAX_CODE];
+static uint8_t code_buffer[LANG_CODE_MAX];
 static uint8_t file_buffer[LANG_FILE_MAX];
+static int g_want_debug;
 static ClvmSysFn system_fn;
 static void *system_user;
 
@@ -171,6 +188,20 @@ static int output_name(const char *in, char out[LANG_NAME_MAX]) {
     return 1;
 }
 
+static int chrisc_fs_read(void *user, const char *path, char *out, int cap) {
+    int n;
+    (void)user;
+    if (!path || !out || cap < 2) {
+        return -1;
+    }
+    n = fs_read(path, out, cap - 1);
+    if (n < 0) {
+        return -1;
+    }
+    out[n] = 0;
+    return n;
+}
+
 static void diag_status(Editor *e, int line, int col, const char *message) {
     int n = 0;
     e->status[0] = 0;
@@ -180,6 +211,20 @@ static void diag_status(Editor *e, int line, int col, const char *message) {
     append_u(e->status, 80, &n, (unsigned)col);
     append(e->status, 80, &n, " ");
     append(e->status, 80, &n, message);
+}
+
+static void chris_diag_status(Editor *e, const ChrisDiag *d) {
+    int n = 0;
+    e->status[0] = 0;
+    if (d->file[0]) {
+        append(e->status, 80, &n, d->file);
+        append(e->status, 80, &n, ":");
+    }
+    append_u(e->status, 80, &n, (unsigned)d->line);
+    append(e->status, 80, &n, ":");
+    append_u(e->status, 80, &n, (unsigned)d->column);
+    append(e->status, 80, &n, " ");
+    append(e->status, 80, &n, d->message);
 }
 
 void lang_init(ClvmSysFn sys, void *user) {
@@ -195,11 +240,142 @@ void lang_init(ClvmSysFn sys, void *user) {
         slots[i].use_jit = 0;
         slots[i].jit_fn = NULL;
         slots[i].jit.phys = 0;
+        slots[i].heap_ram = 0;
+        slots[i].heap_ram_sz = 0;
+        slots[i].debug_on = 0;
+        slots[i].paused = 0;
+        slots[i].step_one = 0;
+        slots[i].nbreak = 0;
+        slots[i].map_n = 0;
+        slots[i].step_line = 0;
+        slots[i].last_line = 0;
         slots[i].gfx.pixels = slots[i].pixels;
         slots[i].gfx.zbuf = 0;
         slots[i].gfx.w = CLVM_SYS_GAME_W;
         slots[i].gfx.h = CLVM_SYS_GAME_H;
         slots[i].gfx.slot_id = -1;
+    }
+}
+
+#define CLVM_HEAP_RESERVE (64ull * 1024ull * 1024ull)
+#define CLVM_SLOT_RAM_DEFAULT (256ull * 1024ull * 1024ull)
+
+static void lang_free_slot_ram(int i) {
+    if (slots[i].heap_ram) {
+        kfree(slots[i].heap_ram);
+        slots[i].heap_ram = 0;
+        slots[i].heap_ram_sz = 0;
+    }
+}
+
+static void lang_attach_slot_ram(int i, const ClvmImage *image) {
+    uint64_t cap;
+    uint64_t want;
+    uint8_t *p;
+    uint64_t n;
+
+    lang_free_slot_ram(i);
+    cap = heap_free_bytes();
+    if (cap > CLVM_HEAP_RESERVE)
+        cap -= CLVM_HEAP_RESERVE;
+    else
+        cap = 0;
+    want = image && image->mem_hint ? (uint64_t)image->mem_hint : CLVM_SLOT_RAM_DEFAULT;
+    if (want < CLVM_MEMORY_SIZE)
+        want = CLVM_MEMORY_SIZE;
+    if (want > cap && cap >= CLVM_MEMORY_SIZE)
+        want = cap;
+    p = (uint8_t *)kmalloc(want);
+    if (!p)
+        return;
+    for (n = 0; n < want; ++n)
+        p[n] = 0;
+    if (slots[i].vm.memory) {
+        uint64_t copy = slots[i].vm.mem_size;
+        if (copy > want)
+            copy = want;
+        for (n = 0; n < copy; ++n)
+            p[n] = slots[i].vm.memory[n];
+    }
+    slots[i].heap_ram = p;
+    slots[i].heap_ram_sz = want;
+    clvm_vm_set_memory(&slots[i].vm, p, want);
+}
+
+static void lang_safepoint(ClvmVm *vm) {
+    (void)vm;
+    gc_poll();
+}
+
+static uint16_t lang_line_at(const LangSlot *s, uint32_t pc) {
+    int i;
+    uint16_t line = 0;
+    for (i = 0; i < s->map_n; ++i) {
+        if (s->map_pc[i] <= pc)
+            line = s->map_line[i];
+        else
+            break;
+    }
+    return line;
+}
+
+static void lang_load_map(int slot, const char *clv) {
+    char mapn[LANG_NAME_MAX];
+    char buf[8192];
+    int n;
+    int i;
+    int k;
+    slots[slot].map_n = 0;
+    slots[slot].step_line = 0;
+    if (!clv)
+        return;
+    k = 0;
+    while (clv[k] && k + 1 < LANG_NAME_MAX)
+        mapn[k] = clv[k], ++k;
+    mapn[k] = 0;
+    if (k > 4) {
+        mapn[k - 3] = 'M';
+        mapn[k - 2] = 'A';
+        mapn[k - 1] = 'P';
+    }
+    n = fs_read(mapn, buf, (int)sizeof(buf) - 1);
+    if (n < 0)
+        return;
+    buf[n] = 0;
+    i = 0;
+    while (i < n && slots[slot].map_n < CHRIS_MAP_MAX) {
+        unsigned pc = 0;
+        unsigned line = 0;
+        while (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\r')
+            i++;
+        if (buf[i] == '0' && (buf[i + 1] == 'x' || buf[i + 1] == 'X'))
+            i += 2;
+        while ((buf[i] >= '0' && buf[i] <= '9') ||
+               (buf[i] >= 'a' && buf[i] <= 'f') ||
+               (buf[i] >= 'A' && buf[i] <= 'F')) {
+            unsigned v = (unsigned)buf[i];
+            if (v >= '0' && v <= '9')
+                v -= '0';
+            else if (v >= 'a')
+                v = v - 'a' + 10;
+            else
+                v = v - 'A' + 10;
+            pc = (pc << 4) | v;
+            i++;
+        }
+        while (buf[i] == ' ')
+            i++;
+        while (buf[i] >= '0' && buf[i] <= '9') {
+            line = line * 10u + (unsigned)(buf[i] - '0');
+            i++;
+        }
+        slots[slot].map_pc[slots[slot].map_n] = pc;
+        slots[slot].map_line[slots[slot].map_n] = (uint16_t)line;
+        slots[slot].map_n++;
+        while (buf[i] && buf[i] != '\n')
+            i++;
+        if (buf[i] == '\n')
+            i++;
     }
 }
 
@@ -284,7 +460,7 @@ int lang_save(Editor *e) {
 int lang_compile(Editor *e) {
     size_t file_size = 0;
     size_t code_size = 0;
-    uint16_t entry = 0;
+    uint32_t entry = 0;
     char name[LANG_NAME_MAX];
     if (!e || (!suffix(e->name, ".CVA") && !suffix(e->name, ".CC"))) {
         if (e) {
@@ -307,16 +483,24 @@ int lang_compile(Editor *e) {
         entry = r.entry;
     } else {
         ChrisResult r;
-        if (!chrisc_compile(source_buffer, (size_t)slen(source_buffer),
-                            code_buffer, sizeof(code_buffer), &r)) {
-            diag_status(e, r.diag.line, r.diag.column, r.diag.message);
+        if (!chrisc_compile_ex(e->name, source_buffer, (size_t)slen(source_buffer),
+                               chrisc_fs_read, 0, code_buffer, sizeof(code_buffer),
+                               &r)) {
+            chris_diag_status(e, &r.diag);
             return 0;
         }
         code_size = r.code_size;
         entry = r.entry;
+        lang_write_map(name, &r);
     }
-    file_size = clvm_write_image(file_buffer, sizeof(file_buffer), CLVM_FLAG_GAME,
-                                 entry, code_buffer, code_size);
+    if (code_size > 65535u || entry > 65535u)
+        file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
+                                       CLVM_FLAG_GAME, entry, 0,
+                                       code_buffer, code_size);
+    else
+        file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
+                                    CLVM_FLAG_GAME, (uint16_t)entry,
+                                    code_buffer, code_size);
     if (!file_size) {
         status(e, "compile: empty image");
         return 0;
@@ -329,6 +513,44 @@ int lang_compile(Editor *e) {
             status(e, buf);
             return 0;
         }
+    }
+    {
+        ClaImage img;
+        char cla[LANG_NAME_MAX];
+        int k = 0;
+        int ncla;
+        while (name[k] && k + 1 < LANG_NAME_MAX) {
+            cla[k] = name[k];
+            k++;
+        }
+        cla[k] = 0;
+        if (k > 3) {
+            cla[k - 3] = 'C';
+            cla[k - 2] = 'L';
+            cla[k - 1] = 'A';
+        }
+        {
+            unsigned z;
+            uint8_t *p = (uint8_t *)&img;
+            for (z = 0; z < sizeof(img); ++z)
+                p[z] = 0;
+        }
+        img.name[0] = 'M';
+        img.name[1] = 0;
+        img.version = 1;
+        img.nmethods = 1;
+        img.methods[0].name[0] = 'm';
+        img.methods[0].name[1] = 'a';
+        img.methods[0].name[2] = 'i';
+        img.methods[0].name[3] = 'n';
+        img.methods[0].rva = 0;
+        img.methods[0].size = (uint32_t)code_size;
+        img.methods[0].sig.ret = IL_I4;
+        img.il = code_buffer;
+        img.il_size = (uint32_t)code_size;
+        ncla = cla_write(file_buffer, sizeof(file_buffer), &img);
+        if (ncla > 0)
+            (void)fs_write(cla, file_buffer, ncla);
     }
     {
         int n = 0;
@@ -375,12 +597,15 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     }
     gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
+    slots[i].vm.on_safepoint = lang_safepoint;
+    lang_attach_slot_ram(i, &image);
+    lang_load_map(i, name);
     slots[i].use_jit = 0;
     slots[i].jit_fn = NULL;
     if (slots[i].jit.phys != 0) {
         jit_free(&slots[i].jit);
     }
-    if (use_jit) {
+    if (use_jit && !g_want_debug) {
         if (jit_compile_image(&image, &slots[i].jit, &slots[i].jit_fn) != 0) {
             status(e, "jit compile failed");
             return 0;
@@ -390,6 +615,12 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     scopy(slots[i].name, LANG_NAME_MAX, name);
     slots[i].task_id = -1;
     slots[i].used = 1;
+    slots[i].debug_on = g_want_debug;
+    slots[i].paused = g_want_debug;
+    slots[i].step_one = 0;
+    slots[i].nbreak = 0;
+    slots[i].step_line = 0;
+    slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
     app_window_open(i, name);
     status(e, use_jit ? "running jit" : "running");
     return 1;
@@ -422,7 +653,7 @@ int lang_compile_run_jit(Editor *e) {
 int lang_compile_file(const char *src_path, const char *clv_path) {
     size_t file_size = 0;
     size_t code_size = 0;
-    uint16_t entry = 0;
+    uint32_t entry = 0;
     int n;
 
     if (!src_path || !clv_path) {
@@ -446,19 +677,54 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
         entry = r.entry;
     } else {
         ChrisResult r;
-        if (!chrisc_compile(source_buffer, (size_t)n, code_buffer,
-                            sizeof(code_buffer), &r)) {
+        if (!chrisc_compile_ex(src_path, source_buffer, (size_t)n, chrisc_fs_read, 0,
+                               code_buffer, sizeof(code_buffer), &r)) {
             return 0;
         }
         code_size = r.code_size;
         entry = r.entry;
     }
-    file_size = clvm_write_image(file_buffer, sizeof(file_buffer), CLVM_FLAG_GAME,
-                                 entry, code_buffer, code_size);
+    if (code_size > 65535u || entry > 65535u)
+        file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
+                                       CLVM_FLAG_GAME, entry, 0,
+                                       code_buffer, code_size);
+    else
+        file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
+                                    CLVM_FLAG_GAME, (uint16_t)entry,
+                                    code_buffer, code_size);
     if (!file_size) {
         return 0;
     }
     return fs_write(clv_path, file_buffer, (int)file_size) >= 0;
+}
+
+int lang_compile_many(const char **paths, int npaths) {
+    char outn[LANG_NAME_MAX];
+    ChrisResult r;
+    size_t code_size;
+    uint32_t entry;
+    size_t file_size;
+    if (!paths || npaths < 1)
+        return 0;
+    if (!output_name(paths[0], outn))
+        return 0;
+    if (!chrisc_compile_files(paths, npaths, chrisc_fs_read, 0, code_buffer,
+                              sizeof(code_buffer), &r))
+        return 0;
+    code_size = r.code_size;
+    entry = r.entry;
+    lang_write_map(outn, &r);
+    if (code_size > 65535u || entry > 65535u)
+        file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
+                                       CLVM_FLAG_GAME, entry, 0,
+                                       code_buffer, code_size);
+    else
+        file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
+                                    CLVM_FLAG_GAME, (uint16_t)entry,
+                                    code_buffer, code_size);
+    if (!file_size)
+        return 0;
+    return fs_write(outn, file_buffer, (int)file_size) >= 0;
 }
 
 int lang_splash_start(const char *name) {
@@ -492,6 +758,9 @@ int lang_splash_start(const char *name) {
     }
     gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
+    slots[i].vm.on_safepoint = lang_safepoint;
+    lang_attach_slot_ram(i, &image);
+    lang_load_map(i, name);
     slots[i].use_jit = 0;
     slots[i].jit_fn = NULL;
     if (slots[i].jit.phys != 0) {
@@ -537,10 +806,43 @@ void lang_tick(uint32_t now) {
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         if (slots[i].used) {
             ClvmStepResult r;
+            int b;
+            if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
+                continue;
             clvm_vm_wake(&slots[i].vm, now);
-            if (slots[i].use_jit && slots[i].jit_fn != NULL) {
+            if (slots[i].debug_on) {
+                for (b = 0; b < slots[i].nbreak; ++b) {
+                    if (slots[i].breakpoints[b] == slots[i].vm.pc) {
+                        slots[i].paused = 1;
+                        slots[i].step_one = 0;
+                        slots[i].step_line = 0;
+                        break;
+                    }
+                }
+                if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
+                    continue;
+            }
+            if (slots[i].use_jit && slots[i].jit_fn != NULL && !slots[i].debug_on) {
                 jit_set_sys_context(&slots[i].vm, &slots[i].gfx);
                 r = slots[i].jit_fn(&slots[i].vm, LANG_VM_BUDGET, now);
+            } else if (slots[i].debug_on && slots[i].step_line) {
+                int k;
+                uint16_t start = slots[i].last_line;
+                r = CLVM_STEP_SLICE;
+                for (k = 0; k < 512; ++k) {
+                    r = clvm_step(&slots[i].vm, 1);
+                    if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
+                        break;
+                    if (lang_line_at(&slots[i], slots[i].vm.pc) != start)
+                        break;
+                }
+                slots[i].step_line = 0;
+                slots[i].paused = 1;
+                slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
+            } else if (slots[i].debug_on && slots[i].step_one) {
+                r = clvm_step(&slots[i].vm, 1);
+                slots[i].step_one = 0;
+                slots[i].paused = 1;
             } else {
                 r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
             }
@@ -568,7 +870,10 @@ int lang_kill(int slot) {
     if (slots[slot].jit.phys != 0) {
         jit_free(&slots[slot].jit);
     }
+    lang_free_slot_ram(slot);
     lang_slot_release_gfx(slot);
+    clvm_sys_close_slot(slots[slot].gfx.slot_id >= 0 ? slots[slot].gfx.slot_id
+                                                    : slot);
     slots[slot].used = 0;
     slots[slot].task_id = -1;
     slots[slot].name[0] = 0;
@@ -638,6 +943,196 @@ int lang_find_slot_by_task(int task_id) {
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         if (slots[i].used && slots[i].task_id == task_id) {
             return i;
+        }
+    }
+    return -1;
+}
+
+void lang_write_map(const char *clv_path, const ChrisResult *r) {
+    char mapn[LANG_NAME_MAX];
+    char buf[8192];
+    int n = 0;
+    int i;
+    int k;
+    if (!clv_path || !r)
+        return;
+    k = 0;
+    while (clv_path[k] && k + 1 < LANG_NAME_MAX)
+        mapn[k] = clv_path[k], ++k;
+    mapn[k] = 0;
+    if (k > 4) {
+        mapn[k - 3] = 'M';
+        mapn[k - 2] = 'A';
+        mapn[k - 1] = 'P';
+    }
+    buf[0] = 0;
+    for (i = 0; i < r->map_n && n + 32 < (int)sizeof(buf); ++i) {
+        unsigned v = r->map[i].pc;
+        unsigned line = r->map[i].line;
+        char tmp[48];
+        int t = 0;
+        tmp[t++] = '0';
+        tmp[t++] = 'x';
+        {
+            char hex[8];
+            int h = 0;
+            unsigned x = v;
+            if (x == 0)
+                hex[h++] = '0';
+            while (x && h < 8) {
+                hex[h++] = "0123456789abcdef"[x & 15];
+                x >>= 4;
+            }
+            while (h--)
+                tmp[t++] = hex[h];
+        }
+        tmp[t++] = ' ';
+        {
+            unsigned x = line;
+            char dec[8];
+            int d = 0;
+            if (x == 0)
+                dec[d++] = '0';
+            while (x && d < 8) {
+                dec[d++] = (char)('0' + (x % 10));
+                x /= 10;
+            }
+            while (d--)
+                tmp[t++] = dec[d];
+        }
+        tmp[t++] = '\n';
+        tmp[t] = 0;
+        {
+            int c;
+            for (c = 0; tmp[c] && n + 1 < (int)sizeof(buf); ++c)
+                buf[n++] = tmp[c];
+        }
+    }
+    buf[n] = 0;
+    if (n > 0)
+        (void)fs_write(mapn, buf, n);
+}
+
+void lang_debug_enable(int on) {
+    g_want_debug = on;
+}
+
+void lang_debug_step(void) {
+    int i;
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && slots[i].debug_on) {
+            slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
+            slots[i].step_line = 1;
+            slots[i].step_one = 0;
+            slots[i].paused = 0;
+        }
+    }
+}
+
+void lang_debug_continue(void) {
+    int i;
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && slots[i].debug_on) {
+            slots[i].paused = 0;
+            slots[i].step_one = 0;
+        }
+    }
+}
+
+int lang_debug_paused(void) {
+    int i;
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && slots[i].paused)
+            return 1;
+    }
+    return 0;
+}
+
+uint32_t lang_debug_pc(void) {
+    int i;
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && slots[i].debug_on)
+            return slots[i].vm.pc;
+    }
+    return 0;
+}
+
+int64_t lang_debug_stack(int i) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on) {
+            if (i < 0 || i >= (int)slots[s].vm.sp)
+                return 0;
+            return slots[s].vm.stack[slots[s].vm.sp - 1 - i];
+        }
+    }
+    return 0;
+}
+
+int32_t lang_debug_mem(uint32_t addr) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on) {
+            const uint8_t *m = slots[s].vm.memory;
+            if (!m || (uint64_t)addr + 4u > slots[s].vm.mem_size)
+                return 0;
+            return (int32_t)((uint32_t)m[addr] | ((uint32_t)m[addr + 1] << 8) |
+                             ((uint32_t)m[addr + 2] << 16) |
+                             ((uint32_t)m[addr + 3] << 24));
+        }
+    }
+    return 0;
+}
+
+int lang_bp_add(uint32_t pc) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].nbreak < 32) {
+            slots[s].breakpoints[slots[s].nbreak++] = pc;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+uint16_t lang_debug_line(void) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on)
+            return lang_line_at(&slots[s], slots[s].vm.pc);
+    }
+    return 0;
+}
+
+int lang_bp_toggle_line(int line) {
+    int s;
+    int i;
+    uint32_t pc = 0;
+    int found = 0;
+    if (line < 1)
+        return 0;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (!slots[s].used)
+            continue;
+        for (i = 0; i < slots[s].map_n; ++i) {
+            if ((int)slots[s].map_line[i] == line) {
+                pc = slots[s].map_pc[i];
+                found = 1;
+                break;
+            }
+        }
+        if (!found)
+            continue;
+        for (i = 0; i < slots[s].nbreak; ++i) {
+            if (slots[s].breakpoints[i] == pc) {
+                slots[s].breakpoints[i] = slots[s].breakpoints[slots[s].nbreak - 1];
+                slots[s].nbreak--;
+                return 0;
+            }
+        }
+        if (slots[s].nbreak < 32) {
+            slots[s].breakpoints[slots[s].nbreak++] = pc;
+            return 1;
         }
     }
     return -1;

@@ -131,6 +131,28 @@ int main(int argc, char **argv) {
             return 4;
         }
     }
+    {
+        char parent[512];
+        int i;
+        int last = -1;
+        for (i = 0; argv[2][i] && i < 511; ++i) {
+            parent[i] = argv[2][i];
+            if (argv[2][i] == '/') {
+                last = i;
+            }
+        }
+        if (last > 0) {
+            int mrc;
+            parent[last] = 0;
+            mrc = cfs_mkdir(&fs, parent);
+            if (mrc != CFS_OK && mrc != CFS_EEXIST) {
+                fprintf(stderr, "cfs_mkdir %s failed (%d)\n", parent, mrc);
+                free(data);
+                fclose(g_f);
+                return 5;
+            }
+        }
+    }
     n = cfs_write(&fs, argv[2], data, (uint32_t)data_len);
     if (n != (int)data_len) {
         fprintf(stderr, "cfs_write failed (%d)", n);

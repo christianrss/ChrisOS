@@ -49,6 +49,8 @@ const char *clvm_load_error(ClvmLoadError error) {
 ClvmLoadError clvm_parse(const uint8_t *file, size_t file_size,
                          ClvmImage *image) {
     ClvmImage value;
+    uint32_t hdr;
+
     if (file == NULL || image == NULL)
         return CL_LOAD_NULL;
     if (file_size < CLVM_HEADER_SIZE)
@@ -59,17 +61,30 @@ ClvmLoadError clvm_parse(const uint8_t *file, size_t file_size,
 
     value.version = file[4];
     value.flags = file[5];
-    value.entry = rd16(file + 6);
-    value.code_size = rd32(file + 8);
-    value.checksum = rd32(file + 12);
-    value.code = file + CLVM_HEADER_SIZE;
-
-    if (value.version != CLVM_VERSION)
+    value.mem_hint = 0;
+    if (value.version == CLVM_VERSION_V1) {
+        hdr = CLVM_HEADER_SIZE;
+        value.entry = rd16(file + 6);
+        value.code_size = rd32(file + 8);
+        value.checksum = rd32(file + 12);
+    } else if (value.version == CLVM_VERSION) {
+        if (file_size < CLVM_HEADER_SIZE_V2)
+            return CL_LOAD_SMALL;
+        hdr = CLVM_HEADER_SIZE_V2;
+        value.code_size = rd32(file + 8);
+        value.checksum = rd32(file + 12);
+        value.entry = rd32(file + 16);
+        value.mem_hint = rd32(file + 20);
+    } else {
         return CL_LOAD_VERSION;
+    }
+    value.header_size = hdr;
+    value.code = file + hdr;
+
     if ((value.flags & (uint8_t)~CLVM_KNOWN_FLAGS) != 0)
         return CL_LOAD_FLAGS;
     if (value.code_size == 0 || value.code_size > CLVM_MAX_CODE ||
-        (size_t)value.code_size != file_size - CLVM_HEADER_SIZE)
+        (size_t)value.code_size != file_size - hdr)
         return CL_LOAD_SIZE;
     if (value.entry >= value.code_size)
         return CL_LOAD_ENTRY;
@@ -85,13 +100,13 @@ size_t clvm_write_image(uint8_t *out, size_t out_cap, uint8_t flags,
                         size_t code_size) {
     size_t i;
     if (out == NULL || code == NULL || code_size == 0 ||
-        code_size > CLVM_MAX_CODE || entry >= code_size ||
+        code_size > 65535u || entry >= code_size ||
         (flags & (uint8_t)~CLVM_KNOWN_FLAGS) != 0 ||
         out_cap < CLVM_HEADER_SIZE + code_size)
         return 0;
 
     out[0] = 'C'; out[1] = 'L'; out[2] = 'V'; out[3] = 'M';
-    out[4] = CLVM_VERSION;
+    out[4] = CLVM_VERSION_V1;
     out[5] = flags;
     wr16(out + 6, entry);
     wr32(out + 8, (uint32_t)code_size);
@@ -99,4 +114,27 @@ size_t clvm_write_image(uint8_t *out, size_t out_cap, uint8_t flags,
     for (i = 0; i < code_size; ++i)
         out[CLVM_HEADER_SIZE + i] = code[i];
     return CLVM_HEADER_SIZE + code_size;
+}
+
+size_t clvm_write_image_v2(uint8_t *out, size_t out_cap, uint8_t flags,
+                           uint32_t entry, uint32_t mem_hint,
+                           const uint8_t *code, size_t code_size) {
+    size_t i;
+    if (out == NULL || code == NULL || code_size == 0 ||
+        code_size > CLVM_MAX_CODE || entry >= code_size ||
+        (flags & (uint8_t)~CLVM_KNOWN_FLAGS) != 0 ||
+        out_cap < CLVM_HEADER_SIZE_V2 + code_size)
+        return 0;
+
+    out[0] = 'C'; out[1] = 'L'; out[2] = 'V'; out[3] = 'M';
+    out[4] = CLVM_VERSION;
+    out[5] = flags;
+    wr16(out + 6, 0);
+    wr32(out + 8, (uint32_t)code_size);
+    wr32(out + 12, clvm_fnv1a32(code, code_size));
+    wr32(out + 16, entry);
+    wr32(out + 20, mem_hint);
+    for (i = 0; i < code_size; ++i)
+        out[CLVM_HEADER_SIZE_V2 + i] = code[i];
+    return CLVM_HEADER_SIZE_V2 + code_size;
 }

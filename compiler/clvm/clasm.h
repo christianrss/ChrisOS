@@ -16,7 +16,7 @@ typedef struct ClasmDiag {
 
 typedef struct ClasmResult {
     size_t code_size;
-    uint16_t entry;
+    uint32_t entry;
     ClasmDiag diag;
 } ClasmResult;
 

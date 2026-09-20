@@ -7,6 +7,11 @@
 #define SYS_EXIT     1u
 #define SYS_WRITE    2u
 #define SYS_PUTPIXEL 3u
+#define SYS_FOPEN    4u
+#define SYS_FREAD    5u
+#define SYS_FWRITE   6u
+#define SYS_FCLOSE   7u
+#define SYS_KEY      8u
 
 void syscall_init(void);
 void syscall_dispatch(struct irq_frame *frame);

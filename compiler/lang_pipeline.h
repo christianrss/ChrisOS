@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include "clvm/clvm_vm.h"
 #include "editor.h"
+#include "chrisc/chrisc.h"
 
 #define LANG_VM_SLOTS 8
 #define LANG_VM_BUDGET 64000u
@@ -28,8 +29,20 @@ int lang_slot_task(int slot);
 void lang_bind_task(int slot, int task_id);
 int lang_find_slot_by_task(int task_id);
 int lang_compile_file(const char *src_path, const char *clv_path);
+int lang_compile_many(const char **paths, int npaths);
 int lang_splash_start(const char *clv_path);
 void lang_splash_frame(uint32_t now);
 void lang_splash_stop(void);
+void lang_debug_enable(int on);
+void lang_debug_step(void);
+void lang_debug_continue(void);
+int lang_debug_paused(void);
+uint32_t lang_debug_pc(void);
+int64_t lang_debug_stack(int i);
+int32_t lang_debug_mem(uint32_t addr);
+int lang_bp_add(uint32_t pc);
+int lang_bp_toggle_line(int line);
+uint16_t lang_debug_line(void);
+void lang_write_map(const char *clv_path, const ChrisResult *r);
 
 #endif

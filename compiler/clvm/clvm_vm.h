@@ -7,7 +7,7 @@
 
 #define CLVM_STACK_MAX 256
 #define CLVM_CALL_MAX 64
-#define CLVM_MEMORY_SIZE 65536u
+#define CLVM_MEMORY_SIZE (1024u * 1024u)
 
 typedef enum ClvmState {
     CLVM_READY = 0,
@@ -47,11 +47,13 @@ typedef struct ClvmVm {
     const uint8_t *code;
     uint32_t code_size;
     uint32_t pc;
-    int32_t stack[CLVM_STACK_MAX];
+    int64_t stack[CLVM_STACK_MAX];
     uint16_t sp;
     uint32_t calls[CLVM_CALL_MAX];
     uint16_t csp;
-    uint8_t memory[CLVM_MEMORY_SIZE];
+    uint8_t *memory;
+    uint64_t mem_size;
+    uint8_t mem_owned;
     uint32_t wake_tick;
     uint64_t executed;
     ClvmState state;
@@ -59,15 +61,30 @@ typedef struct ClvmVm {
     uint32_t fault_pc;
     ClvmSysFn sys;
     void *sys_user;
+    int64_t print_ring[8];
+    uint8_t print_n;
+    uint8_t safepoint;
+    uint64_t heap_off;
+    int64_t il_loc[32];
+    int64_t il_arg[16];
+    void (*on_safepoint)(struct ClvmVm *vm);
 } ClvmVm;
 
 void clvm_vm_init(ClvmVm *vm, const ClvmImage *image,
                   ClvmSysFn sys, void *sys_user);
+void clvm_vm_set_memory(ClvmVm *vm, uint8_t *mem, uint64_t size);
 void clvm_vm_wake(ClvmVm *vm, uint32_t now);
 void clvm_vm_wait(ClvmVm *vm, uint32_t wake_tick);
 int clvm_vm_push(ClvmVm *vm, int32_t value);
 int clvm_vm_pop(ClvmVm *vm, int32_t *value);
+int clvm_vm_push64(ClvmVm *vm, int64_t value);
+int clvm_vm_pop64(ClvmVm *vm, int64_t *value);
 ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget);
 const char *clvm_fault_text(ClvmFault fault);
+int clvm_guest_malloc(ClvmVm *vm, uint64_t n, uint64_t *out);
+int clvm_guest_free(ClvmVm *vm, uint64_t p);
+int clvm_guest_realloc(ClvmVm *vm, uint64_t p, uint64_t n, uint64_t *out);
+int clvm_guest_setjmp(ClvmVm *vm, uint64_t addr);
+int clvm_guest_longjmp(ClvmVm *vm, uint64_t addr, int64_t val);
 
 #endif

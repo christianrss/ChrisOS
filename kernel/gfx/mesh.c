@@ -63,7 +63,7 @@ static int mesh_ok(ClvmVm *vm, uint32_t *pixels, int32_t addr,
         return 0;
     *base_out = (uint32_t)addr;
     need = (uint32_t)vertices * 12u + (uint32_t)triangles * 12u;
-    if (*base_out >= CLVM_MEMORY_SIZE || need > CLVM_MEMORY_SIZE - *base_out)
+    if (*base_out >= vm->mem_size || need > vm->mem_size - *base_out)
         return 0;
     return 1;
 }
@@ -217,9 +217,9 @@ int mesh_transform(ClvmVm *vm, int32_t addr, int32_t mat_addr, int32_t n_verts) 
 
     if (vm == 0 || addr < 0 || mat_addr < 0 || n_verts < 1 || n_verts > MESH_MAX_V)
         return -1;
-    if ((uint32_t)mat_addr + 64u > CLVM_MEMORY_SIZE)
+    if ((uint32_t)mat_addr + 64u > vm->mem_size)
         return -1;
-    if ((uint32_t)addr + (uint32_t)n_verts * 12u > CLVM_MEMORY_SIZE)
+    if ((uint32_t)addr + (uint32_t)n_verts * 12u > vm->mem_size)
         return -1;
     for (i = 0; i < 16; ++i) {
         union {

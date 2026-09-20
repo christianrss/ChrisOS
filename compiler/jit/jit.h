@@ -3,7 +3,8 @@
 
 #include <stdint.h>
 
-#define JIT_MAX 4096u
+#define JIT_PAGES 256u
+#define JIT_MAX (JIT_PAGES * 4096u)
 
 typedef struct JitBuf {
     uint64_t phys;
@@ -11,6 +12,7 @@ typedef struct JitBuf {
     uint8_t *x;
     uint32_t used;
     uint32_t cap;
+    uint32_t pages;
 } JitBuf;
 
 int jit_alloc(JitBuf *buf);

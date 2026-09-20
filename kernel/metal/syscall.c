@@ -4,13 +4,24 @@
 #include "graphics.h"
 #include "idt.h"
 #include "serial.h"
-#include "panic.h"
+#include "fs.h"
+#include "input.h"
 
 static int g_user_exited;
 static int g_user_exit_code;
 static uint64_t g_user_kernel_rip;
 static uint64_t g_user_map_lo = 0x400000ull;
-static uint64_t g_user_map_hi = 0x401000ull;
+static uint64_t g_user_map_hi = 0x500000ull;
+
+#define UFILE_MAX 8
+#define UPATH_MAX 128
+
+typedef struct UFile {
+    int used;
+    char path[UPATH_MAX];
+} UFile;
+
+static UFile g_ufile[UFILE_MAX];
 
 void syscall_set_user_map(uint64_t lo, uint64_t hi) {
     g_user_map_lo = lo;
@@ -27,6 +38,19 @@ int user_exited(void) {
 
 int user_exit_code(void) {
     return g_user_exit_code;
+}
+
+static int copy_to_user(uint64_t uaddr, const void *ksrc, uint32_t n) {
+    uint32_t i;
+    uint8_t *dst;
+    if (n == 0)
+        return 0;
+    if (uaddr < g_user_map_lo || uaddr + (uint64_t)n > g_user_map_hi)
+        return -1;
+    dst = (uint8_t *)(uintptr_t)uaddr;
+    for (i = 0; i < n; ++i)
+        dst[i] = ((const uint8_t *)ksrc)[i];
+    return 0;
 }
 
 static int copy_from_user(uint64_t uaddr, void *kdst, uint32_t n) {
@@ -92,6 +116,101 @@ void syscall_dispatch(struct irq_frame *frame) {
         return;
     }
 
+    if (nr == SYS_FOPEN) {
+        char path[UPATH_MAX];
+        int fd;
+        uint32_t n = 0;
+        if (copy_from_user(frame->rdi, path, UPATH_MAX - 1) != 0) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
+        path[UPATH_MAX - 1] = 0;
+        while (path[n] && n + 1 < UPATH_MAX)
+            n++;
+        for (fd = 2; fd < UFILE_MAX; ++fd) {
+            if (!g_ufile[fd].used) {
+                int k;
+                g_ufile[fd].used = 1;
+                for (k = 0; k < UPATH_MAX; ++k)
+                    g_ufile[fd].path[k] = path[k];
+                frame->rax = (uint64_t)fd;
+                frame->rip += 2;
+                return;
+            }
+        }
+        frame->rax = (uint64_t)-1;
+        frame->rip += 2;
+        return;
+    }
+
+    if (nr == SYS_FREAD) {
+        int fd = (int)frame->rdi;
+        uint32_t n = (uint32_t)frame->rdx;
+        char kbuf[512];
+        int got;
+        if (fd < 2 || fd >= UFILE_MAX || !g_ufile[fd].used || n > 512u) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
+        got = fs_read(g_ufile[fd].path, kbuf, (int)n);
+        if (got < 0) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
+        if (copy_to_user(frame->rsi, kbuf, (uint32_t)got) != 0) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
+        frame->rax = (uint64_t)(uint32_t)got;
+        frame->rip += 2;
+        return;
+    }
+
+    if (nr == SYS_FWRITE) {
+        int fd = (int)frame->rdi;
+        uint32_t n = (uint32_t)frame->rdx;
+        char kbuf[512];
+        if (n > 512u || copy_from_user(frame->rsi, kbuf, n) != 0) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
+        if (fd == 1) {
+            kbuf[n < 512u ? n : 511u] = 0;
+            serial_puts(kbuf);
+            frame->rax = n;
+            frame->rip += 2;
+            return;
+        }
+        if (fd < 2 || fd >= UFILE_MAX || !g_ufile[fd].used) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
+        frame->rax = (uint64_t)(int)fs_write(g_ufile[fd].path, kbuf, (int)n);
+        frame->rip += 2;
+        return;
+    }
+
+    if (nr == SYS_FCLOSE) {
+        int fd = (int)frame->rdi;
+        if (fd >= 2 && fd < UFILE_MAX)
+            g_ufile[fd].used = 0;
+        frame->rax = 0;
+        frame->rip += 2;
+        return;
+    }
+
+    if (nr == SYS_KEY) {
+        frame->rax = input_key_down((int)frame->rdi) ? 1ull : 0ull;
+        frame->rip += 2;
+        return;
+    }
+
     frame->rax = (uint64_t)-1;
     frame->rip += 2;
 }
@@ -103,8 +222,9 @@ void panic_user_fault(struct irq_frame *frame, uint64_t cr2) {
     serial_write_hex(cr2);
     serial_puts(" err=");
     serial_write_hex(frame->error);
-    serial_puts("\n");
-    panic("user fault");
+    serial_puts(" (returned to kernel)\n");
+    g_user_exit_code = -11;
+    syscall_return_to_kernel(frame);
 }
 
 void syscall_init(void) {

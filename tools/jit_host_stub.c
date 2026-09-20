@@ -22,16 +22,17 @@ int jit_alloc(JitBuf *buf) {
     if (buf == NULL) {
         return -1;
     }
-    page = mmap(NULL, 4096, PROT_READ | PROT_WRITE,
+    page = mmap(NULL, JIT_MAX, PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (page == MAP_FAILED) {
         return -1;
     }
-    buf->phys = 0;
+    buf->phys = 1;
     buf->w = (uint8_t *)page;
     buf->x = (uint8_t *)page;
     buf->used = 0;
-    buf->cap = 4096;
+    buf->cap = JIT_MAX;
+    buf->pages = JIT_PAGES;
     return 0;
 }
 
@@ -39,14 +40,14 @@ void jit_seal(JitBuf *buf) {
     if (buf == NULL || buf->x == NULL) {
         return;
     }
-    mprotect(buf->x, 4096, PROT_READ | PROT_WRITE | PROT_EXEC);
+    mprotect(buf->x, JIT_MAX, PROT_READ | PROT_WRITE | PROT_EXEC);
 }
 
 void jit_free(JitBuf *buf) {
     if (buf == NULL || buf->w == NULL) {
         return;
     }
-    munmap(buf->w, 4096);
+    munmap(buf->w, JIT_MAX);
     buf->w = NULL;
     buf->x = NULL;
     buf->used = 0;

@@ -55,7 +55,7 @@ Limine (BIOS/UEFI)
           ├── fs: ATA PIO → cache 16 linhas → ChrisFS v3
           ├── lang: ChrisC → CLVM; SYS 2D/3D na janela App (320×200 hoje; até 1080p — ver fase6-gfxfast64)
           ├── net: virtio-net, UDP echo :7, protocolo CFS1 TCP :9016
-          └── tools: editor, explorer, shell (cc, mk, kcc, reboot)
+          └── tools: editor, explorer, shell (cc, as, kcc, mk, runelf, reboot)
 ```
 
 - **ISO** (`build/os.iso`): bootloader + kernel apenas — sem arquivos editáveis.
@@ -82,8 +82,9 @@ Limine (BIOS/UEFI)
 
 | Recurso | Limite | Fonte |
 |---------|--------|-------|
-| PMM rastreável | até 2 GiB de RAM física | `PMM_MAX_PHYS` |
-| Heap do kernel | 64 MiB (16384 páginas) | `HEAP_PAGES` em `heap.c` |
+| PMM rastreável | até 32 GiB de RAM física | `PMM_MAX_PHYS` |
+| Heap do kernel | dinâmico (arenas, cresce no `kmalloc`) | `heap.c`; reserva PMM `PMM_KEEP` 32 MiB |
+| QEMU | `-m 16G` por omissão | `QEMU_MEM` no makefile |
 | Stack do kernel (BSP) | 1 MiB | `linker.ld` (`.bss` após `__stack_bottom`) |
 | Stacks de AP | 4 páginas (16 KiB) cada, base `0xffffffff92000000` | `smp.h` |
 | APs máximos | 8 | `SMP_MAX_APS` |
@@ -167,15 +168,18 @@ I/O: ATA PIO (primary/secondary, master/slave); sem DMA.
 
 | Item | Valor |
 |------|-------|
-| Versão imagem | 1 (`CLVM_VERSION`) |
-| Header | 16 bytes |
-| Código máximo | 65 535 bytes (`CLVM_MAX_CODE`) |
-| RAM da VM | 65 536 bytes (`CLVM_MEMORY_SIZE`) |
-| Stack | 256 entradas (`CLVM_STACK_MAX`) |
+| Versão imagem | 2 (`CLVM_VERSION`); v1 ainda carrega |
+| Header v2 | 24 bytes (`entry` u32, `mem_hint`) |
+| Código máximo | 16 MiB (`CLVM_MAX_CODE`); saltos `JMP32` |
+| RAM da VM | slot `kmalloc` (default até 256 MiB, teto = heap livre − 64 MiB) |
+| Stack | 256 × i64 (`CLVM_STACK_MAX`), LP64 |
 | Profundidade de call | 64 (`CLVM_CALL_MAX`) |
 | Flag `CLVM_FLAG_GAME` | 0x01 — runtime usa buffer do slot (320×200 hoje; escalável até 1080p) |
-| Execução | cooperativa; budget por frame (`LANG_VM_BUDGET` = 2000 hoje; ≥ 32000 @ T3); estados `YIELD`, `HALT`, erro |
-| JIT | stub (`jit_compile` chama `clvm_step`); lowering real na trilha gfxfast64 passos 13–15 |
+| Execução | cooperativa; budget `LANG_VM_BUDGET`; interp + JIT nativo x86-64 |
+| JIT | ADD/SUB/MUL/PUSH/JMP/LOAD/STORE em regs; SYS/fault em callout; F9/F10 usam o interpreter |
+| Heap kernel | arenas u64, cresce no OOM; `PMM_MAX_PHYS` 32 GiB; `PMM_KEEP` 32 MiB; QEMU `-m 16G` |
+| ChrisC | C17 subset LP64; `#define`/`#if`; `LIB/*.H`; `malloc` SYS 56 |
+| Debugger | sidecar `.MAP`; F9 debug, F10 step, F8 continue; PRINT ring |
 
 #### SYS 2D (ids estáveis)
 
@@ -191,6 +195,19 @@ I/O: ATA PIO (primary/secondary, master/slave); sem DMA.
 | 11 | — | `ticks` (uint32 monotônico) |
 | 12 | `ms` | — (wait cooperativo) |
 | 13 | `freq ms` | — (PC speaker) |
+
+#### SYS arquivos CFS (ids 50–55)
+
+| id | ChrisC | Stack (antes do id) | Retorno |
+|----|--------|---------------------|---------|
+| 50 | `fopen(path)` | addr (string packed, NUL) | fd ≥0 ou -1 |
+| 51 | `fclose(fd)` | fd | — |
+| 52 | `fread(fd, buf, n)` | fd addr n | bytes lidos |
+| 53 | `fwrite(fd, buf, n)` | fd addr n | bytes escritos |
+| 54 | `fsize(path)` | addr | tamanho ou -1 |
+| 55 | `fexists(path)` | addr | 0/1 |
+
+`path`/`buf` são offsets na RAM da VM. Até 4 arquivos abertos por slot; buffer kernel 64 KiB por fd. Sem `..` no path. `fclose` grava se houve `fwrite`.
 
 #### SYS 3D e performance (planejados — trilha gfxfast64)
 
@@ -211,14 +228,76 @@ Endereços `addr` em SYS 4/5/21/22 são **offsets na RAM da VM**, não ponteiros
 
 | Item | Valor |
 |------|-------|
-| Tipos | `void`, `int` (`i32`); `int v[N]` na trilha gfxfast64 (sem tipo `float`) |
-| Controle | `if`/`else`, `while`, `return` |
-| Identificadores | até 24 caracteres |
-| Símbolos | 128 por compilação |
-| AST / tokens | 2048 nós, 4096 tokens |
-| Arrays | `v[i]`, `v[i]=x`; endereço = `base + i×4` na RAM CLVM (passo 10) |
-| Mat4 via SYS 22 | 16 ints na RAM VM = bits IEEE-754 de `Mat4f`; kernel aplica float no BSP (passos 11–12) |
-| Builtins SYS | ids 1–13 (2D), 20–22 (3D), 30 (`fps`) — ver tabelas acima |
+| Tipos | `void`, `int`, `float`, `char`; `char buf[N]` packed (1 byte); arrays `int`/`float` stride 4 |
+| Strings | `"texto"` → endereço (`int`) na RAM da VM; `'A'` → 65 |
+| Módulos | `#include "PATH"` (aspas); path CFS com `/` ou relativo ao arquivo; profundidade 8; `cc`/`F4` resolvem via CFS |
+| Controle | `if`/`else`, `while`, `for`, `return`, `break`, `continue`; short-circuit `and`/`or` e `not` |
+| Identificadores | até 48 caracteres |
+| Símbolos | 1024 por compilação |
+| AST / tokens | 16384 nós, 32768 tokens |
+| Funções / structs | 128 funções, 64 structs, 16 campos |
+| Fonte | até 256 KiB após includes (`CHRIS_SOURCE_MAX`) |
+| Código CLVM | 16 MiB, JMP32 |
+| RAM CLVM | slot dinâmico (kmalloc) |
+| Intrínsecos | `loadb(addr)`, `storeb(addr, v)` |
+| Arrays | `v[i]`; nome do array decai para endereço; packed usa `LOADB`/`STOREB` |
+| Builtins SYS | ids 1–13 (2D), 20–23 (3D), 30 (`fps`), 31–41, 50–55 (arquivos) |
+| Exemplos | `LIB/STR.CC`, `SRC/CAT.CC` (`cc SRC/CAT.CC` → `run BIN/CAT.CLV`) |
+
+#### ChrisAsm VM (`.CVA` → `.CLV`)
+
+Assembly textual para a **CLVM** — mesmos syscalls que ChrisC, sem tipos nem expressões.
+
+| Item | Valor |
+|------|-------|
+| Compilador | `clasm_compile` (`compiler/clvm/clasm.c`) |
+| Entry | label `main:` obrigatória |
+| Instruções | inteiros (`PUSH`, `ADD`, `JZ`, …), floats (`FPUSH`, `FADD`, …), `SYS` |
+| Syscalls | empilhar argumentos (ordem ChrisC), depois `PUSH <id>` + `SYS` |
+| Shell / Editor | `cc arquivo.CVA` → `.CLV`; `jit arquivo.CVA`; F4 compile, F5 run, F9 debug, F10 step |
+| Exemplo no disco | `GAMES/BLINK.CVA` — retângulo piscando |
+
+```text
+; rect(x,y,w,h,color)  →  id 2
+PUSH x
+PUSH y
+PUSH w
+PUSH h
+PUSH color
+PUSH 2
+SYS
+```
+
+Ids de syscall: mesmos da tabela **SYS 2D** acima (`clear`=6, `key`=10, `wait`=12, `viewport`=39, …).
+
+#### Assembly nativo ChrisAsm (`.S` → `.ELF`)
+
+| Item | Valor |
+|------|-------|
+| Sintaxe | texto ChrisO (`mov rax, imm`, `ret`, labels `main:`) |
+| Pipeline | `as SRC/FOO.S` → `BIN/FOO.ELF` → `runelf BIN/FOO.ELF` |
+| Load address | `0x400000` (VMA user em `elf.c`) |
+| Exemplo | `SRC/EXIT42.S` — `mov rax, 42` / `ret` |
+
+Não confundir com `user/hello.asm` (NASM flat para build host).
+
+#### C nativo KCC (`.C` → `.ELF`)
+
+| Item | Valor |
+|------|-------|
+| Compilador | subset KCC (`compiler/kcc/kcc.c`) — **não é GCC** |
+| Pipeline | `kcc SRC/FOO.C` → `BIN/FOO.ELF` → `runelf BIN/FOO.ELF` |
+| Suportado | `int`, `return`, funções simples, `outb` |
+| Sem | `printf`, libc, `#include` real |
+| Exemplo | `SRC/EXIT42.C` — `return 42` |
+
+#### Três caminhos de programação
+
+| Extensão | Comando | Runtime |
+|----------|---------|---------|
+| `.CC` / `.CVA` | `cc`, `jit`, `run` | CLVM (jogos/desktop) |
+| `.S` | `as` → `runelf` | x86-64 user @ `0x400000` |
+| `.C` | `kcc` → `runelf` | x86-64 user (subset KCC) |
 
 #### Toolchain nativa (self-host)
 
@@ -227,9 +306,9 @@ Endereços `addr` em SYS 4/5/21/22 são **offsets na RAM da VM**, não ponteiros
 | ChrisO | magic `CHRISO` (`0x4F524843`), v1; até 256 símbolos, 512 relocs |
 | ChrisAsm | texto ChrisO → binário |
 | ChrisLd | ELF64 máx. 256 KiB (`CHRISLD_ELF_MAX`) |
-| KCC | subset C → ChrisO; saída asm máx. 32 KiB (`KCC_ASM_MAX`) |
+| KCC | subset C → ChrisO → ELF @ `0x400000`; asm máx. 32 KiB (`KCC_ASM_MAX`) |
 
-Pipeline no guest: `cc arquivo.CC` → CLVM; `mk` lê `SYS/BUILD.MK` via `chrisbuild`. Host: `build/host/kcc`.
+Pipeline no guest: `cc arquivo.CC` ou `cc arquivo.CVA` → CLVM; `as` / `kcc` → ELF em `BIN/`; `mk` lê `SYS/BUILD.MK` via `chrisbuild`. Host: `build/host/kcc`.
 
 ### Rede
 
@@ -249,6 +328,12 @@ Hardware: `virtio-net-pci` com stack mínima in-kernel (sem BSD sockets completo
 | Editor | 256 linhas × 128 colunas; nome de arquivo 512 chars |
 | Shell | buffer 512 chars; histórico 8 linhas; painel 48×24 caracteres |
 | CWD | paths CFS estilo `GAMES/FOO.CC` |
+| `cc` | `.CC` ou `.CVA` → `.CLV` (ChrisC / CLASM) |
+| `jit` | compila e executa `.CC` / `.CVA` com JIT |
+| `run` | executa `.CLV` em janela App |
+| `as` | `.S` / `.ASM` ChrisAsm → `BIN/*.ELF` |
+| `kcc` | `.C` subset → `BIN/*.ELF` |
+| `runelf` | carrega ELF user @ `0x400000` |
 
 ### QEMU (`make run`)
 

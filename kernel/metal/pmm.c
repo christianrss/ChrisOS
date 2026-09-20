@@ -15,6 +15,7 @@ static uint8_t pmm_bitmap[PMM_BITMAP_BYTES];
 static uint64_t pmm_usable;
 static uint64_t pmm_used;
 static uint64_t pmm_free_count;
+static uint64_t pmm_cursor;
 
 static int page_in_range(uint64_t phys) {
     if ((phys & (PMM_PAGE - 1ull)) != 0) {
@@ -159,6 +160,7 @@ void pmm_init(void) {
 
     pmm_usable = pmm_free_count;
     pmm_used = 0;
+    pmm_cursor = 0;
 
     serial_puts("pmm kernel_virt ");
     serial_write_hex((uint64_t)__kernel_start);
@@ -173,57 +175,101 @@ void pmm_init(void) {
     serial_puts("\n");
 }
 
-uint64_t pmm_alloc(void) {
-    return pmm_alloc_contig(1u);
+static uint64_t claim_run(uint64_t start, uint64_t count) {
+    uint64_t run;
+    uint64_t phys;
+
+    for (run = 0; run < count; ++run) {
+        phys = start + run * PMM_PAGE;
+        bitmap_set_used(phys);
+        if (pmm_free_count > 0) {
+            pmm_free_count -= 1u;
+        }
+        pmm_used += 1u;
+    }
+    pmm_cursor = start + count * PMM_PAGE;
+    return start;
 }
 
-uint64_t pmm_alloc_contig(uint32_t count) {
-    uint64_t page;
-    uint64_t start;
-    uint64_t phys;
-    uint32_t run;
+static uint64_t scan_usable_for_run(uint64_t count, uint64_t from_phys) {
+    uint64_t index;
+    uint64_t n;
+    uint64_t base;
+    uint64_t length;
+    uint64_t type;
+    uint64_t addr;
+    uint64_t end;
+    uint64_t run_start;
+    uint64_t run;
 
-    if (count == 0u) {
-        return 0;
-    }
-    for (page = 0; page + count <= PMM_PAGE_COUNT; ++page) {
-        start = page * PMM_PAGE;
-        for (run = 0; run < count; ++run) {
-            phys = start + (uint64_t)run * PMM_PAGE;
-            if (bitmap_is_used(phys)) {
-                break;
-            }
-        }
-        if (run != count) {
+    n = bootinfo_memmap_count();
+    for (index = 0; index < n; ++index) {
+        if (bootinfo_memmap_entry(index, &base, &length, &type) != 0) {
             continue;
         }
-        for (run = 0; run < count; ++run) {
-            phys = start + (uint64_t)run * PMM_PAGE;
-            bitmap_set_used(phys);
-            if (pmm_free_count > 0) {
-                pmm_free_count -= 1u;
-            }
-            pmm_used += 1u;
+        if (type != LIMINE_MEMMAP_USABLE) {
+            continue;
         }
-        return start;
+        addr = (base + PMM_PAGE - 1ull) & ~(PMM_PAGE - 1ull);
+        end = (base + length) & ~(PMM_PAGE - 1ull);
+        if (end > PMM_MAX_PHYS) {
+            end = PMM_MAX_PHYS;
+        }
+        if (addr < from_phys) {
+            addr = (from_phys + PMM_PAGE - 1ull) & ~(PMM_PAGE - 1ull);
+        }
+        run = 0;
+        run_start = addr;
+        while (addr < end) {
+            if (!page_in_range(addr) || bitmap_is_used(addr)) {
+                run = 0;
+                run_start = addr + PMM_PAGE;
+            } else {
+                run += 1u;
+                if (run == count) {
+                    return claim_run(run_start, count);
+                }
+            }
+            addr += PMM_PAGE;
+        }
     }
     return 0;
+}
+
+uint64_t pmm_alloc(void) {
+    uint64_t phys;
+
+    phys = scan_usable_for_run(1u, pmm_cursor);
+    if (phys != 0) {
+        return phys;
+    }
+    return scan_usable_for_run(1u, 0);
+}
+
+uint64_t pmm_alloc_contig(uint64_t count) {
+    uint64_t phys;
+
+    if (count == 0) {
+        return 0;
+    }
+    phys = scan_usable_for_run(count, 0);
+    return phys;
 }
 
 void pmm_free(uint64_t phys) {
     pmm_free_contig(phys, 1u);
 }
 
-void pmm_free_contig(uint64_t phys, uint32_t count) {
-    uint32_t run;
+void pmm_free_contig(uint64_t phys, uint64_t count) {
+    uint64_t run;
 
-    if (phys == 0 || count == 0u) {
+    if (phys == 0 || count == 0) {
         return;
     }
     for (run = 0; run < count; ++run) {
-        uint64_t page_phys = phys + (uint64_t)run * PMM_PAGE;
+        uint64_t page_phys = phys + run * PMM_PAGE;
         if (!page_in_range(page_phys)) {
-            panic("pmm_free_contig desalinhado ou fora de 256MiB");
+            panic("pmm_free_contig desalinhado ou fora do PMM");
         }
         if (bitmap_is_used(page_phys)) {
             bitmap_set_free(page_phys);
@@ -233,6 +279,76 @@ void pmm_free_contig(uint64_t phys, uint32_t count) {
             }
         }
     }
+    if (phys < pmm_cursor) {
+        pmm_cursor = phys;
+    }
+}
+
+void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
+                          void *user) {
+    uint64_t index;
+    uint64_t n;
+    uint64_t base;
+    uint64_t length;
+    uint64_t type;
+    uint64_t addr;
+    uint64_t end;
+    uint64_t run_start;
+    uint64_t run;
+
+    if (cb == 0) {
+        return;
+    }
+    n = bootinfo_memmap_count();
+    for (index = 0; index < n; ++index) {
+        if (bootinfo_memmap_entry(index, &base, &length, &type) != 0) {
+            continue;
+        }
+        if (type != LIMINE_MEMMAP_USABLE) {
+            continue;
+        }
+        addr = (base + PMM_PAGE - 1ull) & ~(PMM_PAGE - 1ull);
+        end = (base + length) & ~(PMM_PAGE - 1ull);
+        if (end > PMM_MAX_PHYS) {
+            end = PMM_MAX_PHYS;
+        }
+        run = 0;
+        run_start = addr;
+        while (addr < end) {
+            if (!page_in_range(addr) || bitmap_is_used(addr)) {
+                if (run != 0 && cb(run_start, run, user) == 0) {
+                    return;
+                }
+                run = 0;
+                run_start = addr + PMM_PAGE;
+            } else {
+                if (run == 0) {
+                    run_start = addr;
+                }
+                run += 1u;
+            }
+            addr += PMM_PAGE;
+        }
+        if (run != 0 && cb(run_start, run, user) == 0) {
+            return;
+        }
+    }
+}
+
+uint64_t pmm_claim_at(uint64_t phys, uint64_t pages) {
+    uint64_t i;
+    uint64_t p;
+
+    if (pages == 0 || phys == 0) {
+        return 0;
+    }
+    for (i = 0; i < pages; ++i) {
+        p = phys + i * PMM_PAGE;
+        if (!page_in_range(p) || bitmap_is_used(p)) {
+            return 0;
+        }
+    }
+    return claim_run(phys, pages);
 }
 
 uint64_t pmm_usable_pages(void) {

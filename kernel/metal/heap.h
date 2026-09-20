@@ -9,5 +9,6 @@ void *kmalloc(uint64_t size);
 void kfree(void *ptr);
 uint64_t heap_used_bytes(void);
 uint64_t heap_free_bytes(void);
+uint64_t heap_arena_count(void);
 
 #endif

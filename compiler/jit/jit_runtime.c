@@ -1,14 +1,24 @@
 #include "jit_runtime.h"
 
+static uint64_t g_jit_helper_calls;
+
+void jit_rt_reset_stats(void) {
+    g_jit_helper_calls = 0;
+}
+
+uint64_t jit_rt_helper_calls(void) {
+    return g_jit_helper_calls;
+}
+
 #ifdef __freestanding__
 #include "clvm_sys.h"
 #include "gfx2d.h"
 #include "jit.h"
 #else
-#include "clvm_sys.h"
-#include "gfx2d.h"
-
 static uint32_t g_host_px[320 * 200];
+static uint32_t gfx2d_color(int32_t c) {
+    return (uint32_t)c;
+}
 #endif
 
 static int fault(ClvmVm *vm, ClvmFault f, uint32_t pc) {
@@ -60,7 +70,7 @@ int jit_rt_pop(ClvmVm *vm, int32_t *out) {
         return -1;
     if (vm->sp == 0)
         return fault(vm, CLVM_FAULT_STACK_UNDERFLOW, vm->pc);
-    *out = vm->stack[--vm->sp];
+    *out = (int32_t)vm->stack[--vm->sp];
     return 0;
 }
 
@@ -150,6 +160,24 @@ int jit_rt_binop(ClvmVm *vm, uint8_t op) {
     case CL_OP_GE:
         r = a >= b;
         break;
+    case CL_OP_AND:
+        r = a & b;
+        break;
+    case CL_OP_OR:
+        r = a | b;
+        break;
+    case CL_OP_XOR:
+        r = a ^ b;
+        break;
+    case CL_OP_SHL:
+        r = (int32_t)((uint32_t)a << ((uint32_t)b & 31u));
+        break;
+    case CL_OP_SHR:
+        r = (int32_t)((uint32_t)a >> ((uint32_t)b & 31u));
+        break;
+    case CL_OP_SAR:
+        r = a >> (b & 31);
+        break;
     default:
         return fault(vm, CLVM_FAULT_OPCODE, vm->pc);
     }
@@ -157,6 +185,14 @@ int jit_rt_binop(ClvmVm *vm, uint8_t op) {
 }
 
 static int jump_rel(ClvmVm *vm, int16_t rel) {
+    int64_t target = (int64_t)vm->pc + rel;
+    if (target < 0 || target >= (int64_t)vm->code_size)
+        return fault(vm, CLVM_FAULT_BAD_JUMP, vm->pc);
+    vm->pc = (uint32_t)target;
+    return 0;
+}
+
+static int jump_rel32(ClvmVm *vm, int32_t rel) {
     int64_t target = (int64_t)vm->pc + rel;
     if (target < 0 || target >= (int64_t)vm->code_size)
         return fault(vm, CLVM_FAULT_BAD_JUMP, vm->pc);
@@ -263,6 +299,12 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
     case CL_OP_LE:
     case CL_OP_GT:
     case CL_OP_GE:
+    case CL_OP_AND:
+    case CL_OP_OR:
+    case CL_OP_XOR:
+    case CL_OP_SHL:
+    case CL_OP_SHR:
+    case CL_OP_SAR:
         return jit_rt_binop(vm, op);
     case CL_OP_NEG:
         if (jit_rt_pop(vm, &a) != 0)
@@ -298,7 +340,7 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
     case CL_OP_FLOAD:
         if (jit_rt_pop(vm, &a) != 0)
             return -1;
-        if (a < 0 || (uint32_t)a > CLVM_MEMORY_SIZE - 4u)
+        if (a < 0 || (uint64_t)a > vm->mem_size - 4u)
             return fault(vm, CLVM_FAULT_BAD_ADDRESS, vm->pc);
         u = (uint32_t)vm->memory[(uint32_t)a] |
             ((uint32_t)vm->memory[(uint32_t)a + 1u] << 8) |
@@ -309,7 +351,7 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
     case CL_OP_FSTORE:
         if (jit_rt_pop(vm, &a) != 0 || jit_rt_pop(vm, &b) != 0)
             return -1;
-        if (b < 0 || (uint32_t)b > CLVM_MEMORY_SIZE - 4u)
+        if (b < 0 || (uint64_t)b > vm->mem_size - 4u)
             return fault(vm, CLVM_FAULT_BAD_ADDRESS, vm->pc);
         u = (uint32_t)a;
         vm->memory[(uint32_t)b] = (uint8_t)(u & 0xffu);
@@ -317,10 +359,44 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
         vm->memory[(uint32_t)b + 2u] = (uint8_t)((u >> 16) & 0xffu);
         vm->memory[(uint32_t)b + 3u] = (uint8_t)((u >> 24) & 0xffu);
         return 0;
+    case CL_OP_LOADB:
+        if (jit_rt_pop(vm, &a) != 0)
+            return -1;
+        if (a < 0 || (uint64_t)a >= vm->mem_size)
+            return fault(vm, CLVM_FAULT_BAD_ADDRESS, vm->pc);
+        return jit_rt_push(vm, (int32_t)vm->memory[(uint32_t)a]);
+    case CL_OP_STOREB:
+        if (jit_rt_pop(vm, &a) != 0 || jit_rt_pop(vm, &b) != 0)
+            return -1;
+        if (a < 0 || (uint64_t)a >= vm->mem_size)
+            return fault(vm, CLVM_FAULT_BAD_ADDRESS, vm->pc);
+        vm->memory[(uint32_t)a] = (uint8_t)((uint32_t)b & 0xffu);
+        return 0;
     case CL_OP_JMP:
         if (jit_rt_fetch_i16(vm, &rel) != 0)
             return -1;
         return jump_rel(vm, rel);
+    case CL_OP_JMP32:
+    case CL_OP_CALL32: {
+        uint32_t u;
+        if (jit_rt_fetch_u32(vm, &u) != 0)
+            return -1;
+        if (op == CL_OP_CALL32) {
+            if (vm->csp >= CLVM_CALL_MAX)
+                return fault(vm, CLVM_FAULT_CALL_OVERFLOW, vm->pc);
+            vm->calls[vm->csp++] = vm->pc;
+        }
+        return jump_rel32(vm, (int32_t)u);
+    }
+    case CL_OP_JZ32:
+    case CL_OP_JNZ32: {
+        uint32_t u;
+        if (jit_rt_fetch_u32(vm, &u) != 0 || jit_rt_pop(vm, &a) != 0)
+            return -1;
+        if ((op == CL_OP_JZ32 && a != 0) || (op == CL_OP_JNZ32 && a == 0))
+            return 0;
+        return jump_rel32(vm, (int32_t)u);
+    }
     case CL_OP_JZ:
     case CL_OP_JNZ:
         if (jit_rt_fetch_i16(vm, &rel) != 0 || jit_rt_pop(vm, &a) != 0)
@@ -349,6 +425,7 @@ int jit_rt_exec_at_pc(ClvmVm *vm) {
 
     if (vm == 0)
         return -1;
+    g_jit_helper_calls++;
     if (vm->pc >= vm->code_size)
         return fault(vm, CLVM_FAULT_PC, vm->pc);
     op = vm->code[vm->pc++];

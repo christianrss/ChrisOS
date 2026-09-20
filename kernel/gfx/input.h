@@ -26,7 +26,11 @@ typedef enum {
     INPUT_KEY_F2,
     INPUT_KEY_F3,
     INPUT_KEY_F4,
-    INPUT_KEY_F5
+        INPUT_KEY_F5,
+        INPUT_KEY_F7,
+        INPUT_KEY_F8,
+    INPUT_KEY_F9,
+    INPUT_KEY_F10
 } InputKey;
 
 typedef struct {

@@ -18,7 +18,10 @@
 #include "port.h"
 #include "heap.h"
 #include "kcc.h"
+#include "chrisasm.h"
+#include "chrisld.h"
 #include "chriso.h"
+#include "native_link.h"
 #include "bench.h"
 
 #define SH_COLS 48
@@ -141,8 +144,11 @@ static int ls_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
 
 static void cmd_help(void) {
     sh_emit("help ls cd pwd cat mkdir rmdir");
-    sh_emit("rm mv ed cc kcc mk reboot run jit runelf");
-    sh_emit("ps kill clear ticks net bench");
+    sh_emit("rm mv ed cc kcc as mk reboot");
+    sh_emit("run jit runelf ps kill clear");
+    sh_emit("cc .CC/.CVA jit .CVA run .CLV");
+    sh_emit("as .S kcc .C runelf .ELF");
+    sh_emit("ticks net bench");
 }
 
 static void cmd_ls(void) {
@@ -229,13 +235,46 @@ static void cmd_ed(const char *arg) {
 }
 
 static void cmd_cc(const char *arg) {
-    char path[FS_PATH];
-    join_cwd(arg, path, FS_PATH);
-    ed_init(&g_sh_ed);
-    ed_set_name(&g_sh_ed, path);
-    if (ed_open(&g_sh_ed) != CFS_OK) { sh_emit("cc open"); return; }
-    if (!lang_compile(&g_sh_ed)) sh_emit(g_sh_ed.status);
-    else sh_emit("compiled");
+    char raw[8][FS_PATH];
+    char path[8][FS_PATH];
+    const char *pp[8];
+    int n = 0;
+    int i = 0;
+    int j;
+    while (arg[i] && n < 8) {
+        j = 0;
+        while (arg[i] == ' ')
+            i++;
+        if (!arg[i])
+            break;
+        while (arg[i] && arg[i] != ' ' && j < FS_PATH - 1)
+            raw[n][j++] = arg[i++];
+        raw[n][j] = 0;
+        join_cwd(raw[n], path[n], FS_PATH);
+        pp[n] = path[n];
+        n++;
+    }
+    if (n == 0) {
+        sh_emit("cc: files");
+        return;
+    }
+    if (n == 1) {
+        ed_init(&g_sh_ed);
+        ed_set_name(&g_sh_ed, path[0]);
+        if (ed_open(&g_sh_ed) != CFS_OK) {
+            sh_emit("cc open");
+            return;
+        }
+        if (!lang_compile(&g_sh_ed))
+            sh_emit(g_sh_ed.status);
+        else
+            sh_emit("compiled");
+        return;
+    }
+    if (!lang_compile_many(pp, n))
+        sh_emit("cc fail");
+    else
+        sh_emit("compiled");
 }
 
 static void cmd_run(const char *arg) {
@@ -264,20 +303,28 @@ static void cmd_jit(const char *arg) {
 
 static void cmd_runelf(const char *arg) {
     char path[FS_PATH];
-    static uint8_t buf[4096];
+    uint8_t *buf;
     uint64_t entry;
     int n;
 
     join_cwd(arg, path, FS_PATH);
-    n = fs_read(path, buf, (int)sizeof(buf));
+    buf = (uint8_t *)kmalloc(CHRISLD_ELF_MAX);
+    if (!buf) {
+        sh_emit("runelf nomem");
+        return;
+    }
+    n = fs_read(path, buf, (int)CHRISLD_ELF_MAX);
     if (n < 0) {
         sh_emit("runelf open");
+        kfree(buf);
         return;
     }
     if (elf_load(buf, (uint32_t)n, &entry) != 0) {
         sh_emit("runelf bad");
+        kfree(buf);
         return;
     }
+    kfree(buf);
     enter_user(entry, 0x400FF8ull);
     sh_emit("runelf done");
 }
@@ -330,29 +377,35 @@ static void cmd_net(void) {
     sh_emit(line);
 }
 
+static void sh_emit_prefixed(const char *pfx, const char *path) {
+    char line[SH_LINE];
+    int k = 0;
+    int i = 0;
+    while (pfx[i] && k < SH_LINE - 1) {
+        line[k++] = pfx[i++];
+    }
+    i = 0;
+    while (path[i] && k < SH_LINE - 1) {
+        line[k++] = path[i++];
+    }
+    line[k] = 0;
+    sh_emit(line);
+}
+
 static void cmd_kcc(const char *arg) {
     char path[FS_PATH];
-    char out_path[FS_PATH + 8];
+    char out_path[FS_PATH];
     char *src_buf;
-    uint8_t *chriso_buf;
     ChrisoImage img;
     int n;
-    int wn;
 
     if (!arg[0]) {
         sh_emit("kcc: path");
         return;
     }
     src_buf = (char *)kmalloc(65536u);
-    chriso_buf = (uint8_t *)kmalloc(65536u);
-    if (!src_buf || !chriso_buf) {
+    if (!src_buf) {
         sh_emit("kcc nomem");
-        if (src_buf) {
-            kfree(src_buf);
-        }
-        if (chriso_buf) {
-            kfree(chriso_buf);
-        }
         return;
     }
     join_cwd(arg, path, FS_PATH);
@@ -366,41 +419,76 @@ static void cmd_kcc(const char *arg) {
         sh_emit("kcc fail");
         goto done;
     }
-    wn = chriso_write(&img, chriso_buf, 65536u);
-    if (img.sec[CHRISO_SEC_TEXT]) {
-        kfree(img.sec[CHRISO_SEC_TEXT]);
-        img.sec[CHRISO_SEC_TEXT] = 0;
-    }
-    if (wn < 0) {
-        sh_emit("kcc write");
+    native_elf_path(path, out_path, FS_PATH);
+    if (native_link_write_elf(&img, out_path) < 0) {
+        sh_emit("kcc link");
+        native_image_free(&img);
         goto done;
     }
-    sh_copy(out_path, FS_PATH + 8, path);
-    {
-        int i = 0;
-        while (out_path[i]) {
-            i++;
-        }
-        if (i + 7 < FS_PATH + 7) {
-            out_path[i++] = '.';
-            out_path[i++] = 'C';
-            out_path[i++] = 'H';
-            out_path[i++] = 'R';
-            out_path[i++] = 'I';
-            out_path[i++] = 'S';
-            out_path[i++] = 'O';
-            out_path[i] = 0;
-        }
-    }
-    if (fs_write(out_path, chriso_buf, wn) != wn) {
-        sh_emit("kcc save");
-        goto done;
-    }
-    sh_emit("kcc ok");
+    native_image_free(&img);
+    sh_emit_prefixed("kcc ok ", out_path);
 
 done:
     kfree(src_buf);
-    kfree(chriso_buf);
+}
+
+static int path_ext_asm(const char *path) {
+    int n = 0;
+    while (path[n]) {
+        n++;
+    }
+    if (n >= 2 && path[n - 2] == '.' && sh_lower(path[n - 1]) == 's') {
+        return 1;
+    }
+    if (n >= 4 && sh_lower(path[n - 4]) == '.' && sh_lower(path[n - 3]) == 'a' &&
+        sh_lower(path[n - 2]) == 's' && sh_lower(path[n - 1]) == 'm') {
+        return 1;
+    }
+    return 0;
+}
+
+static void cmd_as(const char *arg) {
+    char path[FS_PATH];
+    char out_path[FS_PATH];
+    char *src_buf;
+    ChrisoImage img;
+    int n;
+
+    if (!arg[0]) {
+        sh_emit("as: path");
+        return;
+    }
+    join_cwd(arg, path, FS_PATH);
+    if (!path_ext_asm(path)) {
+        sh_emit("as: need .S");
+        return;
+    }
+    src_buf = (char *)kmalloc(65536u);
+    if (!src_buf) {
+        sh_emit("as nomem");
+        return;
+    }
+    n = fs_read(path, src_buf, 65535);
+    if (n < 0) {
+        sh_emit("as open");
+        goto done;
+    }
+    src_buf[n] = 0;
+    if (chrisasm_assemble(src_buf, &img) != 0) {
+        sh_emit("as fail");
+        goto done;
+    }
+    native_elf_path(path, out_path, FS_PATH);
+    if (native_link_write_elf(&img, out_path) < 0) {
+        sh_emit("as link");
+        native_image_free(&img);
+        goto done;
+    }
+    native_image_free(&img);
+    sh_emit_prefixed("as ok ", out_path);
+
+done:
+    kfree(src_buf);
 }
 
 static void cmd_mk(const char *arg) {
@@ -485,6 +573,7 @@ static void sh_exec(const char *line) {
     else if (sh_eq(cmd, "ed")) cmd_ed(arg);
     else if (sh_eq(cmd, "cc")) cmd_cc(arg);
     else if (sh_eq(cmd, "kcc")) cmd_kcc(arg);
+    else if (sh_eq(cmd, "as")) cmd_as(arg);
     else if (sh_eq(cmd, "mk")) cmd_mk(arg);
     else if (sh_eq(cmd, "reboot")) cmd_reboot();
     else if (sh_eq(cmd, "run")) cmd_run(arg);

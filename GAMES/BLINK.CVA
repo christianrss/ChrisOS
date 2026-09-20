@@ -1,0 +1,33 @@
+; BLINK — retângulo piscando (CLASM / CLVM)
+main:
+PUSH 320
+PUSH 200
+PUSH 39
+SYS
+loop:
+PUSH 1
+PUSH 10
+SYS
+JZ not_esc
+HALT
+not_esc:
+PUSH 1
+PUSH 6
+SYS
+PUSH 11
+SYS
+PUSH 2
+MOD
+JZ skip_rect
+PUSH 100
+PUSH 80
+PUSH 120
+PUSH 40
+PUSH 14
+PUSH 2
+SYS
+skip_rect:
+PUSH 1
+PUSH 12
+SYS
+JMP loop

@@ -1,20 +1,86 @@
 /* LEARN:WS64-W08 */
 #include "clvm_sys.h"
+#include <stdint.h>
 #include "bench.h"
+#include "cfs.h"
+#include "fs.h"
+#include "cla/cla.h"
+#include "gc/gc.h"
+#include "kthread.h"
 #include "gfx2d.h"
 #include "gfx_fast.h"
 #include "gfx_slot.h"
 #include "graphics.h"
+#include "heap.h"
 #include "math3d.h"
 #include "mesh.h"
 #include "shade.h"
 #include "speaker.h"
+#include "storage.h"
 #include "task.h"
 #include "tex.h"
 #include "tri.h"
 #include "ui.h"
 #include "voxel.h"
 #include "zbuf.h"
+
+#define CLVM_FD_MAX 32
+#define CLVM_FD_PER_SLOT 4
+#define CLVM_FD_CAP 65536u
+#define CLVM_TH_MAX 4
+
+typedef struct ClvmTh {
+    int used;
+    int done;
+    int kid;
+    ClvmVm *vm;
+} ClvmTh;
+
+static ClvmTh g_th[CLVM_TH_MAX];
+static uint8_t g_cla_tmp[65536];
+
+typedef struct ClvmFile {
+    int used;
+    int slot;
+    int dirty;
+    uint32_t size;
+    uint32_t pos;
+    uint32_t cap;
+    char path[FS_PATH];
+    uint8_t *buf;
+} ClvmFile;
+
+static ClvmFile g_fds[CLVM_FD_MAX];
+
+static void clvm_th_run(void *arg) {
+    ClvmTh *t = (ClvmTh *)arg;
+    if (!t || !t->vm)
+        return;
+    t->vm->state = CLVM_READY;
+    for (;;) {
+        ClvmStepResult r = clvm_step(t->vm, 4096);
+        if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
+            break;
+        if (r == CLVM_STEP_YIELD)
+            clvm_vm_wake(t->vm, 0);
+    }
+    t->done = 1;
+}
+
+static int guest_cstr(ClvmVm *vm, uint64_t off, char *out, int cap) {
+    int i = 0;
+    if (!vm || !vm->memory || !out || cap < 2 || off >= vm->mem_size)
+        return 0;
+    while (i + 1 < cap && off + (uint64_t)i < vm->mem_size) {
+        char ch = (char)vm->memory[off + (uint64_t)i];
+        out[i] = ch;
+        if (ch == 0)
+            return 1;
+        i++;
+    }
+    out[i] = 0;
+    return 1;
+}
 
 static int pop_i32(ClvmVm *vm, int32_t *out) {
     if (!clvm_vm_pop(vm, out))
@@ -40,15 +106,15 @@ static int pop_f(ClvmVm *vm, float *out) {
 }
 
 static int vm_bytes(ClvmVm *vm, int32_t addr, int32_t length, const uint8_t **out) {
-    uint32_t a;
-    uint32_t n;
-    if (addr < 0 || length <= 0)
+    uint64_t a;
+    uint64_t n;
+    if (addr < 0 || length <= 0 || vm->memory == 0)
         return 0;
-    a = (uint32_t)addr;
-    n = (uint32_t)length;
-    if (a >= CLVM_MEMORY_SIZE)
+    a = (uint64_t)(uint32_t)addr;
+    n = (uint64_t)(uint32_t)length;
+    if (a >= vm->mem_size)
         return 0;
-    if (n > CLVM_MEMORY_SIZE - a)
+    if (n > vm->mem_size - a)
         return 0;
     *out = vm->memory + a;
     return 1;
@@ -64,6 +130,181 @@ static ClvmGfxCtx *gfx_ctx(ClvmVm *vm, void *user) {
         return (ClvmGfxCtx *)user;
     (void)vm;
     return 0;
+}
+
+static int fd_slot(void *user) {
+    ClvmGfxCtx *ctx = gfx_ctx(0, user);
+    if (ctx == 0)
+        return 0;
+    return ctx->slot_id < 0 ? 0 : ctx->slot_id;
+}
+
+static int path_ok(const char *p) {
+    int i;
+    if (!p || !p[0])
+        return 0;
+    for (i = 0; p[i]; ++i) {
+        if (p[i] == '.' && p[i + 1] == '.' &&
+            (i == 0 || p[i - 1] == '/') &&
+            (p[i + 2] == 0 || p[i + 2] == '/'))
+            return 0;
+    }
+    return 1;
+}
+
+static int vm_cstr(ClvmVm *vm, int32_t addr, char *out, int cap) {
+    int i = 0;
+    if (!vm || !out || cap < 2 || addr < 0)
+        return 0;
+    while (i + 1 < cap) {
+        if ((uint64_t)(uint32_t)addr + (uint32_t)i >= vm->mem_size)
+            return 0;
+        out[i] = (char)vm->memory[(uint32_t)addr + (uint32_t)i];
+        if (out[i] == 0)
+            return 1;
+        ++i;
+    }
+    return 0;
+}
+
+static int vm_copy_in(ClvmVm *vm, int32_t addr, int32_t n, uint8_t *dst) {
+    uint32_t a;
+    uint32_t i;
+    if (addr < 0 || n < 0 || !dst)
+        return 0;
+    a = (uint32_t)addr;
+    if (a >= vm->mem_size || (uint32_t)n > vm->mem_size - a)
+        return 0;
+    for (i = 0; i < (uint32_t)n; ++i)
+        dst[i] = vm->memory[a + i];
+    return 1;
+}
+
+static int vm_copy_out(ClvmVm *vm, int32_t addr, int32_t n, const uint8_t *src) {
+    uint32_t a;
+    uint32_t i;
+    if (addr < 0 || n < 0 || !src)
+        return 0;
+    a = (uint32_t)addr;
+    if (a >= vm->mem_size || (uint32_t)n > vm->mem_size - a)
+        return 0;
+    for (i = 0; i < (uint32_t)n; ++i)
+        vm->memory[a + i] = src[i];
+    return 1;
+}
+
+static int fd_count_slot(int slot) {
+    int i;
+    int n = 0;
+    for (i = 0; i < CLVM_FD_MAX; ++i) {
+        if (g_fds[i].used && g_fds[i].slot == slot)
+            ++n;
+    }
+    return n;
+}
+
+static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
+    char path[FS_PATH];
+    int slot = fd_slot(user);
+    int i;
+    int n;
+    uint32_t sz = 0;
+    uint16_t ty = 0;
+
+    if (!vm_cstr(vm, path_addr, path, FS_PATH) || !path_ok(path))
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    if (fd_count_slot(slot) >= CLVM_FD_PER_SLOT)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    for (i = 0; i < CLVM_FD_MAX && g_fds[i].used; ++i) {
+    }
+    if (i == CLVM_FD_MAX)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    if (storage_ready() && storage_cfs()) {
+        if (fs_stat(path, &sz, &ty) == 0 && ty == CFS_INODE_FILE) {
+            if (cfs_perm(storage_cfs(), path, CFS_PERM_READ) != CFS_OK &&
+                cfs_perm(storage_cfs(), path, CFS_PERM_WRITE) != CFS_OK)
+                return clvm_vm_push(vm, -1) ? 0 : -1;
+        }
+    }
+    g_fds[i].buf = (uint8_t *)kmalloc(CLVM_FD_CAP);
+    if (!g_fds[i].buf)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    n = fs_read(path, g_fds[i].buf, (int)CLVM_FD_CAP);
+    if (n < 0) {
+        n = 0;
+    }
+    {
+        int k = 0;
+        while (path[k] && k < FS_PATH - 1) {
+            g_fds[i].path[k] = path[k];
+            ++k;
+        }
+        g_fds[i].path[k] = 0;
+    }
+    g_fds[i].used = 1;
+    g_fds[i].slot = slot;
+    g_fds[i].dirty = 0;
+    g_fds[i].size = (uint32_t)n;
+    g_fds[i].pos = 0;
+    g_fds[i].cap = CLVM_FD_CAP;
+    return clvm_vm_push(vm, i) ? 0 : -1;
+}
+
+static void fd_free(int i) {
+    if (i < 0 || i >= CLVM_FD_MAX || !g_fds[i].used)
+        return;
+    if (g_fds[i].dirty && g_fds[i].buf)
+        fs_write(g_fds[i].path, g_fds[i].buf, (int)g_fds[i].size);
+    if (g_fds[i].buf)
+        kfree(g_fds[i].buf);
+    g_fds[i].buf = 0;
+    g_fds[i].used = 0;
+    g_fds[i].dirty = 0;
+}
+
+static int sys_fclose(int32_t fd) {
+    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used)
+        return -1;
+    fd_free(fd);
+    return 0;
+}
+
+static int sys_fread(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
+    uint32_t left;
+    uint32_t take;
+    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used || n < 0)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    left = g_fds[fd].size - g_fds[fd].pos;
+    take = (uint32_t)n < left ? (uint32_t)n : left;
+    if (take && !vm_copy_out(vm, addr, (int32_t)take,
+                             g_fds[fd].buf + g_fds[fd].pos))
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    g_fds[fd].pos += take;
+    return clvm_vm_push(vm, (int32_t)take) ? 0 : -1;
+}
+
+static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
+    uint32_t end;
+    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used || n < 0)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    end = g_fds[fd].pos + (uint32_t)n;
+    if (end > g_fds[fd].cap)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    if (n && !vm_copy_in(vm, addr, n, g_fds[fd].buf + g_fds[fd].pos))
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    g_fds[fd].pos += (uint32_t)n;
+    if (g_fds[fd].pos > g_fds[fd].size)
+        g_fds[fd].size = g_fds[fd].pos;
+    g_fds[fd].dirty = 1;
+    return clvm_vm_push(vm, n) ? 0 : -1;
+}
+
+void clvm_sys_close_slot(int slot_id) {
+    int i;
+    for (i = 0; i < CLVM_FD_MAX; ++i) {
+        if (g_fds[i].used && g_fds[i].slot == slot_id)
+            fd_free(i);
+    }
 }
 
 static void gfx_zbuf_prepare(ClvmGfxCtx *ctx, int gw, int gh) {
@@ -362,6 +603,161 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_push(vm, (int32_t)bench_fps_estimate()))
             return -1;
         return 0;
+    case 50:
+        if (!pop_i32(vm, &a))
+            return -1;
+        return sys_fopen(vm, user, a);
+    case 51:
+        if (!pop_i32(vm, &a))
+            return -1;
+        return sys_fclose(a);
+    case 52:
+        if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a))
+            return -1;
+        return sys_fread(vm, a, b, c);
+    case 53:
+        if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a))
+            return -1;
+        return sys_fwrite(vm, a, b, c);
+    case 54: {
+        char path[FS_PATH];
+        uint32_t sz = 0;
+        uint16_t ty = 0;
+        if (!pop_i32(vm, &a) || !vm_cstr(vm, a, path, FS_PATH) || !path_ok(path))
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        if (fs_stat(path, &sz, &ty) != 0)
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        return clvm_vm_push(vm, (int32_t)sz) ? 0 : -1;
+    }
+    case 55: {
+        char path[FS_PATH];
+        uint32_t sz = 0;
+        uint16_t ty = 0;
+        if (!pop_i32(vm, &a) || !vm_cstr(vm, a, path, FS_PATH) || !path_ok(path))
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        if (fs_stat(path, &sz, &ty) != 0)
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 56: {
+        int64_t n;
+        uint64_t p = 0;
+        if (!clvm_vm_pop64(vm, &n))
+            return -1;
+        if (!clvm_guest_malloc(vm, (uint64_t)n, &p))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, (int64_t)p) ? 0 : -1;
+    }
+    case 57: {
+        int64_t p;
+        if (!clvm_vm_pop64(vm, &p))
+            return -1;
+        clvm_guest_free(vm, (uint64_t)p);
+        return 0;
+    }
+    case 58: {
+        int64_t a;
+        if (!clvm_vm_pop64(vm, &a))
+            return -1;
+        if (!clvm_guest_setjmp(vm, (uint64_t)a))
+            return -1;
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 59: {
+        int64_t a;
+        int64_t v;
+        if (!clvm_vm_pop64(vm, &v) || !clvm_vm_pop64(vm, &a))
+            return -1;
+        if (!clvm_guest_longjmp(vm, (uint64_t)a, v))
+            return -1;
+        return 0;
+    }
+    case 61: {
+        int64_t p;
+        int64_t n;
+        uint64_t o = 0;
+        if (!clvm_vm_pop64(vm, &n) || !clvm_vm_pop64(vm, &p))
+            return -1;
+        if (!clvm_guest_realloc(vm, (uint64_t)p, (uint64_t)n, &o))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, (int64_t)o) ? 0 : -1;
+    }
+    case 70: {
+        int64_t n;
+        void *p;
+        if (!clvm_vm_pop64(vm, &n))
+            return -1;
+        p = gc_alloc(1, (uint32_t)n);
+        return clvm_vm_push64(vm, (int64_t)(uintptr_t)p) ? 0 : -1;
+    }
+    case 71:
+        gc_collect();
+        return 0;
+    case 62: {
+        int64_t fn;
+        int64_t arg;
+        int i;
+        ClvmVm *child;
+        if (!clvm_vm_pop64(vm, &arg) || !clvm_vm_pop64(vm, &fn))
+            return -1;
+        for (i = 0; i < CLVM_TH_MAX; ++i) {
+            if (!g_th[i].used)
+                break;
+        }
+        if (i == CLVM_TH_MAX)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        child = (ClvmVm *)kmalloc(sizeof(ClvmVm));
+        if (!child)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        {
+            uint32_t z;
+            uint8_t *p = (uint8_t *)child;
+            for (z = 0; z < sizeof(ClvmVm); ++z)
+                p[z] = 0;
+        }
+        child->code = vm->code;
+        child->code_size = vm->code_size;
+        child->memory = vm->memory;
+        child->mem_size = vm->mem_size;
+        child->sys = vm->sys;
+        child->sys_user = vm->sys_user;
+        child->pc = (uint32_t)fn;
+        child->state = CLVM_READY;
+        (void)clvm_vm_push64(child, arg);
+        g_th[i].used = 1;
+        g_th[i].done = 0;
+        g_th[i].vm = child;
+        g_th[i].kid = kthread_create(clvm_th_run, &g_th[i]);
+        return clvm_vm_push64(vm, i) ? 0 : -1;
+    }
+    case 63: {
+        int64_t a;
+        if (!clvm_vm_pop64(vm, &a))
+            return -1;
+        if (a >= 0 && a < CLVM_TH_MAX && g_th[a].used) {
+            kthread_join(g_th[a].kid);
+            if (g_th[a].vm)
+                kfree(g_th[a].vm);
+            g_th[a].vm = 0;
+            g_th[a].used = 0;
+        }
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 64: {
+        int64_t a;
+        char path[64];
+        int n;
+        if (!clvm_vm_pop64(vm, &a))
+            return -1;
+        if (!guest_cstr(vm, (uint64_t)a, path, (int)sizeof(path)))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        n = fs_read(path, g_cla_tmp, (int)sizeof(g_cla_tmp));
+        if (n <= 0)
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, cla_load_bytes(g_cla_tmp, (size_t)n) ? 1 : 0)
+                   ? 0
+                   : -1;
+    }
     default:
         return -1;
     }

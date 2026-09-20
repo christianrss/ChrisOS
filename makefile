@@ -5,6 +5,7 @@ QEMU := qemu-system-x86_64
 # Clicar na janela do QEMU (grab-on-hover) para o guest receber teclas.
 # Windows sem GTK: make run QEMU_DISPLAY=sdl,grab-mod=lshift-lshift
 QEMU_DISPLAY ?= gtk,zoom-to-fit=on,grab-on-hover=on,show-cursor=on
+QEMU_MEM ?= 16G
 XORRISO := xorriso
 LIMINE_DIR := third_party/limine
 
@@ -64,7 +65,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/wm/task.o kernel/wm/ui.o kernel/wm/desktop.o kernel/wm/main.o \
 	kernel/wm/boot_splash.o \
 	kernel/tools/editor.o kernel/tools/editor_window.o kernel/tools/explorer.o \
-	kernel/tools/shell.o kernel/tools/chrisbuild.o \
+	kernel/tools/shell.o kernel/tools/chrisbuild.o kernel/tools/native_link.o \
 	compiler/chrisld/chriso.o compiler/chrisasm/chrisasm.o \
 	compiler/chrisld/chrisld.o compiler/kcc/kcc.o \
 	kernel/fs/ata_pio.o kernel/fs/cfs.o kernel/fs/cfs_fsck.o \
@@ -75,9 +76,10 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	compiler/clvm/clvm_vm.o kernel/tools/app_window.o \
 	compiler/jit/jit.o compiler/jit/jit_emit.o compiler/jit/jit_compile.o \
 	compiler/jit/jit_runtime.o \
+	compiler/gc/gc.o compiler/il/il.o compiler/cla/cla.o \
 	kernel/tools/taskmgr.o kernel/metal/apic.o kernel/metal/ioapic.o \
 	kernel/metal/spin.o kernel/metal/smp.o kernel/metal/job.o \
-	kernel/metal/kcc_job.o kernel/net/net_xfer.o \
+	kernel/metal/kthread.o kernel/metal/kcc_job.o kernel/net/net_xfer.o \
 	$(GFX_3D_OBJS)
 
 ASM_OBJECTS_REL := kernel/metal/idt_stubs.o
@@ -253,12 +255,44 @@ test_chrisc_struct: tools/test_chrisc_struct.c compiler/chrisc/chrisc.c \
 		-o $(HOST_BIN)/test_chrisc_struct
 	$(HOST_BIN)/test_chrisc_struct
 
-test_chrisc_games: tools/test_chrisc_games.c compiler/chrisc/chrisc.c
+test_chrisc_games: tools/test_chrisc_games.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
-		tools/test_chrisc_games.c compiler/chrisc/chrisc.c \
+		tools/test_chrisc_games.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c \
 		-o $(HOST_BIN)/test_chrisc_games
 	$(HOST_BIN)/test_chrisc_games
+
+test_chrisc_include: tools/test_chrisc_include.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_include.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c \
+		-o $(HOST_BIN)/test_chrisc_include
+	$(HOST_BIN)/test_chrisc_include
+
+test_chrisc_string: tools/test_chrisc_string.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_string.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_string
+	$(HOST_BIN)/test_chrisc_string
+
+test_chrisc_c17: tools/test_chrisc_c17.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_c17.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_c17
+	$(HOST_BIN)/test_chrisc_c17
+
+test_cla_gc: tools/test_cla_gc.c compiler/cla/cla.c compiler/gc/gc.c compiler/il/il.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler -Icompiler/clvm \
+		tools/test_cla_gc.c compiler/cla/cla.c compiler/gc/gc.c compiler/il/il.c \
+		-o $(HOST_BIN)/test_cla_gc
+	$(HOST_BIN)/test_cla_gc
 
 test_chrisc_trig: tools/test_chrisc_trig.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
@@ -426,15 +460,61 @@ disk-world: $(DISK_IMG) host-cfs-put-file
 disk-watch: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/WATCH.CC GAMES/WATCH.CC
 
-disk: disk-hello disk-fault disk-cube disk-world disk-watch host-cfs-put
+disk-blink: $(DISK_IMG) host-cfs-put-file
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/BLINK.CVA GAMES/BLINK.CVA
+
+disk-exit42: $(DISK_IMG) host-cfs-put-file
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/EXIT42.S SRC/EXIT42.S
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/EXIT42.C SRC/EXIT42.C
+
+disk-lib: $(DISK_IMG) host-cfs-put-file
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STR.CC LIB/STR.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STR.H LIB/STR.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDDEF.H LIB/STDDEF.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDINT.H LIB/STDINT.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDIO.H LIB/STDIO.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDARG.H LIB/STDARG.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STRING.H LIB/STRING.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDLIB.H LIB/STDLIB.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/CTYPE.H LIB/CTYPE.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/MATH.H LIB/MATH.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/SETJMP.H LIB/SETJMP.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/THREADS.H LIB/THREADS.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/CAT.CC SRC/CAT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/HELLO.TXT SRC/HELLO.TXT
+
+disk: disk-hello disk-fault disk-cube disk-world disk-watch disk-blink disk-exit42 disk-lib host-cfs-put
 	$(HOST_BIN)/cfs_put $(DISK_IMG)
 
-host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_tile test_tile_bin
+test_clasm: tools/test_clasm.c compiler/clvm/clasm.c compiler/clvm/clvm.h compiler/clvm/clasm.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/clvm \
+		tools/test_clasm.c compiler/clvm/clasm.c \
+		-o $(HOST_BIN)/test_clasm
+	$(HOST_BIN)/test_clasm
+
+test_clasm_games: tools/test_clasm_games.c compiler/clvm/clasm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/clvm \
+		tools/test_clasm_games.c compiler/clvm/clasm.c \
+		-o $(HOST_BIN)/test_clasm_games
+	$(HOST_BIN)/test_clasm_games
+
+test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
+		compiler/chrisld/chriso.c compiler/chrisld/chrisld.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(HOST_CHRIS_INC) \
+		tools/test_native_link.c compiler/chrisasm/chrisasm.c \
+		compiler/chrisld/chriso.c compiler/chrisld/chrisld.c \
+		-o $(HOST_BIN)/test_native_link
+	$(HOST_BIN)/test_native_link
+
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_string test_chrisc_c17 test_cla_gc test_clasm test_clasm_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
-	host-jit-test host-jit-vm-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
-	host-kcc-test host-gfx3d
+	host-jit-test host-jit-vm-test host-jit-native-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
+	host-kcc-test test_native_link host-gfx3d
 
 host-chrisasm-test: tools/test_chrisasm.c compiler/chrisasm/chrisasm.c \
 		compiler/chrisld/chriso.c
@@ -497,28 +577,43 @@ host-jit-test: tools/test_jit_enc.c tools/jit_host_stub.c compiler/jit/jit_emit.
 host-jit-vm-test: tools/test_jit_vm.c tools/jit_host_stub.c compiler/jit/jit_emit.c \
 		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
 		compiler/chrisc/chrisc.c compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
-		compiler/clvm/clvm_vm.c kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c
+		compiler/clvm/clvm_vm.c kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c \
+		kernel/gfx/zbuf.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/jit -Icompiler/chrisc \
 		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -msse2 \
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_jit_vm.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
-		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c \
+		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c 		kernel/gfx/zbuf.c \
 		-o $(HOST_BIN)/test_jit_vm
 	$(HOST_BIN)/test_jit_vm
+
+host-jit-native-test: tools/test_jit_native.c tools/jit_host_stub.c compiler/jit/jit_emit.c \
+		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
+		compiler/chrisc/chrisc.c compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
+		compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/jit -Icompiler/chrisc \
+		-Icompiler/clvm -Icompiler -Ikernel/lang \
+		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
+		compiler/jit/jit_runtime.c tools/test_jit_native.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_jit_native
+	$(HOST_BIN)/test_jit_native
 
 host-jit-bench-test: tools/test_jit_bench.c tools/jit_host_stub.c compiler/jit/jit_emit.c \
 		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
 		compiler/chrisc/chrisc.c compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
-		compiler/clvm/clvm_vm.c kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c
+		compiler/clvm/clvm_vm.c kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c \
+		kernel/gfx/zbuf.c
 	mkdir -p $(HOST_BIN)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -Icompiler/jit -Icompiler/chrisc \
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -D_POSIX_C_SOURCE=200809L -Icompiler/jit -Icompiler/chrisc \
 		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -msse2 \
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_jit_bench.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
-		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c \
+		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c kernel/gfx/zbuf.c \
 		-o $(HOST_BIN)/test_jit_bench
 	$(HOST_BIN)/test_jit_bench
 
@@ -568,6 +663,18 @@ $(OBJ_DIR)/compiler/clvm/%.o: compiler/clvm/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/compiler/jit/%.o: compiler/jit/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/compiler/gc/%.o: compiler/gc/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/compiler/il/%.o: compiler/il/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/compiler/cla/%.o: compiler/cla/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -629,7 +736,7 @@ $(ISO): $(KERNEL) $(ISO_ROOT)/boot/limine/limine.conf \
 run: $(ISO) run-stop
 	@test -f $(DISK_IMG) || $(MAKE) disk.img
 	@sleep 1
-	$(QEMU) -M pc -m 1G -smp 4 -boot order=dc \
+	$(QEMU) -M pc -m $(QEMU_MEM) -smp 4 -boot order=dc \
 		-display $(QEMU_DISPLAY) \
 		-usb -device usb-tablet \
 		-drive file=$(DISK_IMG),format=raw,if=ide,index=0 \

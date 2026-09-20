@@ -94,12 +94,16 @@ int main(int argc, char **argv) {
     if (rc != CFS_OK) {
         goto fail;
     }
+    rc = seed_dir(&fs, "LIB");
+    if (rc != CFS_OK) {
+        goto fail;
+    }
     rc = cfs_sync(&fs);
     if (rc != CFS_OK) {
         goto fail;
     }
     fclose(g_f);
-    printf("cfs_mkdisk: %s (%u MiB CFS v%u, GAMES SRC BIN)\n", path,
+    printf("cfs_mkdisk: %s (%u MiB CFS v%u, GAMES SRC BIN LIB)\n", path,
            (unsigned)(STOR_DISK_BYTES / (1024u * 1024u)),
            (unsigned)CFS_VERSION);
     return 0;
