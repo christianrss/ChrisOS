@@ -235,13 +235,14 @@ static void cmd_ed(const char *arg) {
 }
 
 static void cmd_cc(const char *arg) {
-    char raw[8][FS_PATH];
-    char path[8][FS_PATH];
-    const char *pp[8];
+    static char raw[32][FS_PATH];
+    static char path[32][FS_PATH];
+    const char *pp[32];
     int n = 0;
     int i = 0;
     int j;
-    while (arg[i] && n < 8) {
+    int a;
+    while (arg[i] && n < 32) {
         j = 0;
         while (arg[i] == ' ')
             i++;
@@ -256,6 +257,19 @@ static void cmd_cc(const char *arg) {
     }
     if (n == 0) {
         sh_emit("cc: files");
+        return;
+    }
+    a = 0;
+    while (path[0][a])
+        a++;
+    if (n == 1 && a >= 4 &&
+        ((path[0][a - 4] == '.' && (path[0][a - 3] == 'L' || path[0][a - 3] == 'l') &&
+          (path[0][a - 2] == 'S' || path[0][a - 2] == 's') &&
+          (path[0][a - 1] == 'T' || path[0][a - 1] == 't')))) {
+        if (!lang_compile_list(path[0]))
+            sh_emit("cc lst fail");
+        else
+            sh_emit("compiled");
         return;
     }
     if (n == 1) {

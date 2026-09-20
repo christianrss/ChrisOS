@@ -2,8 +2,9 @@
 #define MATH_H
 float sin(float x);
 float cos(float x);
-float fabsf(float x) {
-    if (x < 0.0) return -x;
-    return x;
-}
+float tan(float x);
+float atan(float x);
+float fabs(float x);
+float fabsf(float x);
+float sqrt(float x);
 #endif

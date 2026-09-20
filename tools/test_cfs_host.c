@@ -160,8 +160,16 @@ static void test_disk_full(void) {
         }
     }
     make_name(name, 69);
-    expect_int("70th in root ENOSPC", cfs_write(&fs, name, &one, 1u),
-               CFS_ENOSPC);
+    expect_int("70th in root ok", cfs_write(&fs, name, &one, 1u), 1);
+    for (i = 70; i < 140; i++) {
+        make_name(name, i);
+        rc = cfs_write(&fs, name, &one, 1u);
+        if (rc != 1) {
+            fprintf(stderr, "FAIL root extra %d rc %d\n", i, rc);
+            g_fails++;
+            return;
+        }
+    }
     make_name(name, 0);
     expect_int("first still there", cfs_read(&fs, name, &one, 1u), 1);
 }

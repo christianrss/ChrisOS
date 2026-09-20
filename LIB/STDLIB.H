@@ -5,24 +5,14 @@
 void *malloc(size_t n);
 void free(void *p);
 void *realloc(void *p, size_t n);
-
-int abs(int x) {
-    if (x < 0) return -x;
-    return x;
-}
-
-int atoi(char *s) {
-    int v = 0;
-    int i = 0;
-    int sign = 1;
-    if (s[0] == '-') {
-        sign = -1;
-        i++;
-    }
-    while (s[i] >= '0' && s[i] <= '9') {
-        v = v * 10 + (s[i] - '0');
-        i++;
-    }
-    return sign * v;
-}
+int abs(int x);
+int atoi(char *s);
+float atof(char *s);
+void exit(int c);
+void abort();
+void *calloc(size_t n, size_t sz);
+char *getenv(char *name);
+int mkdir(char *path, int mode);
+int isatty(int fd);
+int system(char *cmd);
 #endif

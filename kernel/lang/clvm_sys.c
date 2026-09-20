@@ -25,9 +25,11 @@
 #include "zbuf.h"
 
 #define CLVM_FD_MAX 32
-#define CLVM_FD_PER_SLOT 4
+#define CLVM_FD_PER_SLOT 8
 #define CLVM_FD_CAP 65536u
+#define CLVM_FD_MAX_BYTES (16u * 1024u * 1024u)
 #define CLVM_TH_MAX 4
+#define CLVM_PAL_SLOTS 8
 
 typedef struct ClvmTh {
     int used;
@@ -51,6 +53,8 @@ typedef struct ClvmFile {
 } ClvmFile;
 
 static ClvmFile g_fds[CLVM_FD_MAX];
+static uint8_t g_pal[CLVM_PAL_SLOTS][768];
+static int g_pal_set[CLVM_PAL_SLOTS];
 
 static void clvm_th_run(void *arg) {
     ClvmTh *t = (ClvmTh *)arg;
@@ -210,6 +214,7 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
     int n;
     uint32_t sz = 0;
     uint16_t ty = 0;
+    uint32_t cap;
 
     if (!vm_cstr(vm, path_addr, path, FS_PATH) || !path_ok(path))
         return clvm_vm_push(vm, -1) ? 0 : -1;
@@ -226,10 +231,16 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
                 return clvm_vm_push(vm, -1) ? 0 : -1;
         }
     }
-    g_fds[i].buf = (uint8_t *)kmalloc(CLVM_FD_CAP);
+    cap = CLVM_FD_CAP;
+    if (fs_stat(path, &sz, &ty) == 0 && sz > 0) {
+        cap = sz;
+        if (cap > CLVM_FD_MAX_BYTES)
+            cap = CLVM_FD_MAX_BYTES;
+    }
+    g_fds[i].buf = (uint8_t *)kmalloc(cap);
     if (!g_fds[i].buf)
         return clvm_vm_push(vm, -1) ? 0 : -1;
-    n = fs_read(path, g_fds[i].buf, (int)CLVM_FD_CAP);
+    n = fs_read(path, g_fds[i].buf, (int)cap);
     if (n < 0) {
         n = 0;
     }
@@ -246,7 +257,7 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
     g_fds[i].dirty = 0;
     g_fds[i].size = (uint32_t)n;
     g_fds[i].pos = 0;
-    g_fds[i].cap = CLVM_FD_CAP;
+    g_fds[i].cap = cap;
     return clvm_vm_push(vm, i) ? 0 : -1;
 }
 
@@ -297,6 +308,17 @@ static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
         g_fds[fd].size = g_fds[fd].pos;
     g_fds[fd].dirty = 1;
     return clvm_vm_push(vm, n) ? 0 : -1;
+}
+
+static int sys_fseek(ClvmVm *vm, int32_t fd, int32_t off) {
+    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    if (off < 0)
+        off = 0;
+    if ((uint32_t)off > g_fds[fd].size)
+        off = (int32_t)g_fds[fd].size;
+    g_fds[fd].pos = (uint32_t)off;
+    return clvm_vm_push(vm, (int32_t)g_fds[fd].pos) ? 0 : -1;
 }
 
 void clvm_sys_close_slot(int slot_id) {
@@ -757,6 +779,60 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         return clvm_vm_push64(vm, cla_load_bytes(g_cla_tmp, (size_t)n) ? 1 : 0)
                    ? 0
                    : -1;
+    }
+    case 65:
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a))
+            return -1;
+        return sys_fseek(vm, a, b);
+    case 72: {
+        int32_t ptr;
+        int32_t bw;
+        int32_t bh;
+        int x;
+        int y;
+        int slot;
+        const uint8_t *src8;
+        if (!pop_i32(vm, &bh) || !pop_i32(vm, &bw) || !pop_i32(vm, &ptr))
+            return -1;
+        if (bw <= 0 || bh <= 0 || bw > ctx->w || bh > ctx->h)
+            return -1;
+        if (!vm_bytes(vm, ptr, bw * bh, &src8))
+            return -1;
+        slot = ctx->slot_id >= 0 ? ctx->slot_id : 0;
+        if (slot >= CLVM_PAL_SLOTS)
+            slot = 0;
+        for (y = 0; y < bh; ++y) {
+            for (x = 0; x < bw; ++x) {
+                uint8_t i8 = src8[y * bw + x];
+                uint32_t col;
+                if (g_pal_set[slot]) {
+                    uint8_t *p = g_pal[slot] + (int)i8 * 3;
+                    col = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) |
+                          (uint32_t)p[2];
+                } else {
+                    col = ((uint32_t)i8 << 16) | ((uint32_t)i8 << 8) | i8;
+                }
+                pix[y * gw + x] = col | 0xff000000u;
+            }
+        }
+        return 0;
+    }
+    case 73: {
+        int32_t ptr;
+        int slot;
+        const uint8_t *src;
+        int k;
+        if (!pop_i32(vm, &ptr))
+            return -1;
+        if (!vm_bytes(vm, ptr, 768, &src))
+            return -1;
+        slot = ctx->slot_id >= 0 ? ctx->slot_id : 0;
+        if (slot >= CLVM_PAL_SLOTS)
+            slot = 0;
+        for (k = 0; k < 768; ++k)
+            g_pal[slot][k] = src[k];
+        g_pal_set[slot] = 1;
+        return 0;
     }
     default:
         return -1;

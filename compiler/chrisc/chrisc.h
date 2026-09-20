@@ -3,8 +3,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define CHRIS_SOURCE_MAX 524288u
-#define CHRIS_MAP_MAX 2048
+#define CHRIS_SOURCE_MAX 4194304u
+#define CHRIS_INC_MAX 262144u
+#define CHRIS_MAP_MAX 8192
+#define CHRIS_LST_MAX 128
 
 typedef struct ChrisDiag {
     int line, column;

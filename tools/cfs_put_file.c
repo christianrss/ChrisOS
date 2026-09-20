@@ -132,24 +132,24 @@ int main(int argc, char **argv) {
         }
     }
     {
-        char parent[512];
+        char acc[512];
         int i;
-        int last = -1;
-        for (i = 0; argv[2][i] && i < 511; ++i) {
-            parent[i] = argv[2][i];
-            if (argv[2][i] == '/') {
-                last = i;
+        int nacc;
+        nacc = 0;
+        for (i = 0; argv[2][i]; ++i) {
+            if (argv[2][i] == '/' && nacc > 0) {
+                int mrc;
+                acc[nacc] = 0;
+                mrc = cfs_mkdir(&fs, acc);
+                if (mrc != CFS_OK && mrc != CFS_EEXIST) {
+                    fprintf(stderr, "cfs_mkdir %s failed (%d)\n", acc, mrc);
+                    free(data);
+                    fclose(g_f);
+                    return 5;
+                }
             }
-        }
-        if (last > 0) {
-            int mrc;
-            parent[last] = 0;
-            mrc = cfs_mkdir(&fs, parent);
-            if (mrc != CFS_OK && mrc != CFS_EEXIST) {
-                fprintf(stderr, "cfs_mkdir %s failed (%d)\n", parent, mrc);
-                free(data);
-                fclose(g_f);
-                return 5;
+            if (nacc + 1 < 512) {
+                acc[nacc++] = argv[2][i];
             }
         }
     }

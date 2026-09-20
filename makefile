@@ -287,6 +287,15 @@ test_chrisc_c17: tools/test_chrisc_c17.c compiler/chrisc/chrisc.c \
 		-o $(HOST_BIN)/test_chrisc_c17
 	$(HOST_BIN)/test_chrisc_c17
 
+test_chrisc_doom: tools/test_chrisc_doom.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_doom.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_doom
+	$(HOST_BIN)/test_chrisc_doom
+
 test_cla_gc: tools/test_cla_gc.c compiler/cla/cla.c compiler/gc/gc.c compiler/il/il.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler -Icompiler/clvm \
@@ -463,6 +472,49 @@ disk-watch: $(DISK_IMG) host-cfs-put-file
 disk-blink: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/BLINK.CVA GAMES/BLINK.CVA
 
+disk-doom: $(DISK_IMG) host-cfs-put-file GAMES/DOOM/DOOM1.WAD
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.CC GAMES/DOOM/DOOM.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_CHRIS.CC GAMES/DOOM/I_CHRIS.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_SOUND.CC GAMES/DOOM/I_SOUND.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_VIDEO.CC GAMES/DOOM/I_VIDEO.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_INPUT.CC GAMES/DOOM/I_INPUT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/W_FILE.CC GAMES/DOOM/W_FILE.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/MAIN.CC GAMES/DOOM/MAIN.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.LST GAMES/DOOM/DOOM.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/ENGINE.LST GAMES/DOOM/ENGINE.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM1.WAD GAMES/DOOM/DOOM1.WAD
+	@while IFS= read -r f; do \
+		f=$$(printf '%s' "$$f" | tr -d '\r'); \
+		[ -n "$$f" ] || continue; \
+		$(HOST_BIN)/cfs_put_file $(DISK_IMG) $$f $$f; \
+	done < GAMES/DOOM/ENGINE.LST
+	@for h in third_party/doomgeneric_src/doomgeneric/*.h; do \
+		$(HOST_BIN)/cfs_put_file $(DISK_IMG) $$h $$h; \
+	done
+
+GAMES/DOOM/DOOM1.WAD: tools/mk_miniwad.c
+	mkdir -p GAMES/DOOM $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -o $(HOST_BIN)/mk_miniwad tools/mk_miniwad.c
+	$(HOST_BIN)/mk_miniwad GAMES/DOOM/DOOM1.WAD
+
+test_doom_compile: tools/test_doom_compile.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_doom_compile.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_doom_compile
+	$(HOST_BIN)/test_doom_compile
+
+test_doom_engine: tools/test_doom_engine.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_doom_engine.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_doom_engine
+	$(HOST_BIN)/test_doom_engine
+
 disk-exit42: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/EXIT42.S SRC/EXIT42.S
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/EXIT42.C SRC/EXIT42.C
@@ -473,17 +525,39 @@ disk-lib: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDDEF.H LIB/STDDEF.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDINT.H LIB/STDINT.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDIO.H LIB/STDIO.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDIO.CC LIB/STDIO.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDARG.H LIB/STDARG.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STRING.H LIB/STRING.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STRING.CC LIB/STRING.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STRINGS.H LIB/STRINGS.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDLIB.H LIB/STDLIB.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDLIB.CC LIB/STDLIB.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/CTYPE.H LIB/CTYPE.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/CTYPE.CC LIB/CTYPE.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/MATH.H LIB/MATH.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/MATH.CC LIB/MATH.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/SETJMP.H LIB/SETJMP.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/THREADS.H LIB/THREADS.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/STDBOOL.H LIB/STDBOOL.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/INTTYPES.H LIB/INTTYPES.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/LIMITS.H LIB/LIMITS.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/ASSERT.H LIB/ASSERT.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/ERRNO.H LIB/ERRNO.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/UNISTD.H LIB/UNISTD.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/FCNTL.H LIB/FCNTL.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/TIME.H LIB/TIME.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/SYS_TYPES.H LIB/SYS_TYPES.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/SYS_STAT.H LIB/SYS_STAT.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/MATH3D.CC LIB/MATH3D.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/XFORM.H LIB/XFORM.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/BODY.CC LIB/BODY.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/CLIP.CC LIB/CLIP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/ANIM.CC LIB/ANIM.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/CAT.CC SRC/CAT.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/HELLO.TXT SRC/HELLO.TXT
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/PHYS.CC GAMES/PHYS.CC
 
-disk: disk-hello disk-fault disk-cube disk-world disk-watch disk-blink disk-exit42 disk-lib host-cfs-put
+disk: disk-hello disk-fault disk-cube disk-world disk-watch disk-blink disk-exit42 disk-lib disk-doom host-cfs-put
 	$(HOST_BIN)/cfs_put $(DISK_IMG)
 
 test_clasm: tools/test_clasm.c compiler/clvm/clasm.c compiler/clvm/clvm.h compiler/clvm/clasm.h
@@ -509,7 +583,7 @@ test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
 		-o $(HOST_BIN)/test_native_link
 	$(HOST_BIN)/test_native_link
 
-host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_string test_chrisc_c17 test_cla_gc test_clasm test_clasm_games test_tile test_tile_bin
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_clasm test_clasm_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \

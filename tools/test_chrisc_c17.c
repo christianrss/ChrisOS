@@ -303,7 +303,7 @@ int main(void) {
     memset(&r, 0, sizeof(r));
     {
         static const char *spr =
-            "#include \"STDIO.H\"\n"
+            "#include \"LIB/STDIO.CC\"\n"
             "void main(){\n"
             " char b[32];\n"
             " sprintf(b, \"%d\", 42);\n"

@@ -16,7 +16,7 @@
 #define JIT_OFF_ONSP   ((uint32_t)offsetof(ClvmVm, on_safepoint))
 #define REG_VM   3
 #define REG_ARG0 7
-#define JIT_MAX_PCS 131072u
+#define JIT_MAX_PCS 262144u
 #define JIT_MAX_PATCH 4096u
 
 extern ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget);

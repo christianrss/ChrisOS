@@ -22,14 +22,16 @@
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
 
-#define LANG_SOURCE_MAX 524288
-#define LANG_CODE_MAX (1024u * 1024u)
+#define LANG_SOURCE_MAX 4194304
+#define LANG_CODE_MAX (4u * 1024u * 1024u)
 #define LANG_FILE_MAX (CLVM_HEADER_SIZE_V2 + LANG_CODE_MAX)
 #define LANG_NAME_MAX 96
 #define LANG_PIXELS (CLVM_SYS_GAME_W * CLVM_SYS_GAME_H)
+#define LANG_LST_MAX 128
 typedef struct LangSlot {
     int used;
-    uint8_t file[LANG_FILE_MAX];
+    uint8_t *file;
+    size_t file_cap;
     size_t file_size;
     ClvmVm vm;
     uint32_t pixels[LANG_PIXELS];
@@ -59,6 +61,7 @@ static LangSlot slots[LANG_VM_SLOTS];
 static char source_buffer[LANG_SOURCE_MAX];
 static uint8_t code_buffer[LANG_CODE_MAX];
 static uint8_t file_buffer[LANG_FILE_MAX];
+static ChrisResult g_chris_result;
 static int g_want_debug;
 static ClvmSysFn system_fn;
 static void *system_user;
@@ -127,6 +130,18 @@ static int suffix(const char *s, const char *ext) {
             return 0;
         }
     }
+    return 1;
+}
+
+static int slot_ensure_file(int i) {
+    if (i < 0 || i >= LANG_VM_SLOTS)
+        return 0;
+    if (slots[i].file)
+        return 1;
+    slots[i].file = (uint8_t *)kmalloc(LANG_FILE_MAX);
+    if (!slots[i].file)
+        return 0;
+    slots[i].file_cap = LANG_FILE_MAX;
     return 1;
 }
 
@@ -482,16 +497,15 @@ int lang_compile(Editor *e) {
         code_size = r.code_size;
         entry = r.entry;
     } else {
-        ChrisResult r;
         if (!chrisc_compile_ex(e->name, source_buffer, (size_t)slen(source_buffer),
                                chrisc_fs_read, 0, code_buffer, sizeof(code_buffer),
-                               &r)) {
-            chris_diag_status(e, &r.diag);
+                               &g_chris_result)) {
+            chris_diag_status(e, &g_chris_result.diag);
             return 0;
         }
-        code_size = r.code_size;
-        entry = r.entry;
-        lang_write_map(name, &r);
+        code_size = g_chris_result.code_size;
+        entry = g_chris_result.entry;
+        lang_write_map(name, &g_chris_result);
     }
     if (code_size > 65535u || entry > 65535u)
         file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
@@ -574,7 +588,11 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
         status(e, "run: all VM slots busy");
         return 0;
     }
-    n = fs_read(name, slots[i].file, sizeof(slots[i].file));
+    if (!slot_ensure_file(i)) {
+        status(e, "run: no memory");
+        return 0;
+    }
+    n = fs_read(name, slots[i].file, (int)slots[i].file_cap);
     if (n < 0) {
         status(e, "run: .CLV not found");
         return 0;
@@ -676,13 +694,12 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
         code_size = r.code_size;
         entry = r.entry;
     } else {
-        ChrisResult r;
         if (!chrisc_compile_ex(src_path, source_buffer, (size_t)n, chrisc_fs_read, 0,
-                               code_buffer, sizeof(code_buffer), &r)) {
+                               code_buffer, sizeof(code_buffer), &g_chris_result)) {
             return 0;
         }
-        code_size = r.code_size;
-        entry = r.entry;
+        code_size = g_chris_result.code_size;
+        entry = g_chris_result.entry;
     }
     if (code_size > 65535u || entry > 65535u)
         file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
@@ -700,7 +717,6 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
 
 int lang_compile_many(const char **paths, int npaths) {
     char outn[LANG_NAME_MAX];
-    ChrisResult r;
     size_t code_size;
     uint32_t entry;
     size_t file_size;
@@ -709,11 +725,11 @@ int lang_compile_many(const char **paths, int npaths) {
     if (!output_name(paths[0], outn))
         return 0;
     if (!chrisc_compile_files(paths, npaths, chrisc_fs_read, 0, code_buffer,
-                              sizeof(code_buffer), &r))
+                              sizeof(code_buffer), &g_chris_result))
         return 0;
-    code_size = r.code_size;
-    entry = r.entry;
-    lang_write_map(outn, &r);
+    code_size = g_chris_result.code_size;
+    entry = g_chris_result.entry;
+    lang_write_map(outn, &g_chris_result);
     if (code_size > 65535u || entry > 65535u)
         file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
                                        CLVM_FLAG_GAME, entry, 0,
@@ -725,6 +741,51 @@ int lang_compile_many(const char **paths, int npaths) {
     if (!file_size)
         return 0;
     return fs_write(outn, file_buffer, (int)file_size) >= 0;
+}
+
+int lang_compile_list(const char *lst_path) {
+    static char lst[16384];
+    static char paths[LANG_LST_MAX][FS_PATH];
+    const char *pp[LANG_LST_MAX];
+    int n;
+    int npaths = 0;
+    int p;
+    if (!lst_path)
+        return 0;
+    n = fs_read(lst_path, lst, (int)sizeof(lst) - 1);
+    if (n < 0)
+        return 0;
+    lst[n] = 0;
+    p = 0;
+    while (p < n && npaths < LANG_LST_MAX) {
+        int j = 0;
+        while (p < n && (lst[p] == ' ' || lst[p] == '\t' || lst[p] == '\r' ||
+                         lst[p] == '\n'))
+            p++;
+        if (p >= n)
+            break;
+        if (lst[p] == '#') {
+            while (p < n && lst[p] != '\n')
+                p++;
+            continue;
+        }
+        while (p < n && lst[p] != '\n' && lst[p] != '\r' && j < FS_PATH - 1) {
+            paths[npaths][j++] = lst[p++];
+        }
+        while (j > 0 && (paths[npaths][j - 1] == ' ' ||
+                         paths[npaths][j - 1] == '\t'))
+            j--;
+        paths[npaths][j] = 0;
+        if (j > 0) {
+            pp[npaths] = paths[npaths];
+            npaths++;
+        }
+        if (p < n && (lst[p] == '\n' || lst[p] == '\r'))
+            p++;
+    }
+    if (npaths < 1)
+        return 0;
+    return lang_compile_many(pp, npaths);
 }
 
 int lang_splash_start(const char *name) {
@@ -739,7 +800,10 @@ int lang_splash_start(const char *name) {
     if (slots[i].used) {
         lang_kill(i);
     }
-    n = fs_read(name, slots[i].file, sizeof(slots[i].file));
+    if (!slot_ensure_file(i)) {
+        return 0;
+    }
+    n = fs_read(name, slots[i].file, (int)slots[i].file_cap);
     if (n < 0) {
         return 0;
     }
@@ -874,6 +938,11 @@ int lang_kill(int slot) {
     lang_slot_release_gfx(slot);
     clvm_sys_close_slot(slots[slot].gfx.slot_id >= 0 ? slots[slot].gfx.slot_id
                                                     : slot);
+    if (slots[slot].file) {
+        kfree(slots[slot].file);
+        slots[slot].file = 0;
+        slots[slot].file_cap = 0;
+    }
     slots[slot].used = 0;
     slots[slot].task_id = -1;
     slots[slot].name[0] = 0;

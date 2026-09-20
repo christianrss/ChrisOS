@@ -27,6 +27,7 @@ static void cfs_work_free(void *p) {
 }
 
 #define CFS_COMP_MAX CFS_NAME_MAX
+#define CFS_DIR_MAX_BLOCKS (CFS_DIRECT_COUNT + CFS_PTRS_PER_BLOCK)
 
 static void bytes_zero(void *dst, uint32_t n) {
     uint8_t *p = dst;
@@ -622,15 +623,25 @@ static int dir_find(Cfs *fs, uint32_t dir_id, const char *name,
     int rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
     if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
-    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!dir.direct[b]) continue;
-        if (!data_lba_valid(dir.direct[b])) return CFS_ECORRUPT;
-        rc = cache_read(fs, dir.direct[b], fs->sector);
-        if (rc != CFS_OK) return rc;
+    for (b = 0; b < CFS_DIR_MAX_BLOCKS; b++) {
+        uint32_t lba;
+        rc = file_lba(fs, &dir, b, &lba, 0);
+        if (rc != CFS_OK) {
+            continue;
+        }
+        if (!data_lba_valid(lba)) {
+            return CFS_ECORRUPT;
+        }
+        rc = cache_read(fs, lba, fs->sector);
+        if (rc != CFS_OK) {
+            return rc;
+        }
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
             cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
             if (e.inode && e.name_len && name_equal(&e, name, name_len)) {
-                if (e.inode >= CFS_INODE_COUNT) return CFS_ECORRUPT;
+                if (e.inode >= CFS_INODE_COUNT) {
+                    return CFS_ECORRUPT;
+                }
                 *inode_id = e.inode;
                 return CFS_OK;
             }
@@ -646,13 +657,21 @@ static int dir_count(Cfs *fs, uint32_t dir_id, uint32_t *count) {
     int rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
     if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
-    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!dir.direct[b]) continue;
-        rc = cache_read(fs, dir.direct[b], fs->sector);
-        if (rc != CFS_OK) return rc;
+    for (b = 0; b < CFS_DIR_MAX_BLOCKS; b++) {
+        uint32_t lba;
+        rc = file_lba(fs, &dir, b, &lba, 0);
+        if (rc != CFS_OK) {
+            continue;
+        }
+        rc = cache_read(fs, lba, fs->sector);
+        if (rc != CFS_OK) {
+            return rc;
+        }
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
             cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
-            if (e.inode && e.name_len) n++;
+            if (e.inode && e.name_len) {
+                n++;
+            }
         }
     }
     *count = n;
@@ -663,41 +682,60 @@ static int dir_add(Cfs *fs, uint32_t dir_id, const char *name,
                    uint32_t name_len, uint32_t inode_id, uint8_t type) {
     CfsInode dir;
     CfsDirent e;
-    uint32_t b, slot, target_b = CFS_DIRECT_COUNT;
+    uint32_t b, slot;
+    uint32_t target_lba = 0;
     uint32_t target_slot = 0u;
+    int found = 0;
     int rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
     if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
 
-    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!dir.direct[b]) continue;
-        rc = cache_read(fs, dir.direct[b], fs->sector);
-        if (rc != CFS_OK) return rc;
+    for (b = 0; b < CFS_DIR_MAX_BLOCKS; b++) {
+        uint32_t lba;
+        rc = file_lba(fs, &dir, b, &lba, 0);
+        if (rc != CFS_OK) {
+            continue;
+        }
+        rc = cache_read(fs, lba, fs->sector);
+        if (rc != CFS_OK) {
+            return rc;
+        }
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
             cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
-            if (!e.inode && target_b == CFS_DIRECT_COUNT) {
-                target_b = b;
+            if (!e.inode && !found) {
+                target_lba = lba;
                 target_slot = slot;
+                found = 1;
             }
         }
     }
 
-    if (target_b == CFS_DIRECT_COUNT) {
-        for (b = 0; b < CFS_DIRECT_COUNT; b++)
-            if (!dir.direct[b]) break;
-        if (b == CFS_DIRECT_COUNT) return CFS_ENOSPC;
-        rc = block_alloc(fs, &dir.direct[b]);
-        if (rc != CFS_OK) return rc;
-        rc = inode_write(fs, dir_id, &dir);
-        if (rc != CFS_OK) {
-            (void)block_free(fs, dir.direct[b]);
-            return rc;
+    if (!found) {
+        for (b = 0; b < CFS_DIR_MAX_BLOCKS; b++) {
+            uint32_t lba;
+            rc = file_lba(fs, &dir, b, &lba, 0);
+            if (rc == CFS_OK) {
+                continue;
+            }
+            rc = file_lba(fs, &dir, b, &lba, 1);
+            if (rc != CFS_OK) {
+                return rc;
+            }
+            rc = inode_write(fs, dir_id, &dir);
+            if (rc != CFS_OK) {
+                return rc;
+            }
+            target_lba = lba;
+            target_slot = 0u;
+            found = 1;
+            break;
         }
-        target_b = b;
-        target_slot = 0u;
+        if (!found) {
+            return CFS_ENOSPC;
+        }
     }
 
-    rc = cache_read(fs, dir.direct[target_b], fs->sector);
+    rc = cache_read(fs, target_lba, fs->sector);
     if (rc != CFS_OK) return rc;
     bytes_zero(&e, (uint32_t)sizeof(e));
     e.inode = inode_id;
@@ -705,7 +743,7 @@ static int dir_add(Cfs *fs, uint32_t dir_id, const char *name,
     e.name_len = (uint8_t)name_len;
     for (b = 0; b < name_len; b++) e.name[b] = (uint8_t)name[b];
     cfs_dirent_encode(fs->sector + target_slot * CFS_DIRENT_SIZE, &e);
-    rc = cache_write(fs, dir.direct[target_b], fs->sector);
+    rc = cache_write(fs, target_lba, fs->sector);
     if (rc != CFS_OK) return rc;
     dir.size += CFS_DIRENT_SIZE;
     return inode_write(fs, dir_id, &dir);
@@ -719,19 +757,28 @@ static int dir_remove(Cfs *fs, uint32_t dir_id, const char *name,
     int rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
     if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
-    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!dir.direct[b]) continue;
-        rc = cache_read(fs, dir.direct[b], fs->sector);
-        if (rc != CFS_OK) return rc;
+    for (b = 0; b < CFS_DIR_MAX_BLOCKS; b++) {
+        uint32_t lba;
+        rc = file_lba(fs, &dir, b, &lba, 0);
+        if (rc != CFS_OK) {
+            continue;
+        }
+        rc = cache_read(fs, lba, fs->sector);
+        if (rc != CFS_OK) {
+            return rc;
+        }
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
             cfs_dirent_decode(&e, fs->sector + slot * CFS_DIRENT_SIZE);
             if (e.inode && e.name_len && name_equal(&e, name, name_len)) {
                 bytes_zero(&e, (uint32_t)sizeof(e));
                 cfs_dirent_encode(fs->sector + slot * CFS_DIRENT_SIZE, &e);
-                rc = cache_write(fs, dir.direct[b], fs->sector);
-                if (rc != CFS_OK) return rc;
-                if (dir.size >= CFS_DIRENT_SIZE)
+                rc = cache_write(fs, lba, fs->sector);
+                if (rc != CFS_OK) {
+                    return rc;
+                }
+                if (dir.size >= CFS_DIRENT_SIZE) {
                     dir.size -= CFS_DIRENT_SIZE;
+                }
                 return inode_write(fs, dir_id, &dir);
             }
         }
@@ -1258,10 +1305,16 @@ static int list_dir_inode(Cfs *fs, uint32_t dir_id, CfsListFn fn, void *ctx) {
     rc = inode_read(fs, dir_id, &dir);
     if (rc != CFS_OK) return rc;
     if (dir.type != CFS_INODE_DIR) return CFS_ENOTDIR;
-    for (b = 0; b < CFS_DIRECT_COUNT; b++) {
-        if (!dir.direct[b]) continue;
-        rc = cache_read(fs, dir.direct[b], dirsec);
-        if (rc != CFS_OK) return rc;
+    for (b = 0; b < CFS_DIR_MAX_BLOCKS; b++) {
+        uint32_t lba;
+        rc = file_lba(fs, &dir, b, &lba, 0);
+        if (rc != CFS_OK) {
+            continue;
+        }
+        rc = cache_read(fs, lba, dirsec);
+        if (rc != CFS_OK) {
+            return rc;
+        }
         for (slot = 0; slot < CFS_DIRENTS_PER_SECTOR; slot++) {
             cfs_dirent_decode(&e, dirsec + slot * CFS_DIRENT_SIZE);
             if (!e.inode || !e.name_len) continue;

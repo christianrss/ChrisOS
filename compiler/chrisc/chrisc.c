@@ -3,25 +3,34 @@
 #include "../clvm/clvm_vm.h"
 #include "../clvm/clasm.h"
 
-#define TOK_MAX 65536
-#define NODE_MAX 32768
-#define ARG_MAX 16384
-#define SYM_MAX 4096
+#define TOK_MAX 262144
+#define NODE_MAX 131072
+#define ARG_MAX 65536
+#define SYM_MAX 16384
 #define NAME_MAX 48
-#define FUNC_MAX 512
-#define STRUCT_MAX 256
-#define FIELD_MAX 32
+#define FUNC_MAX 4096
+#define STRUCT_MAX 1024
+#define FIELD_MAX 96
 #define FUNC_ARG_MAX 16
-#define FNPTR_MAX 256
-#define GINIT_MAX 128
-#define CALL_PATCH_MAX 1024
-#define INCLUDE_MAX 32
-#define INCLUDE_DEPTH 8
-#define FILE_NAME_MAX 64
-#define MAP_MAX 2048
-#define STR_POOL_MAX 8192
+#define FNPTR_MAX 1024
+#define GINIT_MAX 2048
+#define CALL_PATCH_MAX 8192
+#define INCLUDE_MAX 1024
+#define INCLUDE_DEPTH 16
+#define FILE_NAME_MAX 128
+#define MAP_MAX 8192
+#define STR_POOL_MAX 131072
 #define LOOP_MAX 16
-#define LOOP_PATCH_MAX 32
+#define LOOP_PATCH_MAX 256
+#define DEF_MAX 4096
+#define DEF_BODY 8192
+#define DEF_PARAM_MAX 16
+#define DEF_PARAM_LEN 24
+#define ENUM_MAX 4096
+#define TYPEDEF_MAX 1024
+#define LABEL_MAX 1024
+#define SWITCH_CASE_MAX 256
+#define PRAGMA_ONCE_MAX 64
 
 typedef enum TokenKind {
     T_EOF = 0, T_ID, T_NUM, T_FNUM, T_STR, T_VOID, T_INT, T_FLOAT, T_CHAR,
@@ -34,7 +43,8 @@ typedef enum TokenKind {
     T_VOLATILE, T_ENUM, T_UNION, T_TYPEDEF, T_SWITCH, T_CASE, T_DEFAULT,
     T_DO, T_GOTO, T_SIZEOF, T_ASM, T_AMP, T_PIPE, T_CARET, T_TILDE,
     T_LSH, T_RSH, T_PLUSPLUS, T_MINUSMINUS, T_PLUSEQ, T_MINUSEQ, T_STAREQ,
-    T_SLASHEQ, T_QUESTION, T_COLON, T_ELLIPSIS, T_ARROW, T_GENERIC,
+    T_SLASHEQ, T_AMPEQ, T_PIPEEQ, T_CARETEQ, T_PERCENTEQ, T_LSHEQ, T_RSHEQ,
+    T_QUESTION, T_COLON, T_ELLIPSIS, T_ARROW, T_GENERIC,
     T_STATIC_ASSERT, T_ALIGNAS, T_ALIGNOF, T_BOOL, T_INLINE, T_RESTRICT,
     T_NORETURN, T_THREADLOCAL, T_COMPLEX, T_IF0
 } TokenKind;
@@ -55,7 +65,8 @@ typedef enum NodeKind {
     N_BITAND, N_BITOR, N_BITXOR, N_SHL, N_SHR, N_BITNOT,
     N_ADDR, N_DEREF, N_SIZEOF, N_CAST, N_TERNARY, N_COMMA,
     N_PREINC, N_PREDEC, N_POSTINC, N_POSTDEC, N_ARROW,
-    N_SWITCH, N_CASE, N_DEFAULT, N_DO, N_GOTO, N_LABEL, N_ASM, N_FNPTR
+    N_SWITCH, N_CASE, N_DEFAULT, N_DO, N_GOTO, N_LABEL, N_ASM, N_FNPTR,
+    N_DEREF_ASSIGN, N_PTRFIELD
 } NodeKind;
 
 typedef struct Node {
@@ -64,6 +75,7 @@ typedef struct Node {
     int32_t value;
     int line, column;
     uint8_t is_float;
+    int16_t sid;
     char name[NAME_MAX];
 } Node;
 
@@ -85,6 +97,7 @@ typedef struct CastType {
     uint8_t is_bool;
     uint8_t pointee;
     uint8_t pointee_float;
+    int16_t sid;
 } CastType;
 
 typedef struct Symbol {
@@ -96,11 +109,12 @@ typedef struct Symbol {
     uint8_t is_ptr;
     uint8_t is_unsigned;
     uint8_t is_global;
-    uint8_t scope;
+    uint16_t scope;
     uint8_t width;
     uint8_t pointee;
-    int8_t struct_id;
+    int16_t struct_id;
     uint16_t stride;
+    uint16_t array_n;
 } Symbol;
 
 typedef struct StructDef {
@@ -108,10 +122,22 @@ typedef struct StructDef {
     int nfields;
     char fname[FIELD_MAX][NAME_MAX];
     uint8_t is_float[FIELD_MAX];
-    uint8_t fwidth[FIELD_MAX];
+    uint8_t fptr[FIELD_MAX];
+    uint16_t fwidth[FIELD_MAX];
     uint16_t foff[FIELD_MAX];
+    int16_t fstruct[FIELD_MAX];
     uint16_t size;
+    uint8_t packed;
 } StructDef;
+
+typedef struct DeclType {
+    uint16_t w;
+    uint8_t ptr;
+    uint8_t isf;
+    uint8_t uns;
+    uint8_t is_void;
+    int16_t sid;
+} DeclType;
 
 typedef struct FuncDef {
     char name[NAME_MAX];
@@ -124,6 +150,7 @@ typedef struct FuncDef {
     int entry;
     uint8_t is_main;
     uint8_t is_varargs;
+    int16_t ret_sid;
 } FuncDef;
 
 typedef struct CallPatch {
@@ -188,33 +215,45 @@ typedef struct Compiler {
     int pp_skip;
     int pp_depth;
     int pp_true[16];
+    int pp_taken[16];
     int ndef;
-    char def_name[128][NAME_MAX];
-    char def_body[128][160];
-    int def_fn[128];
+    char def_name[DEF_MAX][NAME_MAX];
+    char def_body[DEF_MAX][DEF_BODY];
+    int def_fn[DEF_MAX];
+    int def_nparam[DEF_MAX];
+    char def_param[DEF_MAX][DEF_PARAM_MAX][DEF_PARAM_LEN];
     int nlabels;
-    char label_name[256][NAME_MAX];
-    int label_pc[256];
+    char label_name[LABEL_MAX][NAME_MAX];
+    int label_pc[LABEL_MAX];
     int ngoto;
-    int goto_at[256];
-    char goto_name[256][NAME_MAX];
+    int goto_at[LABEL_MAX];
+    char goto_name[LABEL_MAX][NAME_MAX];
     int ntypedef;
-    char td_name[64][NAME_MAX];
-    int td_width[64];
-    int td_ptr[64];
+    char td_name[TYPEDEF_MAX][NAME_MAX];
+    int td_width[TYPEDEF_MAX];
+    int td_ptr[TYPEDEF_MAX];
+    int td_struct[TYPEDEF_MAX];
     int nconst;
-    char const_name[128][NAME_MAX];
-    int32_t const_val[128];
+    char const_name[ENUM_MAX][NAME_MAX];
+    int32_t const_val[ENUM_MAX];
     int pragma_once_n;
-    char pragma_once[32][FILE_NAME_MAX];
+    char pragma_once[PRAGMA_ONCE_MAX][FILE_NAME_MAX];
     int scope_sp;
     int scope_seq;
     int scope_stack[32];
+    int tu_id;
+    uint8_t saw_static;
+    uint8_t pack_pragma;
+    int pp_line;
+    int pp_file;
 } Compiler;
 
 static Compiler g_chrisc;
 static char g_unit[CHRIS_SOURCE_MAX];
-static char g_inc[INCLUDE_DEPTH][CHRIS_SOURCE_MAX];
+static char g_tu[CHRIS_SOURCE_MAX];
+static char g_inc[INCLUDE_DEPTH][CHRIS_INC_MAX];
+static char g_line_exp[16384];
+static char g_logical[32768];
 
 static const Builtin builtins[] = {
     {"pixel", 1, 3, 0, 0}, {"rect", 2, 5, 0, 0}, {"line", 3, 5, 0, 0},
@@ -235,7 +274,9 @@ static const Builtin builtins[] = {
     {"setjmp", 58, 1, 1, 0}, {"longjmp", 59, 2, 0, 0},
     {"gc_alloc", 70, 1, 1, 0}, {"gc_collect", 71, 0, 0, 0},
     {"thrd_create", 62, 2, 1, 0}, {"thrd_join", 63, 1, 1, 0},
-    {"cla_load", 64, 1, 1, 0}
+    {"cla_load", 64, 1, 1, 0},
+    {"fseek", 65, 2, 1, 0},
+    {"fb_blit", 72, 3, 0, 0}, {"setpal", 73, 1, 0, 0}
 };
 
 static int alpha(int c) {
@@ -398,6 +439,9 @@ static TokenKind keyword(const char *s) {
     if (same(s, "_Bool") || same(s, "bool")) {
         return T_BOOL;
     }
+    if (same(s, "register") || same(s, "auto")) {
+        return T_INLINE;
+    }
     if (same(s, "inline") || same(s, "_Inline")) {
         return T_INLINE;
     }
@@ -531,6 +575,8 @@ static int unit_put(size_t *ulen, int ch) {
 
 static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                        size_t *ulen, int *unit_line, int depth);
+static int sys_inc_map(const char *inc, char *out, int cap);
+static size_t compact_line_cont(char *s, size_t n);
 
 static int expand_include(Compiler *c, const char *cur_path, const char *inc,
                           size_t *ulen, int *unit_line, int depth) {
@@ -545,7 +591,15 @@ static int expand_include(Compiler *c, const char *cur_path, const char *inc,
     if (!resolve_include(cur_path, inc, resolved, FILE_NAME_MAX)) {
         return fail(c, *unit_line, 1, "bad include path");
     }
-    n = c->read_fn(c->read_user, resolved, g_inc[depth], (int)CHRIS_SOURCE_MAX - 1);
+    n = c->read_fn(c->read_user, resolved, g_inc[depth], (int)CHRIS_INC_MAX - 1);
+    if (n < 0) {
+        char mapped[FILE_NAME_MAX];
+        if (sys_inc_map(inc, mapped, FILE_NAME_MAX)) {
+            text(resolved, FILE_NAME_MAX, mapped);
+            n = c->read_fn(c->read_user, resolved, g_inc[depth],
+                           (int)CHRIS_INC_MAX - 1);
+        }
+    }
     if (n < 0 && !has_slash(inc)) {
         resolved[0] = 'L';
         resolved[1] = 'I';
@@ -560,12 +614,13 @@ static int expand_include(Compiler *c, const char *cur_path, const char *inc,
             resolved[4 + k] = 0;
         }
         n = c->read_fn(c->read_user, resolved, g_inc[depth],
-                       (int)CHRIS_SOURCE_MAX - 1);
+                       (int)CHRIS_INC_MAX - 1);
     }
     if (n < 0) {
         return fail(c, *unit_line, 1, "include not found");
     }
     g_inc[depth][n] = 0;
+    n = (int)compact_line_cont(g_inc[depth], (size_t)n);
     return expand_file(c, resolved, g_inc[depth], (size_t)n, ulen, unit_line,
                        depth + 1);
 }
@@ -647,6 +702,68 @@ static int def_find(Compiler *c, const char *name) {
     return -1;
 }
 
+static void add_def(Compiler *c, const char *name, const char *body) {
+    int di;
+    if (!name || c->ndef >= DEF_MAX) {
+        return;
+    }
+    di = def_find(c, name);
+    if (di < 0) {
+        di = c->ndef++;
+        text(c->def_name[di], NAME_MAX, name);
+    }
+    text(c->def_body[di], DEF_BODY, body ? body : "1");
+    c->def_fn[di] = 0;
+    c->def_nparam[di] = 0;
+}
+
+static void add_builtin_macros(Compiler *c) {
+    add_def(c, "__CHRISC__", "1");
+    add_def(c, "__GNUC__", "1");
+    add_def(c, "NORMALUNIX", "1");
+    add_def(c, "__BYTE_ORDER__", "1234");
+    add_def(c, "__ORDER_LITTLE_ENDIAN__", "1234");
+    add_def(c, "__ORDER_BIG_ENDIAN__", "4321");
+}
+
+static int sys_inc_map(const char *inc, char *out, int cap) {
+    static const char *pairs[][2] = {
+        {"stdio.h", "LIB/STDIO.H"},
+        {"stdlib.h", "LIB/STDLIB.H"},
+        {"string.h", "LIB/STRING.H"},
+        {"strings.h", "LIB/STRINGS.H"},
+        {"stddef.h", "LIB/STDDEF.H"},
+        {"stdint.h", "LIB/STDINT.H"},
+        {"stdarg.h", "LIB/STDARG.H"},
+        {"ctype.h", "LIB/CTYPE.H"},
+        {"math.h", "LIB/MATH.H"},
+        {"setjmp.h", "LIB/SETJMP.H"},
+        {"inttypes.h", "LIB/INTTYPES.H"},
+        {"stdbool.h", "LIB/STDBOOL.H"},
+        {"limits.h", "LIB/LIMITS.H"},
+        {"assert.h", "LIB/ASSERT.H"},
+        {"errno.h", "LIB/ERRNO.H"},
+        {"unistd.h", "LIB/UNISTD.H"},
+        {"fcntl.h", "LIB/FCNTL.H"},
+        {"time.h", "LIB/TIME.H"},
+        {"memory.h", "LIB/STRING.H"},
+        {"sys/types.h", "LIB/SYS_TYPES.H"},
+        {"sys/stat.h", "LIB/SYS_STAT.H"},
+        {0, 0}
+    };
+    int i;
+    if (!inc || !out || cap < 2) {
+        return 0;
+    }
+    for (i = 0; pairs[i][0]; ++i) {
+        if (same(inc, pairs[i][0])) {
+            text(out, (size_t)cap, pairs[i][1]);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int once_has(Compiler *c, const char *path) {
     int i;
     for (i = 0; i < c->pragma_once_n; ++i) {
@@ -655,6 +772,32 @@ static int once_has(Compiler *c, const char *path) {
         }
     }
     return 0;
+}
+
+static size_t compact_line_cont(char *s, size_t n) {
+    size_t i = 0;
+    size_t o = 0;
+    if (!s) {
+        return 0;
+    }
+    while (i < n) {
+        if (s[i] == '\\' && i + 1 < n) {
+            size_t j = i + 1;
+            if (s[j] == '\r' && j + 1 < n && s[j + 1] == '\n') {
+                s[o++] = ' ';
+                i = j + 2;
+                continue;
+            }
+            if (s[j] == '\n') {
+                s[o++] = ' ';
+                i = j + 1;
+                continue;
+            }
+        }
+        s[o++] = s[i++];
+    }
+    s[o] = 0;
+    return o;
 }
 
 static int ident_at(const char *s, size_t n, size_t i, char *name, int cap) {
@@ -837,48 +980,252 @@ static int pp_eval_bin(Compiler *c, const char *s, size_t n, size_t *i, int lhs,
 static int expand_macros_line(Compiler *c, const char *in, size_t n, char *out, int cap) {
     size_t i = 0;
     int o = 0;
+    static int edepth;
     while (i < n) {
         char name[NAME_MAX];
         int k;
         int d;
+        if (in[i] == '"' || in[i] == '\'') {
+            char q = in[i];
+            if (o + 1 < cap) {
+                out[o++] = in[i];
+            }
+            ++i;
+            while (i < n && in[i] != q) {
+                if (in[i] == '\\' && i + 1 < n) {
+                    if (o + 1 < cap) {
+                        out[o++] = in[i];
+                    }
+                    ++i;
+                }
+                if (o + 1 < cap) {
+                    out[o++] = in[i];
+                }
+                ++i;
+            }
+            if (i < n) {
+                if (o + 1 < cap) {
+                    out[o++] = in[i];
+                }
+                ++i;
+            }
+            continue;
+        }
         if (alpha((unsigned char)in[i])) {
             k = ident_at(in, n, i, name, NAME_MAX);
             i += (size_t)k;
+            if (same(name, "__LINE__")) {
+                int v = c->pp_line > 0 ? c->pp_line : 1;
+                char buf[16];
+                int bi = 0;
+                int p;
+                if (v == 0) {
+                    buf[bi++] = '0';
+                } else {
+                    char rev[16];
+                    int ri = 0;
+                    while (v > 0 && ri < 15) {
+                        rev[ri++] = (char)('0' + (v % 10));
+                        v /= 10;
+                    }
+                    while (ri) {
+                        buf[bi++] = rev[--ri];
+                    }
+                }
+                for (p = 0; p < bi && o + 1 < cap; p++) {
+                    out[o++] = buf[p];
+                }
+                continue;
+            }
+            if (same(name, "__FILE__")) {
+                const char *fp = "\"\"";
+                int p;
+                if (c->pp_file >= 0 && c->pp_file < c->nfiles) {
+                    fp = c->files[c->pp_file];
+                }
+                if (o + 1 < cap) {
+                    out[o++] = '"';
+                }
+                for (p = 0; fp[p] && o + 1 < cap; p++) {
+                    out[o++] = fp[p];
+                }
+                if (o + 1 < cap) {
+                    out[o++] = '"';
+                }
+                continue;
+            }
             d = def_find(c, name);
             if (d >= 0 && !c->def_fn[d]) {
-                int b = 0;
-                while (c->def_body[d][b] && o + 1 < cap) {
-                    out[o++] = c->def_body[d][b++];
+                if (edepth < 8) {
+                    char inner[DEF_BODY];
+                    size_t bn = 0;
+                    int ilen;
+                    int b = 0;
+                    while (c->def_body[d][bn]) {
+                        bn++;
+                    }
+                    edepth++;
+                    ilen = expand_macros_line(c, c->def_body[d], bn, inner,
+                                             DEF_BODY);
+                    edepth--;
+                    while (b < ilen && o + 1 < cap) {
+                        out[o++] = inner[b++];
+                    }
+                } else {
+                    int b = 0;
+                    while (c->def_body[d][b] && o + 1 < cap) {
+                        out[o++] = c->def_body[d][b++];
+                    }
                 }
             } else if (d >= 0 && c->def_fn[d]) {
-                /* function-like: copy name(args) then substitute simply by appending body */
-                int b = 0;
+                char args[DEF_PARAM_MAX][256];
+                int nargs = 0;
+                int p;
                 while (i < n && (in[i] == ' ' || in[i] == '\t')) {
                     ++i;
                 }
+                for (p = 0; p < DEF_PARAM_MAX; ++p) {
+                    args[p][0] = 0;
+                }
                 if (i < n && in[i] == '(') {
                     int depth = 0;
-                    do {
-                        if (in[i] == '(') {
+                    int ai = 0;
+                    int inq = 0;
+                    ++i;
+                    nargs = 1;
+                    while (i < n && !(depth == 0 && !inq && in[i] == ')')) {
+                        if (!inq && in[i] == '(') {
                             ++depth;
-                        }
-                        if (in[i] == ')') {
+                        } else if (!inq && in[i] == ')') {
                             --depth;
+                        } else if (in[i] == '"' || in[i] == '\'') {
+                            inq = inq ? 0 : 1;
+                        } else if (inq && in[i] == '\\' && i + 1 < n) {
+                            if (nargs > 0 && nargs <= DEF_PARAM_MAX && ai < 255) {
+                                args[nargs - 1][ai++] = in[i];
+                                args[nargs - 1][ai] = 0;
+                            }
+                            ++i;
+                        }
+                        if (!inq && depth == 0 && in[i] == ',') {
+                            if (ai < 255)
+                                args[nargs - 1][ai] = 0;
+                            if (nargs < DEF_PARAM_MAX) {
+                                nargs++;
+                                ai = 0;
+                            }
+                            ++i;
+                            continue;
+                        }
+                        if (nargs > 0 && nargs <= DEF_PARAM_MAX && ai < 255) {
+                            args[nargs - 1][ai++] = in[i];
+                            args[nargs - 1][ai] = 0;
                         }
                         ++i;
-                    } while (i < n && depth > 0);
+                    }
+                    if (i < n && in[i] == ')') {
+                        ++i;
+                    }
+                    if (nargs == 1 && args[0][0] == 0) {
+                        nargs = 0;
+                    }
+                } else {
+                    int t = 0;
+                    while (name[t] && o + 1 < cap) {
+                        out[o++] = name[t++];
+                    }
+                    continue;
                 }
-                while (c->def_body[d][b] && o + 1 < cap) {
-                    if (c->def_body[d][b] == '#' && c->def_body[d][b + 1] == '#') {
-                        b += 2;
-                        continue;
+                {
+                    char produced[DEF_BODY];
+                    int po = 0;
+                    int b = 0;
+                    const char *body = c->def_body[d];
+                    while (body[b] && po + 1 < DEF_BODY) {
+                        if (body[b] == '#' && body[b + 1] == '#') {
+                            b += 2;
+                            continue;
+                        }
+                        if (body[b] == '#' && alpha((unsigned char)body[b + 1])) {
+                            char pn[NAME_MAX];
+                            int pk = ident_at(body, 512, (size_t)(b + 1), pn, NAME_MAX);
+                            int pi;
+                            produced[po++] = '"';
+                            for (pi = 0; pi < c->def_nparam[d]; ++pi) {
+                                if (same(c->def_param[d][pi], pn)) {
+                                    int a = 0;
+                                    while (args[pi][a] && po + 1 < DEF_BODY) {
+                                        produced[po++] = args[pi][a++];
+                                    }
+                                    break;
+                                }
+                            }
+                            if (po + 1 < DEF_BODY)
+                                produced[po++] = '"';
+                            b += 1 + pk;
+                            continue;
+                        }
+                        if (alpha((unsigned char)body[b])) {
+                            char pn[NAME_MAX];
+                            int pk = ident_at(body, 512, (size_t)b, pn, NAME_MAX);
+                            int pi;
+                            int sub = 0;
+                            for (pi = 0; pi < c->def_nparam[d]; ++pi) {
+                                if (same(c->def_param[d][pi], pn)) {
+                                    if (edepth < 8) {
+                                        char inner[256];
+                                        size_t alen = 0;
+                                        int ilen;
+                                        int a = 0;
+                                        while (args[pi][alen]) {
+                                            alen++;
+                                        }
+                                        edepth++;
+                                        ilen = expand_macros_line(c, args[pi], alen,
+                                                                 inner, 256);
+                                        edepth--;
+                                        while (a < ilen && po + 1 < DEF_BODY) {
+                                            produced[po++] = inner[a++];
+                                        }
+                                    } else {
+                                        int a = 0;
+                                        while (args[pi][a] && po + 1 < DEF_BODY) {
+                                            produced[po++] = args[pi][a++];
+                                        }
+                                    }
+                                    sub = 1;
+                                    break;
+                                }
+                            }
+                            if (!sub) {
+                                int t = 0;
+                                while (pn[t] && po + 1 < DEF_BODY) {
+                                    produced[po++] = pn[t++];
+                                }
+                            }
+                            b += pk;
+                            continue;
+                        }
+                        produced[po++] = body[b++];
                     }
-                    if (c->def_body[d][b] == '#' ) {
-                        out[o++] = '"';
-                        ++b;
-                        continue;
+                    produced[po] = 0;
+                    if (edepth < 8) {
+                        char inner[DEF_BODY];
+                        int ilen;
+                        int a = 0;
+                        edepth++;
+                        ilen = expand_macros_line(c, produced, (size_t)po, inner,
+                                                 DEF_BODY);
+                        edepth--;
+                        while (a < ilen && o + 1 < cap) {
+                            out[o++] = inner[a++];
+                        }
+                    } else {
+                        int a = 0;
+                        while (a < po && o + 1 < cap) {
+                            out[o++] = produced[a++];
+                        }
                     }
-                    out[o++] = c->def_body[d][b++];
                 }
             } else {
                 int b = 0;
@@ -897,6 +1244,41 @@ static int expand_macros_line(Compiler *c, const char *in, size_t n, char *out, 
         out[o] = 0;
     }
     return o;
+}
+
+static int pp_unbalanced(const char *s, size_t n) {
+    size_t i = 0;
+    int depth = 0;
+    int inq = 0;
+    int in_char = 0;
+    while (i < n) {
+        if (!inq && !in_char && s[i] == '/' && i + 1 < n && s[i + 1] == '/') {
+            break;
+        }
+        if (!inq && !in_char && s[i] == '/' && i + 1 < n && s[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < n && !(s[i] == '*' && s[i + 1] == '/')) {
+                ++i;
+            }
+            if (i + 1 < n) {
+                i += 2;
+            }
+            continue;
+        }
+        if (!in_char && s[i] == '"') {
+            inq = !inq;
+        } else if (!inq && s[i] == '\'') {
+            in_char = !in_char;
+        } else if ((inq || in_char) && s[i] == '\\' && i + 1 < n) {
+            ++i;
+        } else if (!inq && !in_char && s[i] == '(') {
+            depth++;
+        } else if (!inq && !in_char && s[i] == ')') {
+            depth--;
+        }
+        ++i;
+    }
+    return inq || in_char || depth > 0;
 }
 
 static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
@@ -923,7 +1305,7 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
         } else {
             for (d = 0; d < depth; ++d) {
                 if (open_ids[d] == fid) {
-                    return fail(c, *unit_line, 1, "include cycle");
+                    return 1;
                 }
             }
             if (depth <= INCLUDE_DEPTH) {
@@ -972,6 +1354,7 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                     c->pp_depth++;
                     if (skip) {
                         c->pp_true[c->pp_depth] = 0;
+                        c->pp_taken[c->pp_depth] = 0;
                     } else if (kw_is(ln, line_n, kw, "ifdef") ||
                                kw_is(ln, line_n, kw, "ifndef")) {
                         ident_at(ln, line_n, p, name, NAME_MAX);
@@ -980,10 +1363,12 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                             take = !take;
                         }
                         c->pp_true[c->pp_depth] = take;
+                        c->pp_taken[c->pp_depth] = take;
                     } else {
                         size_t ei = p;
                         take = pp_eval_expr(c, ln, line_n, &ei) != 0;
                         c->pp_true[c->pp_depth] = take;
+                        c->pp_taken[c->pp_depth] = take;
                     }
                 } else if (kw_is(ln, line_n, kw, "else") ||
                            kw_is(ln, line_n, kw, "elif")) {
@@ -998,7 +1383,8 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                     }
                     if (kw_is(ln, line_n, kw, "else")) {
                         c->pp_true[c->pp_depth] =
-                            parent && !c->pp_true[c->pp_depth];
+                            parent && !c->pp_taken[c->pp_depth];
+                        c->pp_taken[c->pp_depth] = 1;
                     } else {
                         size_t p = kw;
                         size_t ei;
@@ -1009,11 +1395,12 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                             ++p;
                         }
                         ei = p;
-                        if (c->pp_true[c->pp_depth] || !parent) {
+                        if (c->pp_taken[c->pp_depth] || !parent) {
                             c->pp_true[c->pp_depth] = 0;
                         } else {
                             c->pp_true[c->pp_depth] =
                                 pp_eval_expr(c, ln, line_n, &ei) != 0;
+                            c->pp_taken[c->pp_depth] = c->pp_true[c->pp_depth];
                         }
                     }
                 } else if (kw_is(ln, line_n, kw, "endif")) {
@@ -1036,19 +1423,39 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                     p += (size_t)k;
                     di = def_find(c, name);
                     if (di < 0) {
-                        if (c->ndef >= 128) {
+                        if (c->ndef >= DEF_MAX) {
                             return fail(c, orig_line, 1, "too many #define");
                         }
                         di = c->ndef++;
                         text(c->def_name[di], NAME_MAX, name);
                     }
                     c->def_fn[di] = 0;
+                    c->def_nparam[di] = 0;
                     if (p < line_n && ln[p] == '(') {
                         c->def_fn[di] = 1;
+                        ++p;
                         while (p < line_n && ln[p] != ')') {
-                            ++p;
+                            char pn[NAME_MAX];
+                            int pk;
+                            while (p < line_n && (ln[p] == ' ' || ln[p] == '\t' ||
+                                                  ln[p] == ',')) {
+                                ++p;
+                            }
+                            if (p >= line_n || ln[p] == ')') {
+                                break;
+                            }
+                            pk = ident_at(ln, line_n, p, pn, NAME_MAX);
+                            if (pk <= 0) {
+                                break;
+                            }
+                            p += (size_t)pk;
+                            if (c->def_nparam[di] < DEF_PARAM_MAX) {
+                                text(c->def_param[di][c->def_nparam[di]],
+                                     DEF_PARAM_LEN, pn);
+                                c->def_nparam[di]++;
+                            }
                         }
-                        if (p < line_n) {
+                        if (p < line_n && ln[p] == ')') {
                             ++p;
                         }
                     }
@@ -1057,10 +1464,30 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                     }
                     {
                         int b = 0;
-                        while (p < line_n && b + 1 < 160) {
+                        while (p < line_n && b + 1 < DEF_BODY) {
+                            if (ln[p] == '/' && p + 1 < line_n &&
+                                ln[p + 1] == '/') {
+                                break;
+                            }
+                            if (ln[p] == '/' && p + 1 < line_n &&
+                                ln[p + 1] == '*') {
+                                p += 2;
+                                while (p + 1 < line_n &&
+                                       !(ln[p] == '*' && ln[p + 1] == '/')) {
+                                    p++;
+                                }
+                                if (p + 1 < line_n) {
+                                    p += 2;
+                                }
+                                continue;
+                            }
                             c->def_body[di][b++] = ln[p++];
                         }
                         c->def_body[di][b] = 0;
+                        if (p < line_n && !(ln[p] == '/' && p + 1 < line_n &&
+                                            (ln[p + 1] == '/' || ln[p + 1] == '*'))) {
+                            return fail(c, orig_line, 1, "macro body too long");
+                        }
                     }
                 } else if (!skip && kw_is(ln, line_n, kw, "undef")) {
                     size_t p = kw;
@@ -1089,10 +1516,24 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                     }
                     if (p + 4 <= line_n && ln[p] == 'o' && ln[p + 1] == 'n' &&
                         ln[p + 2] == 'c' && ln[p + 3] == 'e') {
-                        if (c->pragma_once_n < 32) {
+                        if (c->pragma_once_n < PRAGMA_ONCE_MAX) {
                             text(c->pragma_once[c->pragma_once_n], FILE_NAME_MAX,
                                  path ? path : "");
                             c->pragma_once_n++;
+                        }
+                    } else if (p + 4 <= line_n && ln[p] == 'p' && ln[p + 1] == 'a' &&
+                               ln[p + 2] == 'c' && ln[p + 3] == 'k') {
+                        size_t q = p + 4;
+                        while (q < line_n && (ln[q] == ' ' || ln[q] == '\t' ||
+                                              ln[q] == '(')) {
+                            ++q;
+                        }
+                        if (q < line_n && ln[q] == '1') {
+                            c->pack_pragma = 1;
+                        } else if (q < line_n && ln[q] == '0') {
+                            c->pack_pragma = 0;
+                        } else if (q < line_n && ln[q] == ')') {
+                            c->pack_pragma = 0;
                         }
                     }
                 } else if (!skip && line_is_include(ln, line_n, inc,
@@ -1112,14 +1553,54 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                     /* ignore */
                 }
             } else if (!skip) {
-                char exp[CHRIS_SOURCE_MAX];
                 int elen;
                 int k;
-                elen = expand_macros_line(c, src + line_beg, line_n, exp,
-                                          (int)sizeof(exp));
+                int nphys = 1;
+                size_t o = 0;
+                size_t cap = sizeof(g_logical);
+                size_t cpy = line_n;
+                if (cpy >= cap) {
+                    cpy = cap - 1;
+                }
+                while (o < cpy) {
+                    g_logical[o] = src[line_beg + o];
+                    o++;
+                }
+                while (pp_unbalanced(g_logical, o) && i < n && src[i] == '\n') {
+                    size_t nbeg = i + 1;
+                    size_t nxt = nbeg;
+                    size_t nn;
+                    size_t kw = 0;
+                    while (nxt < n && src[nxt] != '\n') {
+                        ++nxt;
+                    }
+                    nn = nxt - nbeg;
+                    if (nbeg < n && line_starts_hash(src + nbeg, nn, &kw)) {
+                        break;
+                    }
+                    if (o + 1 < cap) {
+                        g_logical[o++] = '\n';
+                    }
+                    {
+                        size_t p;
+                        for (p = 0; p < nn && o + 1 < cap; p++) {
+                            g_logical[o++] = src[nbeg + p];
+                        }
+                    }
+                    i = nxt;
+                    nphys++;
+                }
+                g_logical[o] = 0;
+                c->pp_line = orig_line;
+                c->pp_file = fid;
+                elen = expand_macros_line(c, g_logical, o, g_line_exp,
+                                          (int)sizeof(g_line_exp));
                 for (k = 0; k < elen; ++k) {
-                    if (!unit_put(ulen, (unsigned char)exp[k])) {
+                    if (!unit_put(ulen, (unsigned char)g_line_exp[k])) {
                         return fail(c, orig_line, 1, "source too large");
+                    }
+                    if (g_line_exp[k] == '\n') {
+                        *unit_line += 1;
                     }
                 }
                 if (i < n && src[i] == '\n') {
@@ -1127,7 +1608,9 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                         return fail(c, orig_line, 1, "source too large");
                     }
                     *unit_line += 1;
-                    ++orig_line;
+                    orig_line += nphys;
+                } else {
+                    orig_line += nphys - 1;
                 }
                 if (i < n && src[i] == '\n') {
                     ++i;
@@ -1135,12 +1618,10 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                 continue;
             }
             if (i < n && src[i] == '\n') {
-                if (!skip || is_hash) {
-                    if (!unit_put(ulen, '\n')) {
-                        return fail(c, orig_line, 1, "source too large");
-                    }
-                    *unit_line += 1;
+                if (!unit_put(ulen, '\n')) {
+                    return fail(c, orig_line, 1, "source too large");
                 }
+                *unit_line += 1;
                 ++orig_line;
                 ++i;
             }
@@ -1252,6 +1733,52 @@ static int lex(Compiler *c, const char *s, size_t n) {
             }
             ++i;
             ++col;
+            for (;;) {
+                while (i < n && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r')) {
+                    ++i;
+                    ++col;
+                }
+                if (i < n && s[i] == '\n') {
+                    ++i;
+                    ++line;
+                    col = 1;
+                    continue;
+                }
+                if (i >= n || s[i] != '"') {
+                    break;
+                }
+                ++i;
+                ++col;
+                while (i < n && s[i] != '"' && s[i] != '\n') {
+                    int b2 = (unsigned char)s[i];
+                    if (s[i] == '\\' && i + 1 < n) {
+                        char e = s[i + 1];
+                        if (e == 'n') {
+                            b2 = '\n';
+                        } else if (e == 't') {
+                            b2 = '\t';
+                        } else if (e == '0') {
+                            b2 = 0;
+                        } else {
+                            b2 = (unsigned char)e;
+                        }
+                        i += 2;
+                        col += 2;
+                    } else {
+                        ++i;
+                        ++col;
+                    }
+                    if (c->str_len + 1 >= STR_POOL_MAX) {
+                        return fail(c, line, start, "string pool full");
+                    }
+                    c->str_pool[c->str_len++] = (char)b2;
+                }
+                if (i >= n || s[i] != '"') {
+                    return fail(c, line, start, "unterminated string");
+                }
+                ++i;
+                ++col;
+            }
             if (c->str_len + 1 >= STR_POOL_MAX) {
                 return fail(c, line, start, "string pool full");
             }
@@ -1411,7 +1938,6 @@ static int lex(Compiler *c, const char *s, size_t n) {
         ONE('?', T_QUESTION);
         ONE(':', T_COLON);
         ONE('~', T_TILDE);
-        ONE('^', T_CARET);
         case '+':
             if (i + 1 < n && s[i + 1] == '+') {
                 if (!token(c, T_PLUSPLUS, line, start)) return 0;
@@ -1466,7 +1992,15 @@ static int lex(Compiler *c, const char *s, size_t n) {
                 ++i; ++col;
             }
             break;
-        ONE('%', T_PERCENT);
+        case '%':
+            if (i + 1 < n && s[i + 1] == '=') {
+                if (!token(c, T_PERCENTEQ, line, start)) return 0;
+                i += 2; col += 2;
+            } else {
+                if (!token(c, T_PERCENT, line, start)) return 0;
+                ++i; ++col;
+            }
+            break;
         case '=':
             if (i + 1 < n && s[i + 1] == '=') {
                 if (!token(c, T_EQ, line, start)) {
@@ -1504,6 +2038,12 @@ static int lex(Compiler *c, const char *s, size_t n) {
                 }
                 i += 2;
                 col += 2;
+            } else if (i + 1 < n && s[i + 1] == '=') {
+                if (!token(c, T_AMPEQ, line, start)) {
+                    return 0;
+                }
+                i += 2;
+                col += 2;
             } else {
                 if (!token(c, T_AMP, line, start)) {
                     return 0;
@@ -1519,6 +2059,12 @@ static int lex(Compiler *c, const char *s, size_t n) {
                 }
                 i += 2;
                 col += 2;
+            } else if (i + 1 < n && s[i + 1] == '=') {
+                if (!token(c, T_PIPEEQ, line, start)) {
+                    return 0;
+                }
+                i += 2;
+                col += 2;
             } else {
                 if (!token(c, T_PIPE, line, start)) {
                     return 0;
@@ -1527,13 +2073,35 @@ static int lex(Compiler *c, const char *s, size_t n) {
                 ++col;
             }
             break;
-        case '<':
-            if (i + 1 < n && s[i + 1] == '<') {
-                if (!token(c, T_LSH, line, start)) {
+        case '^':
+            if (i + 1 < n && s[i + 1] == '=') {
+                if (!token(c, T_CARETEQ, line, start)) {
                     return 0;
                 }
                 i += 2;
                 col += 2;
+            } else {
+                if (!token(c, T_CARET, line, start)) {
+                    return 0;
+                }
+                ++i;
+                ++col;
+            }
+            break;
+        case '<':
+            if (i + 1 < n && s[i + 1] == '<') {
+                if (i + 2 < n && s[i + 2] == '=') {
+                    if (!token(c, T_LSHEQ, line, start)) {
+                        return 0;
+                    }
+                    i += 3;
+                    col += 3;
+                } else if (!token(c, T_LSH, line, start)) {
+                    return 0;
+                } else {
+                    i += 2;
+                    col += 2;
+                }
             } else if (i + 1 < n && s[i + 1] == '=') {
                 if (!token(c, T_LE, line, start)) {
                     return 0;
@@ -1550,11 +2118,18 @@ static int lex(Compiler *c, const char *s, size_t n) {
             break;
         case '>':
             if (i + 1 < n && s[i + 1] == '>') {
-                if (!token(c, T_RSH, line, start)) {
+                if (i + 2 < n && s[i + 2] == '=') {
+                    if (!token(c, T_RSHEQ, line, start)) {
+                        return 0;
+                    }
+                    i += 3;
+                    col += 3;
+                } else if (!token(c, T_RSH, line, start)) {
                     return 0;
+                } else {
+                    i += 2;
+                    col += 2;
                 }
-                i += 2;
-                col += 2;
             } else if (i + 1 < n && s[i + 1] == '=') {
                 if (!token(c, T_GE, line, start)) {
                     return 0;
@@ -1591,6 +2166,7 @@ static int take(Compiler *c, TokenKind k) {
 
 static uint8_t take_qualifiers(Compiler *c) {
     uint8_t uns = 0;
+    c->saw_static = 0;
     for (;;) {
         if (take(c, T_UNSIGNED)) {
             uns = 1;
@@ -1600,7 +2176,11 @@ static uint8_t take_qualifiers(Compiler *c) {
             uns = 0;
             continue;
         }
-        if (take(c, T_CONST) || take(c, T_STATIC) || take(c, T_EXTERN) ||
+        if (take(c, T_STATIC)) {
+            c->saw_static = 1;
+            continue;
+        }
+        if (take(c, T_CONST) || take(c, T_EXTERN) ||
             take(c, T_VOLATILE) || take(c, T_INLINE) || take(c, T_RESTRICT) ||
             take(c, T_NORETURN) || take(c, T_THREADLOCAL)) {
             continue;
@@ -1608,6 +2188,65 @@ static uint8_t take_qualifiers(Compiler *c) {
         break;
     }
     return uns;
+}
+
+static void static_mangle(Compiler *c, const char *src, char *dst) {
+    int n = 0;
+    int tu = c->tu_id;
+    int v;
+    dst[0] = 0;
+    if (!src || tu <= 0) {
+        text(dst, NAME_MAX, src ? src : "");
+        return;
+    }
+    dst[n++] = '_';
+    dst[n++] = 's';
+    v = tu;
+    if (v >= 100 && n + 1 < NAME_MAX) {
+        dst[n++] = (char)('0' + v / 100);
+        v = v % 100;
+    }
+    if (c->tu_id >= 10 && n + 1 < NAME_MAX) {
+        dst[n++] = (char)('0' + (c->tu_id / 10) % 10);
+    }
+    if (n + 1 < NAME_MAX) {
+        dst[n++] = (char)('0' + c->tu_id % 10);
+    }
+    if (n + 1 < NAME_MAX) {
+        dst[n++] = '_';
+    }
+    {
+        int i = 0;
+        while (src[i] && n + 1 < NAME_MAX) {
+            dst[n++] = src[i++];
+        }
+    }
+    dst[n] = 0;
+}
+
+static int skip_attr(Compiler *c) {
+    int packed = 0;
+    while (cur(c)->kind == T_ID &&
+           (same(cur(c)->name, "__attribute__") ||
+            same(cur(c)->name, "__attribute"))) {
+        ++c->pos;
+        if (take(c, T_LP)) {
+            int depth = 1;
+            while (depth && cur(c)->kind != T_EOF) {
+                if (cur(c)->kind == T_ID && same(cur(c)->name, "packed")) {
+                    packed = 1;
+                }
+                if (take(c, T_LP)) {
+                    depth++;
+                } else if (take(c, T_RP)) {
+                    depth--;
+                } else {
+                    ++c->pos;
+                }
+            }
+        }
+    }
+    return packed;
 }
 
 static int expect(Compiler *c, TokenKind k, const char *m) {
@@ -1633,6 +2272,7 @@ static int node(Compiler *c, NodeKind k, Token *t) {
     n->line = t->line;
     n->column = t->column;
     n->is_float = 0;
+    n->sid = -1;
     n->name[0] = 0;
     return id;
 }
@@ -1656,7 +2296,7 @@ static void scope_leave(Compiler *c) {
     }
 }
 
-static int scope_visible(const Compiler *c, uint8_t sc) {
+static int scope_visible(const Compiler *c, int sc) {
     int i;
     if (sc == 0) {
         return 1;
@@ -1675,7 +2315,7 @@ static int sym_find_local(Compiler *c, const char *name) {
         if (c->syms[i].is_global) {
             continue;
         }
-        if (!scope_visible(c, c->syms[i].scope)) {
+        if (!scope_visible(c, (int)c->syms[i].scope)) {
             continue;
         }
         if (same(c->syms[i].name, name)) {
@@ -1690,8 +2330,40 @@ static int sym_find(Compiler *c, const char *name) {
     if (i >= 0) {
         return i;
     }
+    if (c->tu_id > 0) {
+        char mang[NAME_MAX];
+        static_mangle(c, name, mang);
+        for (i = 0; i < c->nsyms; ++i) {
+            if (c->syms[i].is_global && same(c->syms[i].name, mang)) {
+                return i;
+            }
+        }
+    }
     for (i = 0; i < c->nsyms; ++i) {
         if (c->syms[i].is_global && same(c->syms[i].name, name)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void decl_name(Compiler *c, Token *t, char *dst) {
+    if (c->saw_static && scope_cur(c) == 0 && c->tu_id > 0) {
+        static_mangle(c, t->name, dst);
+    } else {
+        text(dst, NAME_MAX, t->name);
+    }
+}
+
+static int reuse_global_sym(Compiler *c, Token *t) {
+    int i;
+    char want[NAME_MAX];
+    if (scope_cur(c) != 0) {
+        return -1;
+    }
+    decl_name(c, t, want);
+    for (i = 0; i < c->nsyms; ++i) {
+        if (c->syms[i].scope == 0 && same(c->syms[i].name, want)) {
             return i;
         }
     }
@@ -1701,6 +2373,10 @@ static int sym_find(Compiler *c, const char *name) {
 static int sym_add(Compiler *c, Token *t, uint8_t is_float, uint8_t width,
                    uint8_t is_ptr) {
     int i;
+    i = reuse_global_sym(c, t);
+    if (i >= 0) {
+        return i;
+    }
     for (i = c->nsyms - 1; i >= 0; --i) {
         if ((int)c->syms[i].scope != scope_cur(c)) {
             continue;
@@ -1723,7 +2399,7 @@ static int sym_add(Compiler *c, Token *t, uint8_t is_float, uint8_t width,
             width = 8;
         need = is_ptr ? 8u : (width < 4 ? 4u : (uint32_t)width);
         i = c->nsyms++;
-        text(c->syms[i].name, NAME_MAX, t->name);
+        decl_name(c, t, c->syms[i].name);
         c->syms[i].address = c->mem_next;
         c->syms[i].is_float = is_float;
         c->syms[i].packed = (uint8_t)(width == 1 && !is_ptr);
@@ -1731,13 +2407,14 @@ static int sym_add(Compiler *c, Token *t, uint8_t is_float, uint8_t width,
         c->syms[i].is_ptr = is_ptr;
         c->syms[i].is_unsigned = 0;
         c->syms[i].is_global = 0;
-        c->syms[i].scope = (uint8_t)scope_cur(c);
+        c->syms[i].scope = (uint16_t)scope_cur(c);
         c->syms[i].width = width;
         c->syms[i].pointee = pointee;
         c->syms[i].struct_id = -1;
         c->syms[i].stride = is_ptr
             ? (uint16_t)(pointee <= 1 ? 1 : (pointee < 4 ? 4 : pointee))
             : (uint16_t)need;
+        c->syms[i].array_n = 0;
         c->mem_next += need;
         return i;
     }
@@ -1773,6 +2450,10 @@ static int sym_add_array(Compiler *c, Token *t, int32_t count, uint8_t is_float,
         fail(c, t->line, t->column, "array size out of range");
         return -1;
     }
+    i = reuse_global_sym(c, t);
+    if (i >= 0) {
+        return i;
+    }
     i = sym_find_local(c, t->name);
     if (i >= 0) {
         fail(c, t->line, t->column, "duplicate variable");
@@ -1795,7 +2476,7 @@ static int sym_add_array(Compiler *c, Token *t, int32_t count, uint8_t is_float,
         return -1;
     }
     i = c->nsyms++;
-    text(c->syms[i].name, NAME_MAX, t->name);
+    decl_name(c, t, c->syms[i].name);
     c->syms[i].address = c->mem_next;
     c->syms[i].is_float = is_float;
     c->syms[i].packed = packed;
@@ -1803,11 +2484,12 @@ static int sym_add_array(Compiler *c, Token *t, int32_t count, uint8_t is_float,
     c->syms[i].is_ptr = 0;
     c->syms[i].is_unsigned = 0;
     c->syms[i].is_global = 0;
-    c->syms[i].scope = (uint8_t)scope_cur(c);
+    c->syms[i].scope = (uint16_t)scope_cur(c);
     c->syms[i].width = packed ? 1 : elem_w;
     c->syms[i].pointee = 0;
     c->syms[i].struct_id = -1;
     c->syms[i].stride = stride;
+    c->syms[i].array_n = (uint16_t)(count > 65535 ? 65535 : count);
     c->mem_next += need;
     return i;
 }
@@ -1834,6 +2516,15 @@ static int struct_find(Compiler *c, const char *name) {
 
 static int func_find(Compiler *c, const char *name) {
     int i;
+    if (c->tu_id > 0) {
+        char mang[NAME_MAX];
+        static_mangle(c, name, mang);
+        for (i = 0; i < c->nfuncs; ++i) {
+            if (same(c->funcs[i].name, mang)) {
+                return i;
+            }
+        }
+    }
     for (i = 0; i < c->nfuncs; ++i) {
         if (same(c->funcs[i].name, name)) {
             return i;
@@ -1853,19 +2544,27 @@ static int field_find(StructDef *s, const char *name) {
 }
 
 static int struct_add_field(Compiler *c, StructDef *s, const char *name,
-                            uint8_t isf, uint8_t w, int is_union, int line,
-                            int col) {
+                            uint8_t isf, uint16_t w, int is_union, int line,
+                            int col, int16_t nested, uint8_t is_ptr) {
     uint16_t need;
     if (s->nfields == FIELD_MAX) {
         return fail(c, line, col, "too many fields");
     }
     if (w == 0)
         w = 4;
-    need = (uint16_t)(w == 1 ? 4 : (w == 2 ? 4 : w));
+    if (s->packed) {
+        need = w;
+    } else if (w <= 2) {
+        need = 4;
+    } else {
+        need = w;
+    }
     text(s->fname[s->nfields], NAME_MAX, name);
     s->is_float[s->nfields] = isf;
+    s->fptr[s->nfields] = is_ptr;
     s->fwidth[s->nfields] = w;
     s->foff[s->nfields] = is_union ? 0 : s->size;
+    s->fstruct[s->nfields] = nested;
     s->nfields++;
     if (is_union) {
         if (need > s->size)
@@ -1876,14 +2575,239 @@ static int struct_add_field(Compiler *c, StructDef *s, const char *name,
     return 1;
 }
 
+static int parse_type_n(Compiler *c, DeclType *d, char *name_out, int ncap);
+static int skip_paren_depth(Compiler *c);
+
+static int parse_const_int(Compiler *c, int *out);
+
+static int parse_const_prim(Compiler *c, int *out) {
+    int v;
+    int neg = 0;
+    int til = 0;
+    while (take(c, T_PLUS)) {
+    }
+    if (take(c, T_MINUS)) {
+        neg = 1;
+    }
+    if (take(c, T_TILDE)) {
+        til = 1;
+    }
+    if (take(c, T_LP)) {
+        if (!parse_const_int(c, &v) ||
+            !expect(c, T_RP, "expected ) in constant")) {
+            return 0;
+        }
+    } else if (cur(c)->kind == T_NUM) {
+        v = cur(c)->value;
+        ++c->pos;
+    } else if (cur(c)->kind == T_ID) {
+        int i;
+        int found = 0;
+        v = 0;
+        for (i = 0; i < c->nconst; ++i) {
+            if (same(c->const_name[i], cur(c)->name)) {
+                v = (int)c->const_val[i];
+                found = 1;
+                break;
+            }
+        }
+        if (!found) {
+            return 0;
+        }
+        ++c->pos;
+    } else {
+        return 0;
+    }
+    if (til) {
+        v = ~v;
+    }
+    if (neg) {
+        v = -v;
+    }
+    *out = v;
+    return 1;
+}
+
+static int parse_const_mul(Compiler *c, int *out) {
+    int v;
+    if (!parse_const_prim(c, &v)) {
+        return 0;
+    }
+    for (;;) {
+        int r;
+        if (take(c, T_STAR)) {
+            if (!parse_const_prim(c, &r)) {
+                return 0;
+            }
+            v *= r;
+        } else if (take(c, T_SLASH)) {
+            if (!parse_const_prim(c, &r) || r == 0) {
+                return 0;
+            }
+            v /= r;
+        } else if (take(c, T_PERCENT)) {
+            if (!parse_const_prim(c, &r) || r == 0) {
+                return 0;
+            }
+            v %= r;
+        } else {
+            break;
+        }
+    }
+    *out = v;
+    return 1;
+}
+
+static int parse_const_add(Compiler *c, int *out) {
+    int v;
+    if (!parse_const_mul(c, &v)) {
+        return 0;
+    }
+    for (;;) {
+        int r;
+        if (take(c, T_PLUS)) {
+            if (!parse_const_mul(c, &r)) {
+                return 0;
+            }
+            v += r;
+        } else if (take(c, T_MINUS)) {
+            if (!parse_const_mul(c, &r)) {
+                return 0;
+            }
+            v -= r;
+        } else {
+            break;
+        }
+    }
+    *out = v;
+    return 1;
+}
+
+static int parse_const_shift(Compiler *c, int *out) {
+    int v;
+    if (!parse_const_add(c, &v)) {
+        return 0;
+    }
+    for (;;) {
+        int r;
+        if (take(c, T_LSH)) {
+            if (!parse_const_add(c, &r)) {
+                return 0;
+            }
+            v <<= (r & 31);
+        } else if (take(c, T_RSH)) {
+            if (!parse_const_add(c, &r)) {
+                return 0;
+            }
+            v >>= (r & 31);
+        } else {
+            break;
+        }
+    }
+    *out = v;
+    return 1;
+}
+
+static int parse_const_int(Compiler *c, int *out) {
+    int v;
+    if (!parse_const_shift(c, &v)) {
+        return 0;
+    }
+    for (;;) {
+        int r;
+        if (take(c, T_AMP)) {
+            if (!parse_const_shift(c, &r)) {
+                return 0;
+            }
+            v &= r;
+        } else if (take(c, T_CARET)) {
+            if (!parse_const_shift(c, &r)) {
+                return 0;
+            }
+            v ^= r;
+        } else if (take(c, T_PIPE)) {
+            if (!parse_const_shift(c, &r)) {
+                return 0;
+            }
+            v |= r;
+        } else {
+            break;
+        }
+    }
+    *out = v;
+    return 1;
+}
+
+static int parse_enum_list(Compiler *c) {
+    int ev = 0;
+    while (!take(c, T_RB) && cur(c)->kind != T_EOF) {
+        Token *en = cur(c);
+        int val;
+        if (!expect(c, T_ID, "expected enumerator")) {
+            return 0;
+        }
+        val = ev;
+        if (take(c, T_ASSIGN)) {
+            if (!parse_const_int(c, &val)) {
+                return fail(c, cur(c)->line, cur(c)->column, "expected enum value");
+            }
+        }
+        if (c->nconst < ENUM_MAX) {
+            text(c->const_name[c->nconst], NAME_MAX, en->name);
+            c->const_val[c->nconst] = val;
+            c->nconst++;
+        }
+        ev = val + 1;
+        take(c, T_COMMA);
+    }
+    return 1;
+}
+
+static int parse_array_dim(Compiler *c, int *count) {
+    int n = 256;
+    if (take(c, T_RBRACK)) {
+        *count = 256;
+        return 1;
+    }
+    if (!parse_const_int(c, &n)) {
+        return fail(c, cur(c)->line, cur(c)->column, "expected array size");
+    }
+    if (!expect(c, T_RBRACK, "expected ]")) {
+        return 0;
+    }
+    while (take(c, T_LBRACK)) {
+        int n2 = 1;
+        if (!take(c, T_RBRACK)) {
+            if (!parse_const_int(c, &n2) ||
+                !expect(c, T_RBRACK, "expected ]")) {
+                return 0;
+            }
+        }
+        if (n2 < 1) {
+            n2 = 1;
+        }
+        if (n > 1 && n2 > 2147483647 / n) {
+            n = 2147483647;
+        } else {
+            n *= n2;
+        }
+    }
+    if (n < 1) {
+        n = 1;
+    }
+    *count = n;
+    return 1;
+}
+
 static int parse_struct_def(Compiler *c, int is_union) {
     StructDef *s;
     char tag[NAME_MAX];
-    int named = 0;
+    int exist = -1;
+    int i;
     if (cur(c)->kind == T_ID) {
         text(tag, NAME_MAX, cur(c)->name);
-        named = 1;
         ++c->pos;
+        exist = struct_find(c, tag);
     } else {
         int n = c->nstructs;
         tag[0] = '_';
@@ -1891,40 +2815,80 @@ static int parse_struct_def(Compiler *c, int is_union) {
         tag[2] = 'n';
         tag[3] = 'o';
         tag[4] = 'n';
-        tag[5] = (char)('0' + (n / 10) % 10);
-        tag[6] = (char)('0' + n % 10);
-        tag[7] = 0;
+        tag[5] = (char)('0' + (n / 100) % 10);
+        tag[6] = (char)('0' + (n / 10) % 10);
+        tag[7] = (char)('0' + n % 10);
+        tag[8] = 0;
     }
-    if (c->nstructs == STRUCT_MAX) {
-        return fail(c, cur(c)->line, cur(c)->column, "too many structs");
-    }
-    if (named && struct_find(c, tag) >= 0) {
-        return fail(c, cur(c)->line, cur(c)->column, "duplicate struct");
-    }
-    s = &c->structs[c->nstructs++];
-    text(s->name, NAME_MAX, tag);
-    s->nfields = 0;
-    s->size = 0;
-    if (named && cur(c)->kind == T_SEMI) {
-        return 1;
+    if (exist >= 0) {
+        s = &c->structs[exist];
+        if (skip_attr(c)) {
+            s->packed = 1;
+        }
+        if (cur(c)->kind != T_LB) {
+            return 1;
+        }
+        if (s->nfields > 0) {
+            return fail(c, cur(c)->line, cur(c)->column, "duplicate struct");
+        }
+    } else {
+        if (c->nstructs == STRUCT_MAX) {
+            return fail(c, cur(c)->line, cur(c)->column, "too many structs");
+        }
+        s = &c->structs[c->nstructs++];
+        text(s->name, NAME_MAX, tag);
+        s->nfields = 0;
+        s->size = 0;
+        s->packed = c->pack_pragma;
+        for (i = 0; i < FIELD_MAX; ++i) {
+            s->fstruct[i] = -1;
+            s->fptr[i] = 0;
+        }
+        if (skip_attr(c)) {
+            s->packed = 1;
+        }
+        if (cur(c)->kind != T_LB) {
+            return 1;
+        }
     }
     if (!expect(c, T_LB, "expected {")) {
         return 0;
     }
-    while (!take(c, T_RB)) {
-        uint8_t isf = 0;
-        uint8_t w = 4;
+    while (!take(c, T_RB) && cur(c)->kind != T_EOF) {
+        DeclType dt;
         Token *fn;
-        int nested_union = 0;
+        Token fn_store;
+        char fnbuf[NAME_MAX];
+        uint16_t fw;
+        int16_t nested;
+        int count = 1;
+        take(c, T_CONST);
+        take(c, T_VOLATILE);
         if (cur(c)->kind == T_UNION || cur(c)->kind == T_STRUCT) {
             int inner;
-            nested_union = take(c, T_UNION);
+            int nested_union = take(c, T_UNION);
+            int is_ptr = 0;
+            char tag[NAME_MAX];
             if (!nested_union) {
                 take(c, T_STRUCT);
             }
-            inner = c->nstructs;
+            tag[0] = 0;
+            if (cur(c)->kind == T_ID) {
+                text(tag, NAME_MAX, cur(c)->name);
+            }
             if (!parse_struct_def(c, nested_union)) {
                 return 0;
+            }
+            if (tag[0]) {
+                inner = struct_find(c, tag);
+            } else {
+                inner = c->nstructs - 1;
+            }
+            if (inner < 0) {
+                inner = c->nstructs - 1;
+            }
+            while (take(c, T_STAR)) {
+                is_ptr = 1;
             }
             if (cur(c)->kind != T_ID) {
                 StructDef *inn = &c->structs[inner];
@@ -1932,7 +2896,8 @@ static int parse_struct_def(Compiler *c, int is_union) {
                 for (fi = 0; fi < inn->nfields; ++fi) {
                     if (!struct_add_field(c, s, inn->fname[fi], inn->is_float[fi],
                                           inn->fwidth[fi], is_union,
-                                          cur(c)->line, cur(c)->column)) {
+                                          cur(c)->line, cur(c)->column,
+                                          inn->fstruct[fi], inn->fptr[fi])) {
                         return 0;
                     }
                 }
@@ -1942,44 +2907,240 @@ static int parse_struct_def(Compiler *c, int is_union) {
                 continue;
             }
             fn = cur(c);
-            if (!expect(c, T_ID, "expected field name") ||
-                !expect(c, T_SEMI, "expected ; after field")) {
+            if (!expect(c, T_ID, "expected field name")) {
                 return 0;
             }
-            if (!struct_add_field(c, s, fn->name, 0, c->structs[inner].size,
-                                  is_union, fn->line, fn->column)) {
+            if (take(c, T_LBRACK)) {
+                if (!parse_array_dim(c, &count)) {
+                    return 0;
+                }
+            }
+            if (!expect(c, T_SEMI, "expected ; after field")) {
+                return 0;
+            }
+            if (is_ptr) {
+                fw = 8;
+            } else {
+                fw = (uint16_t)(c->structs[inner].size * (count > 0 ? count : 1));
+            }
+            if (!struct_add_field(c, s, fn->name, 0, fw, is_union, fn->line,
+                                  fn->column, (int16_t)inner, (uint8_t)is_ptr)) {
                 return 0;
             }
             continue;
         }
-        if (take(c, T_FLOAT)) {
-            isf = 1;
-            w = 4;
-        } else if (take(c, T_CHAR) || take(c, T_BOOL)) {
-            w = 1;
-        } else if (take(c, T_SHORT)) {
-            w = 2;
-        } else if (take(c, T_LONG)) {
-            w = 8;
-            take(c, T_INT);
-        } else if (!take(c, T_INT)) {
+        fnbuf[0] = 0;
+        if (!parse_type_n(c, &dt, fnbuf, NAME_MAX)) {
             return fail(c, cur(c)->line, cur(c)->column, "expected field type");
         }
-        fn = cur(c);
-        if (!expect(c, T_ID, "expected field name")) {
-            return 0;
+        if (fnbuf[0]) {
+            fn_store.kind = T_ID;
+            fn_store.line = cur(c)->line;
+            fn_store.column = cur(c)->column;
+            fn_store.value = 0;
+            text(fn_store.name, NAME_MAX, fnbuf);
+            fn = &fn_store;
+        } else {
+            fn = cur(c);
+            if (!expect(c, T_ID, "expected field name")) {
+                return 0;
+            }
         }
         if (take(c, T_COLON)) {
-            return fail(c, fn->line, fn->column, "bitfields not supported");
+            int bits = 8;
+            parse_const_int(c, &bits);
+            s->packed = 1;
+            if (bits <= 8) {
+                dt.w = 1;
+            } else if (bits <= 16) {
+                dt.w = 2;
+            } else {
+                dt.w = 4;
+            }
+            dt.ptr = 0;
         }
-        if (!struct_add_field(c, s, fn->name, isf, w, is_union, fn->line,
-                              fn->column)) {
-            return 0;
+            if (take(c, T_LBRACK)) {
+                if (!parse_array_dim(c, &count)) {
+                    return 0;
+                }
+            }
+        nested = dt.sid;
+        for (;;) {
+            uint16_t thisw = dt.ptr ? 8u : dt.w;
+            int thisc = count;
+            if (!dt.ptr && dt.sid >= 0 && c->structs[dt.sid].size) {
+                thisw = c->structs[dt.sid].size;
+            }
+            if (thisc > 1) {
+                thisw = (uint16_t)(thisw * (uint16_t)thisc);
+            }
+            if (!struct_add_field(c, s, fn->name, dt.isf, thisw, is_union,
+                                  fn->line, fn->column, nested, dt.ptr)) {
+                return 0;
+            }
+            if (!take(c, T_COMMA)) {
+                break;
+            }
+            count = 1;
+            fn = cur(c);
+            if (!expect(c, T_ID, "expected field name")) {
+                return 0;
+            }
+            if (take(c, T_LBRACK)) {
+                if (!parse_array_dim(c, &count)) {
+                    return 0;
+                }
+            }
         }
         if (!expect(c, T_SEMI, "expected ; after field")) {
             return 0;
         }
     }
+    if (skip_attr(c)) {
+        s->packed = 1;
+    }
+    return 1;
+}
+
+static int parse_type_n(Compiler *c, DeclType *d, char *name_out, int ncap) {
+    int got = 0;
+    int is_u = 0;
+    if (name_out && ncap > 0) {
+        name_out[0] = 0;
+    }
+    d->w = 4;
+    d->ptr = 0;
+    d->isf = 0;
+    d->uns = 0;
+    d->is_void = 0;
+    d->sid = -1;
+    skip_attr(c);
+    while (take(c, T_CONST) || take(c, T_VOLATILE) || take(c, T_RESTRICT)) {
+    }
+    if (take(c, T_UNSIGNED)) {
+        d->uns = 1;
+        got = 1;
+        d->w = 4;
+    }
+    if (take(c, T_SIGNED)) {
+        got = 1;
+        d->w = 4;
+    }
+    if (take(c, T_FLOAT) || take(c, T_COMPLEX)) {
+        d->isf = 1;
+        d->w = 4;
+        got = 1;
+    } else if (take(c, T_CHAR) || take(c, T_BOOL)) {
+        d->w = 1;
+        got = 1;
+    } else if (take(c, T_SHORT)) {
+        d->w = 2;
+        take(c, T_INT);
+        got = 1;
+    } else if (take(c, T_LONG)) {
+        d->w = 8;
+        take(c, T_LONG);
+        take(c, T_INT);
+        got = 1;
+    } else if (take(c, T_INT)) {
+        d->w = 4;
+        got = 1;
+    } else if (take(c, T_VOID)) {
+        d->w = 4;
+        d->is_void = 1;
+        got = 1;
+    } else if (take(c, T_STRUCT) || take(c, T_UNION)) {
+        char tag[NAME_MAX];
+        int outer;
+        tag[0] = 0;
+        is_u = c->tokens[c->pos - 1].kind == T_UNION;
+        if (cur(c)->kind == T_ID) {
+            text(tag, NAME_MAX, cur(c)->name);
+        }
+        if (tag[0]) {
+            outer = struct_find(c, tag);
+        } else {
+            outer = c->nstructs;
+        }
+        if (!parse_struct_def(c, is_u)) {
+            return 0;
+        }
+        if (tag[0]) {
+            d->sid = (int16_t)struct_find(c, tag);
+        } else {
+            d->sid = (int16_t)outer;
+        }
+        if (d->sid < 0) {
+            d->sid = (int16_t)(c->nstructs - 1);
+        }
+        d->w = (d->sid >= 0 && c->structs[d->sid].size)
+                   ? c->structs[d->sid].size
+                   : 4u;
+        if (d->w == 0) {
+            d->w = 4;
+        }
+        got = 1;
+    } else if (take(c, T_ENUM)) {
+        if (cur(c)->kind == T_ID) {
+            ++c->pos;
+        }
+        if (cur(c)->kind == T_LB) {
+            ++c->pos;
+            if (!parse_enum_list(c)) {
+                return 0;
+            }
+        }
+        d->w = 4;
+        got = 1;
+    }
+    if (!got && cur(c)->kind == T_ID) {
+        int ti = typedef_find(c, cur(c)->name);
+        if (ti < 0) {
+            return 0;
+        }
+        d->w = (uint8_t)c->td_width[ti];
+        d->ptr = (uint8_t)c->td_ptr[ti];
+        d->sid = (int16_t)c->td_struct[ti];
+        ++c->pos;
+        got = 1;
+    }
+    if (!got) {
+        return 0;
+    }
+    while (take(c, T_STAR)) {
+        d->ptr = 1;
+        d->w = 8;
+    }
+    if (cur(c)->kind == T_LP && c->pos + 1 < c->ntok &&
+        c->tokens[c->pos + 1].kind == T_STAR) {
+        take(c, T_LP);
+        take(c, T_STAR);
+        while (take(c, T_STAR) || take(c, T_CONST) || take(c, T_VOLATILE)) {
+        }
+        if (cur(c)->kind == T_ID) {
+            if (name_out && ncap > 0) {
+                text(name_out, (size_t)ncap, cur(c)->name);
+            }
+            ++c->pos;
+        }
+        if (take(c, T_LBRACK)) {
+            int dummy = 1;
+            if (!parse_array_dim(c, &dummy)) {
+                return 0;
+            }
+        }
+        if (!expect(c, T_RP, "expected ) in function pointer type")) {
+            return 0;
+        }
+        if (cur(c)->kind == T_LP && !skip_paren_depth(c)) {
+            return fail(c, cur(c)->line, cur(c)->column, "bad function pointer type");
+        }
+        d->ptr = 1;
+        d->w = 8;
+        d->is_void = 0;
+        d->isf = 0;
+    }
+    skip_attr(c);
     return 1;
 }
 
@@ -2096,7 +3257,32 @@ static int primary(Compiler *c) {
         return id;
     }
     if (t->kind != T_ID) {
-        fail(c, t->line, t->column, "expected expression");
+        char m[80];
+        int n = 0;
+        const char *p = "expected expression k=";
+        int kv = (int)t->kind;
+        while (p[n]) {
+            m[n] = p[n];
+            n++;
+        }
+        if (kv >= 100 && n + 1 < 80) {
+            m[n++] = (char)('0' + kv / 100);
+        }
+        if (kv >= 10 && n + 1 < 80) {
+            m[n++] = (char)('0' + (kv / 10) % 10);
+        }
+        if (n + 1 < 80) {
+            m[n++] = (char)('0' + kv % 10);
+        }
+        if (t->name[0] && n + 2 < 80) {
+            int k = 0;
+            m[n++] = ' ';
+            while (t->name[k] && n + 1 < 80) {
+                m[n++] = t->name[k++];
+            }
+        }
+        m[n] = 0;
+        fail(c, t->line, t->column, m);
         return -1;
     }
     ++c->pos;
@@ -2170,8 +3356,12 @@ static int primary(Compiler *c) {
                 c->nodes[id].is_float = 1;
             } else {
                 fn = func_find(c, t->name);
-                if (fn >= 0 && c->funcs[fn].ret == 2) {
-                    c->nodes[id].is_float = 1;
+                if (fn >= 0) {
+                    text(c->nodes[id].name, NAME_MAX, c->funcs[fn].name);
+                    c->nodes[id].sid = c->funcs[fn].ret_sid;
+                    if (c->funcs[fn].ret == 2) {
+                        c->nodes[id].is_float = 1;
+                    }
                 } else if (fn < 0 && !b) {
                     int sy = sym_find(c, t->name);
                     if (sy >= 0) {
@@ -2197,6 +3387,7 @@ static int primary(Compiler *c) {
     }
     if (take(c, T_LBRACK)) {
         int idx = expression(c);
+        int sid;
         if (idx < 0 || !expect(c, T_RBRACK, "expected ]")) {
             return -1;
         }
@@ -2205,31 +3396,80 @@ static int primary(Compiler *c) {
             c->nodes[id].value = sym;
             c->nodes[id].left = idx;
             c->nodes[id].is_float = c->syms[sym].is_float;
+            c->nodes[id].sid = c->syms[sym].struct_id;
         }
-        if (take(c, T_DOT)) {
-            Token *fld = cur(c);
+        sid = c->syms[sym].struct_id;
+        while (cur(c)->kind == T_DOT || cur(c)->kind == T_ARROW ||
+               cur(c)->kind == T_LBRACK) {
+            Token *fld;
             int fi;
+            int next_arrow;
             int fid;
-            if (c->syms[sym].struct_id < 0) {
-                fail(c, fld->line, fld->column, "not a struct");
+            uint8_t fw;
+            uint8_t isf;
+            if (take(c, T_LBRACK)) {
+                int idx2 = expression(c);
+                int stride = 4;
+                if (idx2 < 0 || !expect(c, T_RBRACK, "expected ]")) {
+                    return -1;
+                }
+                if (sid >= 0 && c->structs[sid].size) {
+                    stride = (int)c->structs[sid].size;
+                    if (stride < 1) {
+                        stride = 4;
+                    }
+                }
+                fid = node(c, N_PTRFIELD, t);
+                if (fid >= 0) {
+                    c->nodes[fid].left = id;
+                    c->nodes[fid].right = idx2;
+                    c->nodes[fid].third = 0;
+                    c->nodes[fid].value = stride;
+                    c->nodes[fid].is_float = 0;
+                    c->nodes[fid].sid = (int16_t)sid;
+                }
+                id = fid;
+                continue;
+            }
+            if (sid < 0) {
+                fail(c, t->line, t->column, "not a struct");
                 return -1;
             }
+            next_arrow = (cur(c)->kind == T_ARROW);
+            ++c->pos;
+            fld = cur(c);
             if (!expect(c, T_ID, "expected field")) {
                 return -1;
             }
-            fi = field_find(&c->structs[c->syms[sym].struct_id], fld->name);
+            fi = field_find(&c->structs[sid], fld->name);
             if (fi < 0) {
                 fail(c, fld->line, fld->column, "unknown field");
                 return -1;
             }
-            fid = node(c, N_FIELD, fld);
-            if (fid >= 0) {
-                c->nodes[fid].value = sym;
-                c->nodes[fid].left = fi;
-                c->nodes[fid].right = idx;
-                c->nodes[fid].is_float = c->structs[c->syms[sym].struct_id].is_float[fi];
+            fw = (uint8_t)c->structs[sid].fwidth[fi];
+            isf = c->structs[sid].is_float[fi];
+            if (c->nodes[id].kind == N_INDEX && !next_arrow) {
+                fid = node(c, N_FIELD, fld);
+                if (fid >= 0) {
+                    c->nodes[fid].value = sym;
+                    c->nodes[fid].left = fi;
+                    c->nodes[fid].right = idx;
+                    c->nodes[fid].third = (int)(fw & 15);
+                    c->nodes[fid].is_float = isf;
+                }
+                id = fid;
+            } else {
+                fid = node(c, N_PTRFIELD, fld);
+                if (fid >= 0) {
+                    c->nodes[fid].left = id;
+                    c->nodes[fid].third = (int)c->structs[sid].foff[fi];
+                    c->nodes[fid].value = fw;
+                    c->nodes[fid].is_float = isf;
+                    c->nodes[fid].sid = c->structs[sid].fstruct[fi];
+                }
+                id = fid;
             }
-            return fid;
+            sid = c->structs[sid].fstruct[fi];
         }
         return id;
     }
@@ -2237,54 +3477,166 @@ static int primary(Compiler *c) {
     if (id >= 0) {
         c->nodes[id].value = sym;
         c->nodes[id].is_float = c->syms[sym].is_float;
+        c->nodes[id].sid = c->syms[sym].struct_id;
     }
-    if (take(c, T_DOT)) {
-        Token *fld = cur(c);
-        int fi;
+    if (cur(c)->kind == T_DOT || cur(c)->kind == T_ARROW) {
+        int sid = c->syms[sym].struct_id;
+        int first_fi = -1;
+        int prev_fi = -1;
+        int extra = 0;
+        int is_arrow = 0;
+        uint8_t fw = 4;
+        uint8_t isf = 0;
         int fid;
-        if (c->syms[sym].struct_id < 0) {
-            fail(c, t->line, t->column, "not a struct");
+        if (sid < 0) {
+            fail(c, t->line, t->column,
+                 cur(c)->kind == T_ARROW ? "not a struct pointer" : "not a struct");
             return -1;
         }
-        if (!expect(c, T_ID, "expected field")) {
-            return -1;
+        while (cur(c)->kind == T_DOT || cur(c)->kind == T_ARROW) {
+            Token *fld;
+            int next_arrow = (cur(c)->kind == T_ARROW);
+            if (first_fi >= 0 && prev_fi >= 0 && sid >= 0 &&
+                c->structs[sid].fptr[prev_fi]) {
+                break;
+            }
+            ++c->pos;
+            if (first_fi < 0) {
+                is_arrow = next_arrow;
+            } else {
+                sid = c->structs[sid].fstruct[prev_fi];
+                if (sid < 0) {
+                    fail(c, t->line, t->column, "not a struct");
+                    return -1;
+                }
+            }
+            fld = cur(c);
+            if (!expect(c, T_ID, "expected field")) {
+                return -1;
+            }
+            prev_fi = field_find(&c->structs[sid], fld->name);
+            if (prev_fi < 0) {
+                fail(c, fld->line, fld->column, "unknown field");
+                return -1;
+            }
+            fw = (uint8_t)c->structs[sid].fwidth[prev_fi];
+            isf = c->structs[sid].is_float[prev_fi];
+            if (first_fi < 0) {
+                first_fi = prev_fi;
+            } else {
+                extra += c->structs[sid].foff[prev_fi];
+            }
         }
-        fi = field_find(&c->structs[c->syms[sym].struct_id], fld->name);
-        if (fi < 0) {
-            fail(c, fld->line, fld->column, "unknown field");
-            return -1;
-        }
-        fid = node(c, N_FIELD, fld);
+        fid = node(c, is_arrow ? N_ARROW : N_FIELD, t);
         if (fid >= 0) {
             c->nodes[fid].value = sym;
-            c->nodes[fid].left = fi;
+            c->nodes[fid].left = first_fi;
             c->nodes[fid].right = -1;
-            c->nodes[fid].is_float = c->structs[c->syms[sym].struct_id].is_float[fi];
+            c->nodes[fid].third = (extra << 4) | (int)(fw & 15);
+            c->nodes[fid].is_float = isf;
+            if (prev_fi >= 0 && sid >= 0) {
+                c->nodes[fid].sid = c->structs[sid].fstruct[prev_fi];
+            }
         }
-        return fid;
-    }
-    if (take(c, T_ARROW)) {
-        Token *fld = cur(c);
-        int fi;
-        int fid;
-        if (c->syms[sym].struct_id < 0) {
-            fail(c, t->line, t->column, "not a struct pointer");
-            return -1;
+        if (prev_fi >= 0 && sid >= 0) {
+            sid = c->structs[sid].fstruct[prev_fi];
         }
-        if (!expect(c, T_ID, "expected field")) {
-            return -1;
+        while (fid >= 0 && (cur(c)->kind == T_LBRACK || cur(c)->kind == T_DOT ||
+                            cur(c)->kind == T_ARROW)) {
+            int p;
+            if (take(c, T_LBRACK)) {
+                int idxn = expression(c);
+                int stride = 4;
+                if (idxn < 0 || !expect(c, T_RBRACK, "expected ]")) {
+                    return -1;
+                }
+                if (sid >= 0 && c->structs[sid].size) {
+                    stride = (int)c->structs[sid].size;
+                    if (stride < 1) {
+                        stride = 4;
+                    }
+                }
+                p = node(c, N_PTRFIELD, t);
+                if (p < 0) {
+                    return -1;
+                }
+                c->nodes[p].left = fid;
+                c->nodes[p].right = idxn;
+                c->nodes[p].third = 0;
+                c->nodes[p].value = stride;
+                c->nodes[p].sid = (int16_t)sid;
+                fid = p;
+                continue;
+            }
+            {
+                Token *fld;
+                int fi;
+                int next_arrow = (cur(c)->kind == T_ARROW);
+                ++c->pos;
+                (void)next_arrow;
+                if (sid < 0) {
+                    fail(c, t->line, t->column, "not a struct");
+                    return -1;
+                }
+                fld = cur(c);
+                if (!expect(c, T_ID, "expected field")) {
+                    return -1;
+                }
+                fi = field_find(&c->structs[sid], fld->name);
+                if (fi < 0) {
+                    fail(c, fld->line, fld->column, "unknown field");
+                    return -1;
+                }
+                p = node(c, N_PTRFIELD, fld);
+                if (p < 0) {
+                    return -1;
+                }
+                c->nodes[p].left = fid;
+                c->nodes[p].right = -1;
+                c->nodes[p].third = (int)c->structs[sid].foff[fi];
+                c->nodes[p].value = (int)c->structs[sid].fwidth[fi];
+                if (next_arrow && c->nodes[fid].kind == N_PTRFIELD &&
+                    c->nodes[fid].right >= 0) {
+                    c->nodes[p].value |= 0x10000;
+                }
+                c->nodes[p].is_float = c->structs[sid].is_float[fi];
+                c->nodes[p].sid = c->structs[sid].fstruct[fi];
+                fid = p;
+                sid = c->structs[sid].fstruct[fi];
+            }
         }
-        fi = field_find(&c->structs[c->syms[sym].struct_id], fld->name);
-        if (fi < 0) {
-            fail(c, fld->line, fld->column, "unknown field");
-            return -1;
-        }
-        fid = node(c, N_ARROW, fld);
-        if (fid >= 0) {
-            c->nodes[fid].value = sym;
-            c->nodes[fid].left = fi;
-            c->nodes[fid].right = -1;
-            c->nodes[fid].is_float = c->structs[c->syms[sym].struct_id].is_float[fi];
+        if (fid >= 0 && take(c, T_LP)) {
+            int calln = node(c, N_CALL, t);
+            int first;
+            int count = 0;
+            int argn;
+            if (calln < 0) {
+                return -1;
+            }
+            first = c->nargs;
+            if (!take(c, T_RP)) {
+                do {
+                    if (c->nargs == ARG_MAX) {
+                        fail(c, t->line, t->column, "argument table full");
+                        return -1;
+                    }
+                    argn = assignment_expr(c);
+                    if (argn < 0) {
+                        return -1;
+                    }
+                    c->args[c->nargs++] = argn;
+                    ++count;
+                } while (take(c, T_COMMA));
+                if (!expect(c, T_RP, "expected ) after arguments")) {
+                    return -1;
+                }
+            }
+            c->nodes[calln].left = first;
+            c->nodes[calln].value = count;
+            c->nodes[calln].right = -2;
+            c->nodes[calln].third = fid;
+            c->nodes[calln].name[0] = 0;
+            return calln;
         }
         return fid;
     }
@@ -2362,6 +3714,7 @@ static int skip_paren_depth(Compiler *c) {
 static int parse_cast_type(Compiler *c, CastType *ct) {
     int got = 0;
     int tagged = 0;
+    int saw_sign = 0;
     ct->width = 4;
     ct->is_float = 0;
     ct->is_uns = 0;
@@ -2370,16 +3723,19 @@ static int parse_cast_type(Compiler *c, CastType *ct) {
     ct->is_bool = 0;
     ct->pointee = 0;
     ct->pointee_float = 0;
+    ct->sid = -1;
     for (;;) {
         if (take(c, T_CONST) || take(c, T_VOLATILE) || take(c, T_RESTRICT)) {
             continue;
         }
         if (take(c, T_UNSIGNED)) {
             ct->is_uns = 1;
+            saw_sign = 1;
             continue;
         }
         if (take(c, T_SIGNED)) {
             ct->is_uns = 0;
+            saw_sign = 1;
             continue;
         }
         break;
@@ -2419,6 +3775,7 @@ static int parse_cast_type(Compiler *c, CastType *ct) {
         }
         sid = struct_find(c, tn->name);
         ct->width = (sid >= 0 && c->structs[sid].size) ? (uint8_t)c->structs[sid].size : 4u;
+        ct->sid = (int16_t)sid;
         tagged = 1;
         got = 1;
     } else if (take(c, T_ENUM)) {
@@ -2431,6 +3788,7 @@ static int parse_cast_type(Compiler *c, CastType *ct) {
             return fail(c, cur(c)->line, cur(c)->column, "expected type in cast");
         }
         ct->width = (uint8_t)c->td_width[ti];
+        ct->sid = (int16_t)c->td_struct[ti];
         if (c->td_ptr[ti]) {
             ct->is_ptr = 1;
             ct->pointee = 4;
@@ -2438,6 +3796,10 @@ static int parse_cast_type(Compiler *c, CastType *ct) {
         }
         ++c->pos;
         got = 1;
+    }
+    if (!got && saw_sign) {
+        got = 1;
+        ct->width = 4;
     }
     if (!got) {
         return fail(c, cur(c)->line, cur(c)->column, "expected type in cast");
@@ -2488,6 +3850,137 @@ static int parse_cast_type(Compiler *c, CastType *ct) {
     return 1;
 }
 
+static int postfix_expr(Compiler *c, int id) {
+    while (id >= 0) {
+        Token *t = cur(c);
+        if (take(c, T_LBRACK)) {
+            int idx = expression(c);
+            int p;
+            int stride = 4;
+            if (idx < 0 || !expect(c, T_RBRACK, "expected ]")) {
+                return -1;
+            }
+            if (c->nodes[id].kind == N_CAST) {
+                int pw = CAST_POINTEE(c->nodes[id].value);
+                if (pw > 0) {
+                    stride = pw;
+                }
+            } else if (c->nodes[id].kind == N_VAR) {
+                int sy = c->nodes[id].value;
+                if (c->syms[sy].is_ptr && c->syms[sy].pointee) {
+                    stride = (int)c->syms[sy].pointee;
+                } else if (c->syms[sy].stride) {
+                    stride = (int)c->syms[sy].stride;
+                }
+            } else if (c->nodes[id].kind == N_PTRFIELD && c->nodes[id].value) {
+                stride = c->nodes[id].value;
+            }
+            p = node(c, N_PTRFIELD, t);
+            if (p < 0) {
+                return -1;
+            }
+            c->nodes[p].left = id;
+            c->nodes[p].right = idx;
+            c->nodes[p].third = 0;
+            c->nodes[p].value = stride;
+            c->nodes[p].sid = c->nodes[id].sid;
+            id = p;
+            continue;
+        }
+        if (cur(c)->kind == T_ARROW || cur(c)->kind == T_DOT) {
+            Token *fld;
+            int is_arrow = (cur(c)->kind == T_ARROW);
+            int sid = c->nodes[id].sid;
+            int fi;
+            int p;
+            ++c->pos;
+            if (sid < 0 && (c->nodes[id].kind == N_VAR ||
+                            c->nodes[id].kind == N_ARROW ||
+                            c->nodes[id].kind == N_FIELD)) {
+                sid = c->syms[c->nodes[id].value].struct_id;
+            }
+            fld = cur(c);
+            if (!expect(c, T_ID, "expected field")) {
+                return -1;
+            }
+            if (sid < 0) {
+                fail(c, fld->line, fld->column, "not a struct");
+                return -1;
+            }
+            fi = field_find(&c->structs[sid], fld->name);
+            if (fi < 0) {
+                fail(c, fld->line, fld->column, "unknown field");
+                return -1;
+            }
+            p = node(c, N_PTRFIELD, fld);
+            if (p < 0) {
+                return -1;
+            }
+            c->nodes[p].left = id;
+            c->nodes[p].right = -1;
+            c->nodes[p].third = (int)c->structs[sid].foff[fi];
+            c->nodes[p].value = (int)c->structs[sid].fwidth[fi];
+            if (is_arrow && c->nodes[id].kind == N_PTRFIELD &&
+                c->nodes[id].right >= 0) {
+                c->nodes[p].value |= 0x10000;
+            }
+            c->nodes[p].is_float = c->structs[sid].is_float[fi];
+            c->nodes[p].sid = c->structs[sid].fstruct[fi];
+            id = p;
+            continue;
+        }
+        if (take(c, T_PLUSPLUS) || take(c, T_MINUSMINUS)) {
+            int dec = c->tokens[c->pos - 1].kind == T_MINUSMINUS;
+            int p = node(c, dec ? N_POSTDEC : N_POSTINC, t);
+            if (p < 0) {
+                return -1;
+            }
+            c->nodes[p].left = id;
+            if (c->nodes[id].kind == N_VAR) {
+                c->nodes[p].value = c->nodes[id].value;
+            }
+            id = p;
+            continue;
+        }
+        if (take(c, T_LP)) {
+            int calln = node(c, N_CALL, t);
+            int first;
+            int count = 0;
+            int argn;
+            if (calln < 0) {
+                return -1;
+            }
+            first = c->nargs;
+            if (!take(c, T_RP)) {
+                do {
+                    if (c->nargs == ARG_MAX) {
+                        fail(c, t->line, t->column, "argument table full");
+                        return -1;
+                    }
+                    argn = assignment_expr(c);
+                    if (argn < 0) {
+                        return -1;
+                    }
+                    c->args[c->nargs++] = argn;
+                    ++count;
+                } while (take(c, T_COMMA));
+                if (!expect(c, T_RP, "expected ) after arguments")) {
+                    return -1;
+                }
+            }
+            c->nodes[calln].left = first;
+            c->nodes[calln].value = count;
+            c->nodes[calln].right = -2;
+            c->nodes[calln].third = id;
+            c->nodes[calln].name[0] = 0;
+            id = calln;
+            continue;
+        }
+        break;
+    }
+    return id;
+}
+
 static int unary(Compiler *c) {
     Token *t = cur(c);
     int id;
@@ -2512,8 +4005,12 @@ static int unary(Compiler *c) {
         id = node(c, N_DEREF, t);
         if (id >= 0) {
             c->nodes[id].left = v;
+            c->nodes[id].sid = c->nodes[v].sid;
+            if (c->nodes[id].sid < 0 && c->nodes[v].kind == N_VAR) {
+                c->nodes[id].sid = c->syms[c->nodes[v].value].struct_id;
+            }
         }
-        return id;
+        return postfix_expr(c, id);
     }
     if (take(c, T_TILDE)) {
         v = unary(c);
@@ -2575,9 +4072,19 @@ static int unary(Compiler *c) {
             }
             if (c->nodes[v].kind == N_VAR) {
                 Symbol *s = &c->syms[c->nodes[v].value];
-                sz = s->is_ptr ? 8 : (s->is_float ? 4 : (s->width ? (int)s->width : 4));
                 if (s->is_array) {
-                    sz = (int)s->stride;
+                    int n = s->array_n ? (int)s->array_n : 1;
+                    if (s->struct_id >= 0) {
+                        sz = (int)c->structs[s->struct_id].size * n;
+                    } else {
+                        sz = (int)s->stride * n;
+                    }
+                } else if (s->is_ptr) {
+                    sz = 8;
+                } else if (s->struct_id >= 0) {
+                    sz = (int)c->structs[s->struct_id].size;
+                } else {
+                    sz = s->is_float ? 4 : (s->width ? (int)s->width : 4);
                 }
             } else {
                 sz = c->nodes[v].is_float ? 4 : 4;
@@ -2634,6 +4141,7 @@ static int unary(Compiler *c) {
                     c->nodes[id].left = v;
                     c->nodes[id].value = pack_cast(&ct);
                     c->nodes[id].is_float = 0;
+                    c->nodes[id].sid = ct.sid;
                 }
                 return id;
             }
@@ -2643,6 +4151,7 @@ static int unary(Compiler *c) {
                     c->nodes[id].left = v;
                     c->nodes[id].value = pack_cast(&ct);
                     c->nodes[id].is_float = 1;
+                    c->nodes[id].sid = ct.sid;
                 }
                 return id;
             }
@@ -2657,8 +4166,9 @@ static int unary(Compiler *c) {
             c->nodes[id].left = v;
             c->nodes[id].value = pack_cast(&ct);
             c->nodes[id].is_float = ct.is_float;
+            c->nodes[id].sid = ct.sid;
         }
-        return id;
+        return postfix_expr(c, id);
     }
     if (take(c, T_MINUS)) {
         v = unary(c);
@@ -2672,6 +4182,9 @@ static int unary(Compiler *c) {
         }
         return id;
     }
+    if (take(c, T_PLUS)) {
+        return unary(c);
+    }
     if (take(c, T_NOT)) {
         v = unary(c);
         if (v < 0) {
@@ -2683,7 +4196,11 @@ static int unary(Compiler *c) {
         }
         return id;
     }
-    return primary(c);
+    id = primary(c);
+    if (id < 0) {
+        return -1;
+    }
+    return postfix_expr(c, id);
 }
 
 static int binary(Compiler *c, int (*sub)(Compiler *), const TokenKind *kinds,
@@ -2717,6 +4234,23 @@ static int binary(Compiler *c, int (*sub)(Compiler *), const TokenKind *kinds,
         c->nodes[id].right = right;
         c->nodes[id].is_float =
             c->nodes[left].is_float || c->nodes[right].is_float;
+        {
+            int sid = c->nodes[left].sid;
+            if (sid < 0 && (c->nodes[left].kind == N_VAR ||
+                            c->nodes[left].kind == N_ARROW ||
+                            c->nodes[left].kind == N_FIELD)) {
+                sid = c->syms[c->nodes[left].value].struct_id;
+            }
+            if (sid < 0) {
+                sid = c->nodes[right].sid;
+            }
+            if (sid < 0 && (c->nodes[right].kind == N_VAR ||
+                            c->nodes[right].kind == N_ARROW ||
+                            c->nodes[right].kind == N_FIELD)) {
+                sid = c->syms[c->nodes[right].value].struct_id;
+            }
+            c->nodes[id].sid = (int16_t)sid;
+        }
         left = id;
     }
 }
@@ -2781,6 +4315,124 @@ static int logical_or(Compiler *c) {
     return binary(c, logical_and, k, n, 1);
 }
 
+static int make_assign(Compiler *c, int lhs, int rhs, Token *t) {
+    int id;
+    if (lhs < 0 || rhs < 0) {
+        return -1;
+    }
+    if (c->nodes[lhs].kind == N_VAR) {
+        id = node(c, N_ASSIGN, t);
+        if (id < 0) {
+            return -1;
+        }
+        c->nodes[id].value = c->nodes[lhs].value;
+        c->nodes[id].left = rhs;
+        return id;
+    }
+    if (c->nodes[lhs].kind == N_DEREF) {
+        id = node(c, N_DEREF_ASSIGN, t);
+        if (id < 0) {
+            return -1;
+        }
+        c->nodes[id].left = rhs;
+        c->nodes[id].right = c->nodes[lhs].left;
+        return id;
+    }
+    if (c->nodes[lhs].kind == N_INDEX) {
+        id = node(c, N_INDEX_ASSIGN, t);
+        if (id < 0) {
+            return -1;
+        }
+        c->nodes[id].value = c->nodes[lhs].value;
+        c->nodes[id].left = rhs;
+        c->nodes[id].right = c->nodes[lhs].left;
+        return id;
+    }
+    if (c->nodes[lhs].kind == N_FIELD) {
+        int extra = c->nodes[lhs].third >> 4;
+        int fw = c->nodes[lhs].third & 15;
+        int fi = c->nodes[lhs].left;
+        id = node(c, N_FIELD_ASSIGN, t);
+        if (id < 0) {
+            return -1;
+        }
+        c->nodes[id].value = c->nodes[lhs].value;
+        c->nodes[id].left = rhs;
+        c->nodes[id].right = c->nodes[lhs].right;
+        if (c->nodes[id].right == 0) {
+            c->nodes[id].right = -1;
+        }
+        if (fw == 0) {
+            fw = 4;
+        }
+        c->nodes[id].third = fi | (fw << 8) | (extra << 16);
+        c->nodes[id].is_float = c->nodes[lhs].is_float;
+        return id;
+    }
+    if (c->nodes[lhs].kind == N_ARROW) {
+        int extra = c->nodes[lhs].third >> 4;
+        int fw = c->nodes[lhs].third & 15;
+        int fi = c->nodes[lhs].left;
+        id = node(c, N_FIELD_ASSIGN, t);
+        if (id < 0) {
+            return -1;
+        }
+        c->nodes[id].value = c->nodes[lhs].value;
+        c->nodes[id].left = rhs;
+        c->nodes[id].right = -3;
+        if (fw == 0) {
+            fw = 4;
+        }
+        c->nodes[id].third = fi | (fw << 8) | (extra << 16);
+        c->nodes[id].is_float = c->nodes[lhs].is_float;
+        return id;
+    }
+    if (c->nodes[lhs].kind == N_PTRFIELD) {
+        int addr = c->nodes[lhs].left;
+        if (c->nodes[lhs].right >= 0) {
+            int muln = node(c, N_MUL, t);
+            int stride = node(c, N_INT, t);
+            int addn;
+            if (muln < 0 || stride < 0) {
+                return -1;
+            }
+            c->nodes[stride].value = c->nodes[lhs].value ? c->nodes[lhs].value : 4;
+            c->nodes[muln].left = c->nodes[lhs].right;
+            c->nodes[muln].right = stride;
+            addn = node(c, N_ADD, t);
+            if (addn < 0) {
+                return -1;
+            }
+            c->nodes[addn].left = addr;
+            c->nodes[addn].right = muln;
+            addr = addn;
+        }
+        if (c->nodes[lhs].third != 0) {
+            int offn = node(c, N_INT, t);
+            int addn;
+            if (offn < 0) {
+                return -1;
+            }
+            c->nodes[offn].value = c->nodes[lhs].third;
+            addn = node(c, N_ADD, t);
+            if (addn < 0) {
+                return -1;
+            }
+            c->nodes[addn].left = addr;
+            c->nodes[addn].right = offn;
+            addr = addn;
+        }
+        id = node(c, N_DEREF_ASSIGN, t);
+        if (id < 0) {
+            return -1;
+        }
+        c->nodes[id].left = rhs;
+        c->nodes[id].right = addr;
+        return id;
+    }
+    return fail(c, t->line, t->column, "assignment needs lvalue");
+}
+
 static int assignment_expr(Compiler *c) {
     int left = logical_or(c);
     Token *t;
@@ -2808,6 +4460,48 @@ static int assignment_expr(Compiler *c) {
         c->nodes[id].right = mid;
         c->nodes[id].third = right;
         return id;
+    }
+    if (take(c, T_ASSIGN) || take(c, T_PLUSEQ) || take(c, T_MINUSEQ) ||
+        take(c, T_STAREQ) || take(c, T_SLASHEQ) || take(c, T_AMPEQ) ||
+        take(c, T_PIPEEQ) || take(c, T_CARETEQ) || take(c, T_PERCENTEQ) ||
+        take(c, T_LSHEQ) || take(c, T_RSHEQ)) {
+        TokenKind opk = c->tokens[c->pos - 1].kind;
+        NodeKind bk = N_ADD;
+        int bin;
+        t = cur(c);
+        right = assignment_expr(c);
+        if (right < 0) {
+            return -1;
+        }
+        if (opk == T_ASSIGN) {
+            return make_assign(c, left, right, t);
+        }
+        if (opk == T_MINUSEQ) {
+            bk = N_SUB;
+        } else if (opk == T_STAREQ) {
+            bk = N_MUL;
+        } else if (opk == T_SLASHEQ) {
+            bk = N_DIV;
+        } else if (opk == T_AMPEQ) {
+            bk = N_BITAND;
+        } else if (opk == T_PIPEEQ) {
+            bk = N_BITOR;
+        } else if (opk == T_CARETEQ) {
+            bk = N_BITXOR;
+        } else if (opk == T_PERCENTEQ) {
+            bk = N_MOD;
+        } else if (opk == T_LSHEQ) {
+            bk = N_SHL;
+        } else if (opk == T_RSHEQ) {
+            bk = N_SHR;
+        }
+        bin = node(c, bk, t);
+        if (bin < 0) {
+            return -1;
+        }
+        c->nodes[bin].left = left;
+        c->nodes[bin].right = right;
+        return make_assign(c, left, bin, t);
     }
     return left;
 }
@@ -2853,6 +4547,23 @@ static int finish_decl(Compiler *c, int decl_id, Token *t) {
                 int fi = -1;
                 int idxv = seq;
                 int desig = 0;
+                if (cur(c)->kind == T_LB) {
+                    int d = 0;
+                    do {
+                        if (take(c, T_LB)) {
+                            d++;
+                        } else if (take(c, T_RB)) {
+                            d--;
+                        } else if (cur(c)->kind == T_EOF) {
+                            break;
+                        } else {
+                            ++c->pos;
+                        }
+                    } while (d > 0);
+                    take(c, T_COMMA);
+                    seq++;
+                    continue;
+                }
                 if (take(c, T_LBRACK)) {
                     Token *num = cur(c);
                     if (num->kind != T_NUM) {
@@ -2931,16 +4642,60 @@ static int finish_decl(Compiler *c, int decl_id, Token *t) {
             c->nodes[blk].left = decl_id;
             return blk;
         }
-        v = expression(c);
+        v = assignment_expr(c);
         if (v < 0) {
             return -1;
         }
         c->nodes[decl_id].left = v;
     }
-    if (!expect(c, T_SEMI, "expected ; after declaration")) {
-        return -1;
+    {
+        int head = decl_id;
+        int last = decl_id;
+        while (take(c, T_COMMA)) {
+            Token *n2;
+            int s2;
+            int d2;
+            uint8_t ptr = 0;
+            Symbol *base = &c->syms[sym];
+            while (take(c, T_STAR)) {
+                ptr = 1;
+            }
+            n2 = cur(c);
+            if (!expect(c, T_ID, "expected identifier")) {
+                return -1;
+            }
+            s2 = sym_add(c, n2, base->is_float, ptr ? 8 : base->width, ptr);
+            if (s2 < 0) {
+                return -1;
+            }
+            d2 = node(c, N_DECL, n2);
+            if (d2 < 0) {
+                return -1;
+            }
+            c->nodes[d2].value = s2;
+            if (take(c, T_ASSIGN)) {
+                v = assignment_expr(c);
+                if (v < 0) {
+                    return -1;
+                }
+                c->nodes[d2].left = v;
+            }
+            c->nodes[last].next = d2;
+            last = d2;
+        }
+        if (!expect(c, T_SEMI, "expected ; after declaration")) {
+            return -1;
+        }
+        if (c->nodes[head].next >= 0) {
+            int blk = node(c, N_BLOCK, t);
+            if (blk < 0) {
+                return -1;
+            }
+            c->nodes[blk].left = head;
+            return blk;
+        }
+        return head;
     }
-    return decl_id;
 }
 
 static int block(Compiler *c);
@@ -2966,52 +4721,25 @@ static int stmt_or_block(Compiler *c) {
 }
 
 static int for_step(Compiler *c) {
-    Token *name;
+    Token *t = cur(c);
     int id;
-    int sym;
     int v;
-    int idx;
 
-    if (cur(c)->kind != T_ID) {
-        return fail(c, cur(c)->line, cur(c)->column, "expected assignment in for");
-    }
-    name = cur(c);
-    ++c->pos;
-    sym = sym_find(c, name->name);
-    if (sym < 0) {
-        return fail(c, name->line, name->column, "unknown variable");
-    }
-    if (take(c, T_LBRACK)) {
-        idx = expression(c);
-        if (idx < 0 || !expect(c, T_RBRACK, "expected ]") ||
-            !expect(c, T_ASSIGN, "expected =")) {
-            return -1;
+    if (cur(c)->kind == T_RP) {
+        id = node(c, N_BLOCK, t);
+        if (id >= 0) {
+            c->nodes[id].left = -1;
         }
-        id = node(c, N_INDEX_ASSIGN, name);
-        if (id < 0) {
-            return -1;
-        }
-        v = expression(c);
-        if (v < 0) {
-            return -1;
-        }
-        c->nodes[id].value = sym;
-        c->nodes[id].left = v;
-        c->nodes[id].right = idx;
         return id;
-    }
-    if (!expect(c, T_ASSIGN, "expected =")) {
-        return -1;
-    }
-    id = node(c, N_ASSIGN, name);
-    if (id < 0) {
-        return -1;
     }
     v = expression(c);
     if (v < 0) {
         return -1;
     }
-    c->nodes[id].value = sym;
+    id = node(c, N_EXPR, t);
+    if (id < 0) {
+        return -1;
+    }
     c->nodes[id].left = v;
     return id;
 }
@@ -3024,29 +4752,26 @@ static int for_init(Compiler *c) {
     int v;
     uint8_t is_float = 0;
 
+    if (cur(c)->kind == T_SEMI) {
+        id = node(c, N_BLOCK, t);
+        if (id >= 0) {
+            c->nodes[id].left = -1;
+        }
+        return id;
+    }
     if (take(c, T_INT)) {
         is_float = 0;
     } else if (take(c, T_FLOAT)) {
         is_float = 1;
-    } else if (t->kind == T_ID) {
-        name = t;
-        ++c->pos;
-        sym = sym_find(c, name->name);
-        if (sym < 0) {
-            return fail(c, name->line, name->column, "unknown variable");
-        }
-        if (!expect(c, T_ASSIGN, "expected =")) {
-            return -1;
-        }
-        id = node(c, N_ASSIGN, name);
-        if (id < 0) {
-            return -1;
-        }
+    } else if (t->kind == T_ID || t->kind == T_PLUSPLUS || t->kind == T_MINUSMINUS) {
         v = expression(c);
         if (v < 0) {
             return -1;
         }
-        c->nodes[id].value = sym;
+        id = node(c, N_EXPR, t);
+        if (id < 0) {
+            return -1;
+        }
         c->nodes[id].left = v;
         return id;
     } else {
@@ -3057,14 +4782,11 @@ static int for_init(Compiler *c) {
         return -1;
     }
     if (take(c, T_LBRACK)) {
-        Token *sz = cur(c);
-        if (!expect(c, T_NUM, "expected array size")) {
+        int count = 1;
+        if (!parse_array_dim(c, &count)) {
             return -1;
         }
-        if (!expect(c, T_RBRACK, "expected ]")) {
-            return -1;
-        }
-        sym = sym_add_array(c, name, sz->value, is_float, 0, is_float ? 4 : 4);
+        sym = sym_add_array(c, name, count, is_float, 0, is_float ? 4 : 4);
     } else {
         sym = sym_add(c, name, is_float, is_float ? 4 : 4, 0);
     }
@@ -3098,6 +4820,16 @@ static int statement(Compiler *c) {
     uint8_t uns;
 
     uns = take_qualifiers(c);
+    if (take(c, T_SEMI)) {
+        id = node(c, N_BLOCK, t);
+        if (id >= 0) {
+            c->nodes[id].left = -1;
+        }
+        return id;
+    }
+    if (cur(c)->kind == T_LB) {
+        return block(c);
+    }
     if (take(c, T_ALIGNAS)) {
         if (!expect(c, T_LP, "expected ( after _Alignas")) {
             return -1;
@@ -3105,6 +4837,52 @@ static int statement(Compiler *c) {
         while (!take(c, T_RP) && cur(c)->kind != T_EOF) {
             ++c->pos;
         }
+    }
+    if (take(c, T_ENUM)) {
+        take(c, T_ID);
+        if (take(c, T_LB)) {
+            if (!parse_enum_list(c)) {
+                return -1;
+            }
+        }
+        if (cur(c)->kind == T_ID) {
+            name = cur(c);
+            ++c->pos;
+            if (take(c, T_LBRACK)) {
+                int count = 1;
+                if (!parse_array_dim(c, &count)) {
+                    return -1;
+                }
+                sym = 0;
+                (void)count;
+                (void)name;
+            }
+            /* enum-typed locals are ints */
+            if (sym_find_local(c, name->name) < 0) {
+                sym = sym_add(c, name, 0, 4, 0);
+                if (sym < 0) {
+                    return -1;
+                }
+                id = node(c, N_DECL, t);
+                if (id < 0) {
+                    return -1;
+                }
+                c->nodes[id].value = sym;
+                if (!expect(c, T_SEMI, "expected ; after enum")) {
+                    return -1;
+                }
+                return id;
+            }
+        }
+        if (!expect(c, T_SEMI, "expected ; after enum")) {
+            return -1;
+        }
+        id = node(c, N_BLOCK, t);
+        if (id >= 0) {
+            c->nodes[id].left = -1;
+            c->nodes[id].value = 0;
+        }
+        return id;
     }
     {
         uint8_t w = 0;
@@ -3119,7 +4897,50 @@ static int statement(Compiler *c) {
             w = 1;
         else if (take(c, T_INT))
             w = 4;
+        else if (take(c, T_VOID))
+            w = 4;
+        if (!w && uns && cur(c)->kind == T_ID &&
+            typedef_find(c, cur(c)->name) < 0) {
+            w = 4;
+        }
         if (w) {
+        if (take(c, T_LP)) {
+            int count = 1;
+            while (take(c, T_STAR) || take(c, T_CONST) || take(c, T_VOLATILE)) {
+                ptr = 1;
+            }
+            name = cur(c);
+            if (!expect(c, T_ID, "expected variable name")) {
+                return -1;
+            }
+            if (take(c, T_LBRACK)) {
+                if (!parse_array_dim(c, &count)) {
+                    return -1;
+                }
+            }
+            if (!expect(c, T_RP, "expected ) in function pointer type")) {
+                return -1;
+            }
+            if (cur(c)->kind == T_LP && !skip_paren_depth(c)) {
+                return fail(c, cur(c)->line, cur(c)->column, "bad function pointer type");
+            }
+            ptr = 1;
+            if (count > 1) {
+                sym = sym_add_array(c, name, count, 0, 0, 8);
+            } else {
+                sym = sym_add(c, name, 0, 8, 1);
+            }
+            if (sym < 0) {
+                return -1;
+            }
+            c->syms[sym].is_unsigned = uns;
+            id = node(c, N_DECL, t);
+            if (id < 0) {
+                return -1;
+            }
+            c->nodes[id].value = sym;
+            return finish_decl(c, id, t);
+        }
         while (take(c, T_STAR)) {
             ptr = 1;
         }
@@ -3127,22 +4948,22 @@ static int statement(Compiler *c) {
         if (!expect(c, T_ID, "expected variable name")) {
             return -1;
         }
-        if (take(c, T_LBRACK)) {
-            int32_t count = 0;
-            if (cur(c)->kind == T_NUM) {
-                count = cur(c)->value;
-                ++c->pos;
-            } else {
-                int sz = assignment_expr(c);
-                if (sz < 0) {
-                    return -1;
-                }
-                if (c->nodes[sz].kind != N_INT) {
-                    return fail(c, name->line, name->column, "VLA not supported");
-                }
-                count = c->nodes[sz].value;
+        if (cur(c)->kind == T_LP) {
+            if (!skip_paren_depth(c)) {
+                return fail(c, name->line, name->column, "expected (");
             }
-            if (!expect(c, T_RBRACK, "expected ]")) {
+            if (!expect(c, T_SEMI, "expected ; after prototype")) {
+                return -1;
+            }
+            id = node(c, N_BLOCK, t);
+            if (id >= 0) {
+                c->nodes[id].left = -1;
+            }
+            return id;
+        }
+        if (take(c, T_LBRACK)) {
+            int count = 1;
+            if (!parse_array_dim(c, &count)) {
                 return -1;
             }
             sym = sym_add_array(c, name, count, 0, 0, ptr ? 8 : w);
@@ -3174,14 +4995,11 @@ static int statement(Compiler *c) {
             return -1;
         }
         if (take(c, T_LBRACK)) {
-            Token *sz = cur(c);
-            if (!expect(c, T_NUM, "expected array size")) {
+            int count = 1;
+            if (!parse_array_dim(c, &count)) {
                 return -1;
             }
-            if (!expect(c, T_RBRACK, "expected ]")) {
-                return -1;
-            }
-            sym = sym_add_array(c, name, sz->value, 1, 0, 4);
+            sym = sym_add_array(c, name, count, 1, 0, 4);
         } else {
             sym = sym_add(c, name, 1, 4, ptr);
         }
@@ -3206,14 +5024,11 @@ static int statement(Compiler *c) {
             return -1;
         }
         if (take(c, T_LBRACK)) {
-            Token *sz = cur(c);
-            if (!expect(c, T_NUM, "expected array size")) {
+            int count = 1;
+            if (!parse_array_dim(c, &count)) {
                 return -1;
             }
-            if (!expect(c, T_RBRACK, "expected ]")) {
-                return -1;
-            }
-            sym = sym_add_array(c, name, sz->value, 0, ptr ? 0 : 1, ptr ? 8 : 1);
+            sym = sym_add_array(c, name, count, 0, ptr ? 0 : 1, ptr ? 8 : 1);
         } else {
             sym = sym_add(c, name, 0, ptr ? 8 : 1, ptr);
         }
@@ -3246,15 +5061,8 @@ static int statement(Compiler *c) {
                     return -1;
                 }
                 if (take(c, T_LBRACK)) {
-                    int32_t count = 0;
-                    if (cur(c)->kind == T_NUM) {
-                        count = cur(c)->value;
-                        ++c->pos;
-                    } else {
-                        return fail(c, cur(c)->line, cur(c)->column,
-                                    "expected array size");
-                    }
-                    if (!expect(c, T_RBRACK, "expected ]")) {
+                    int count = 1;
+                    if (!parse_array_dim(c, &count)) {
                         return -1;
                     }
                     sym = sym_add_array(c, name, count, 0, 0, ptr ? 8 : w);
@@ -3265,6 +5073,12 @@ static int statement(Compiler *c) {
                     return -1;
                 }
                 c->syms[sym].is_unsigned = uns;
+                c->syms[sym].struct_id = (int16_t)c->td_struct[ti];
+                if (ptr && c->td_struct[ti] >= 0) {
+                    uint16_t sz = c->structs[c->td_struct[ti]].size;
+                    c->syms[sym].pointee = (uint8_t)(sz > 255 ? 255 : sz);
+                    c->syms[sym].stride = sz ? sz : 8;
+                }
                 id = node(c, N_DECL, t);
                 if (id < 0) {
                     return -1;
@@ -3324,7 +5138,7 @@ static int statement(Compiler *c) {
                 return -1;
             }
             c->syms[sym].is_unsigned = uns;
-            c->syms[sym].struct_id = (int8_t)sid;
+            c->syms[sym].struct_id = (int16_t)sid;
             c->syms[sym].pointee = (uint8_t)(st->size > 255 ? 255 : st->size);
             c->syms[sym].stride = st->size ? st->size : 8;
             id = node(c, N_DECL, t);
@@ -3336,14 +5150,11 @@ static int statement(Compiler *c) {
             return finish_decl(c, id, t);
         }
         if (take(c, T_LBRACK)) {
-            Token *sz = cur(c);
-            if (!expect(c, T_NUM, "expected array size") ||
-                !expect(c, T_RBRACK, "expected ]")) {
+            if (!parse_array_dim(c, &count)) {
                 return -1;
             }
-            count = (int)sz->value;
             if (count < 1 || count > 65536) {
-                fail(c, sz->line, sz->column, "array size out of range");
+                fail(c, vn->line, vn->column, "array size out of range");
                 return -1;
             }
         }
@@ -3361,7 +5172,7 @@ static int statement(Compiler *c) {
             return -1;
         }
         sym = c->nsyms++;
-        text(c->syms[sym].name, NAME_MAX, vn->name);
+        decl_name(c, vn, c->syms[sym].name);
         c->syms[sym].address = c->mem_next;
         c->syms[sym].is_float = 0;
         c->syms[sym].packed = 0;
@@ -3369,11 +5180,12 @@ static int statement(Compiler *c) {
         c->syms[sym].is_ptr = 0;
         c->syms[sym].is_unsigned = 0;
         c->syms[sym].is_global = 0;
-        c->syms[sym].scope = (uint8_t)scope_cur(c);
+        c->syms[sym].scope = (uint16_t)scope_cur(c);
         c->syms[sym].width = 4;
         c->syms[sym].pointee = 0;
-        c->syms[sym].struct_id = (int8_t)sid;
+        c->syms[sym].struct_id = (int16_t)sid;
         c->syms[sym].stride = st->size;
+        c->syms[sym].array_n = (uint16_t)(count > 65535 ? 65535 : count);
         c->mem_next += need;
         id = node(c, N_DECL, t);
         if (id < 0) {
@@ -3394,7 +5206,14 @@ static int statement(Compiler *c) {
         if (init < 0 || !expect(c, T_SEMI, "expected ; after for init")) {
             return -1;
         }
-        v = expression(c);
+        if (cur(c)->kind == T_SEMI) {
+            v = node(c, N_INT, t);
+            if (v >= 0) {
+                c->nodes[v].value = 1;
+            }
+        } else {
+            v = expression(c);
+        }
         if (v < 0 || !expect(c, T_SEMI, "expected ; after for condition")) {
             return -1;
         }
@@ -3522,14 +5341,14 @@ static int statement(Compiler *c) {
         return id;
     }
     if (take(c, T_CASE)) {
-        Token *num = cur(c);
-        if (!expect(c, T_NUM, "expected case value") ||
+        int cv = 0;
+        if (!parse_const_int(c, &cv) ||
             !expect(c, T_COLON, "expected : after case")) {
             return -1;
         }
         id = node(c, N_CASE, t);
         if (id >= 0) {
-            c->nodes[id].value = num->value;
+            c->nodes[id].value = cv;
         }
         return id;
     }
@@ -3657,12 +5476,12 @@ static int statement(Compiler *c) {
     }
     if (cur(c)->kind == T_ID &&
         (c->tokens[c->pos + 1].kind == T_ASSIGN ||
-         c->tokens[c->pos + 1].kind == T_LBRACK ||
-         c->tokens[c->pos + 1].kind == T_DOT ||
-         c->tokens[c->pos + 1].kind == T_ARROW ||
          c->tokens[c->pos + 1].kind == T_PLUSPLUS ||
          c->tokens[c->pos + 1].kind == T_MINUSMINUS ||
-         c->tokens[c->pos + 1].kind == T_PLUSEQ)) {
+         c->tokens[c->pos + 1].kind == T_PLUSEQ ||
+         c->tokens[c->pos + 1].kind == T_MINUSEQ ||
+         c->tokens[c->pos + 1].kind == T_STAREQ ||
+         c->tokens[c->pos + 1].kind == T_SLASHEQ)) {
         name = cur(c);
         ++c->pos;
         sym = sym_find(c, name->name);
@@ -3793,10 +5612,12 @@ static int statement(Compiler *c) {
                 c->nodes[e].left = id;
                 id = e;
             }
-        } else if (take(c, T_PLUSEQ) || take(c, T_MINUSEQ) || take(c, T_STAREQ)) {
+        } else if (take(c, T_PLUSEQ) || take(c, T_MINUSEQ) || take(c, T_STAREQ) ||
+                   take(c, T_SLASHEQ)) {
             TokenKind opk = c->tokens[c->pos - 1].kind;
             int var = node(c, N_VAR, name);
             int bin;
+            NodeKind bk = N_ADD;
             if (var < 0) {
                 return -1;
             }
@@ -3805,7 +5626,14 @@ static int statement(Compiler *c) {
             if (v < 0) {
                 return -1;
             }
-            bin = node(c, opk == T_PLUSEQ ? N_ADD : (opk == T_MINUSEQ ? N_SUB : N_MUL), name);
+            if (opk == T_MINUSEQ) {
+                bk = N_SUB;
+            } else if (opk == T_STAREQ) {
+                bk = N_MUL;
+            } else if (opk == T_SLASHEQ) {
+                bk = N_DIV;
+            }
+            bin = node(c, bk, name);
             c->nodes[bin].left = var;
             c->nodes[bin].right = v;
             id = node(c, N_ASSIGN, name);
@@ -3886,8 +5714,14 @@ static int block(Compiler *c) {
     return id;
 }
 
-static int parse_function(Compiler *c, uint8_t ret, Token *name) {
+static int parse_function(Compiler *c, uint8_t ret, Token *name, int16_t ret_sid) {
     FuncDef *f;
+    char fname[NAME_MAX];
+    if (c->saw_static && c->tu_id > 0) {
+        static_mangle(c, name->name, fname);
+    } else {
+        text(fname, NAME_MAX, name->name);
+    }
     if (c->nfuncs == FUNC_MAX) {
         return fail(c, name->line, name->column, "too many functions");
     }
@@ -3895,19 +5729,28 @@ static int parse_function(Compiler *c, uint8_t ret, Token *name) {
         int ex = func_find(c, name->name);
         f = &c->funcs[ex];
         if (f->body >= 0) {
+            if (!skip_paren_depth(c)) {
+                return fail(c, name->line, name->column, "expected (");
+            }
+            if (take(c, T_SEMI)) {
+                return 1;
+            }
             return fail(c, name->line, name->column, "duplicate function");
         }
         c->cur_fn = ex;
         f->argc = 0;
+        f->ret = ret;
+        f->ret_sid = ret_sid;
     } else {
         f = &c->funcs[c->nfuncs++];
-        text(f->name, NAME_MAX, name->name);
+        text(f->name, NAME_MAX, fname);
         f->argc = 0;
         f->ret = ret;
         f->body = -1;
         f->entry = -1;
         f->is_main = (uint8_t)same(name->name, "main");
         f->is_varargs = 0;
+        f->ret_sid = ret_sid;
         c->cur_fn = c->nfuncs - 1;
     }
     c->scope_base = c->nsyms;
@@ -3919,73 +5762,78 @@ static int parse_function(Compiler *c, uint8_t ret, Token *name) {
     }
     if (!take(c, T_RP)) {
         do {
-            uint8_t isf = 0;
-            uint8_t w = 4;
-            uint8_t ptr = 0;
+            DeclType dt;
             Token *an;
+            Token tmp;
+            char aname[NAME_MAX];
             int sym;
+            uint8_t w;
+            uint8_t ptr;
             if (take(c, T_ELLIPSIS)) {
                 f->is_varargs = 1;
                 break;
             }
-            take(c, T_CONST);
-            {
-                uint8_t auns = 0;
-                if (take(c, T_UNSIGNED)) {
-                    auns = 1;
-                }
-                take(c, T_SIGNED);
-            if (take(c, T_FLOAT)) {
-                isf = 1;
-                w = 4;
-            } else if (take(c, T_CHAR) || take(c, T_BOOL)) {
-                w = 1;
-            } else if (take(c, T_SHORT)) {
-                w = 2;
-            } else if (take(c, T_LONG)) {
-                w = 8;
-                take(c, T_INT);
-            } else if (take(c, T_INT) || take(c, T_VOID)) {
-                w = 4;
+            aname[0] = 0;
+            if (!parse_type_n(c, &dt, aname, NAME_MAX)) {
+                return fail(c, cur(c)->line, cur(c)->column, "expected arg type");
+            }
+            if (dt.is_void && !dt.ptr &&
+                (cur(c)->kind == T_RP || cur(c)->kind == T_COMMA)) {
+                break;
+            }
+            if (aname[0]) {
+                tmp.kind = T_ID;
+                tmp.line = name->line;
+                tmp.column = name->column;
+                tmp.value = 0;
+                text(tmp.name, NAME_MAX, aname);
+                an = &tmp;
+            } else if (cur(c)->kind == T_COMMA || cur(c)->kind == T_RP) {
+                tmp.kind = T_ID;
+                tmp.line = name->line;
+                tmp.column = name->column;
+                tmp.value = 0;
+                tmp.name[0] = '_';
+                tmp.name[1] = 'a';
+                tmp.name[2] = (char)('0' + (f->argc % 10));
+                tmp.name[3] = 0;
+                an = &tmp;
             } else {
-                int ti;
-                int found = 0;
-                for (ti = 0; ti < c->ntypedef; ++ti) {
-                    if (cur(c)->kind == T_ID &&
-                        same(c->td_name[ti], cur(c)->name)) {
-                        w = (uint8_t)c->td_width[ti];
-                        ptr = (uint8_t)c->td_ptr[ti];
-                        ++c->pos;
-                        found = 1;
-                        break;
-                    }
-                }
-                if (!found) {
-                    return fail(c, cur(c)->line, cur(c)->column,
-                                "expected arg type");
+                an = cur(c);
+                if (!expect(c, T_ID, "expected arg name")) {
+                    return 0;
                 }
             }
-            while (take(c, T_STAR)) {
+            if (take(c, T_LBRACK)) {
+                int dummy = 1;
+                if (!parse_array_dim(c, &dummy)) {
+                    return 0;
+                }
                 ptr = 1;
-                w = 8;
-            }
-            an = cur(c);
-            if (!expect(c, T_ID, "expected arg name")) {
-                return 0;
+                dt.ptr = 1;
             }
             if (f->argc == FUNC_ARG_MAX) {
                 return fail(c, an->line, an->column, "too many args");
             }
-            sym = sym_add(c, an, isf, w, ptr);
+            ptr = dt.ptr;
+            w = ptr ? 8 : (uint8_t)(dt.w >= 8 ? 8 : (dt.w ? dt.w : 4));
+            sym = sym_add(c, an, dt.isf, w, ptr);
             if (sym < 0) {
                 return 0;
             }
-            c->syms[sym].is_unsigned = auns;
-            f->arg_float[f->argc] = isf;
+            c->syms[sym].is_unsigned = dt.uns;
+            if (dt.sid >= 0) {
+                c->syms[sym].struct_id = dt.sid;
+                if (ptr) {
+                    uint16_t sz = c->structs[dt.sid].size;
+                    c->syms[sym].pointee = (uint8_t)(sz > 255 ? 255 : sz);
+                    c->syms[sym].stride = sz ? sz : 8;
+                }
+            }
+            f->arg_float[f->argc] = dt.isf;
             f->arg_width[f->argc] = c->syms[sym].width;
             f->arg_addr[f->argc] = c->syms[sym].address;
             f->argc++;
-            }
         } while (take(c, T_COMMA));
         if (!expect(c, T_RP, "expected )")) {
             return 0;
@@ -4014,173 +5862,210 @@ static int parse_decls(Compiler *c) {
         uint8_t uns;
         uns = take_qualifiers(c);
         if (take(c, T_ENUM)) {
-            int ev = 0;
             take(c, T_ID);
             if (!expect(c, T_LB, "expected { after enum")) {
                 return -1;
             }
-            while (!take(c, T_RB) && cur(c)->kind != T_EOF) {
-                Token *en = cur(c);
-                if (!expect(c, T_ID, "expected enumerator")) {
-                    return -1;
-                }
-                if (take(c, T_ASSIGN)) {
-                    Token *nv = cur(c);
-                    if (!expect(c, T_NUM, "expected enum value")) {
-                        return -1;
-                    }
-                    ev = nv->value;
-                }
-                if (c->nconst < 128) {
-                    text(c->const_name[c->nconst], NAME_MAX, en->name);
-                    c->const_val[c->nconst] = ev;
-                    c->nconst++;
-                }
-                ev++;
-                take(c, T_COMMA);
+            if (!parse_enum_list(c)) {
+                return -1;
             }
-            expect(c, T_SEMI, "expected ; after enum");
+            take(c, T_ID);
+            if (!expect(c, T_SEMI, "expected ; after enum")) {
+                return -1;
+            }
             continue;
         }
         if (take(c, T_TYPEDEF)) {
-            int w = 4;
-            int ptr = 0;
+            DeclType dt;
             Token *tn;
-            take(c, T_UNSIGNED);
-            take(c, T_SIGNED);
-            if (take(c, T_CHAR) || take(c, T_BOOL)) {
-                w = 1;
-            } else if (take(c, T_SHORT)) {
-                w = 2;
-            } else if (take(c, T_LONG)) {
-                w = 8;
-                take(c, T_INT);
-            } else if (take(c, T_FLOAT)) {
-                w = 4;
-            } else if (take(c, T_VOID)) {
-                w = 4;
-            } else if (take(c, T_STRUCT) || take(c, T_UNION) || take(c, T_ENUM)) {
-                take(c, T_ID);
+            Token tmp;
+            char tname[NAME_MAX];
+            tname[0] = 0;
+            skip_attr(c);
+            if (!parse_type_n(c, &dt, tname, NAME_MAX)) {
+                fail(c, cur(c)->line, cur(c)->column, "expected typedef type");
+                return -1;
+            }
+            if (tname[0]) {
+                tmp.kind = T_ID;
+                tmp.line = cur(c)->line;
+                tmp.column = cur(c)->column;
+                tmp.value = 0;
+                text(tmp.name, NAME_MAX, tname);
+                tn = &tmp;
             } else {
-                take(c, T_INT);
-            }
-            while (take(c, T_STAR)) {
-                ptr = 1;
-                w = 8;
-            }
-            tn = cur(c);
-            if (!expect(c, T_ID, "expected typedef name") ||
-                !expect(c, T_SEMI, "expected ; after typedef")) {
-                return -1;
-            }
-            if (c->ntypedef < 64) {
-                text(c->td_name[c->ntypedef], NAME_MAX, tn->name);
-                c->td_width[c->ntypedef] = w;
-                c->td_ptr[c->ntypedef] = ptr;
-                c->ntypedef++;
-            }
-            continue;
-        }
-        if (take(c, T_UNION)) {
-            if (!parse_struct_def(c, 1) ||
-                !expect(c, T_SEMI, "expected ; after union")) {
-                return -1;
-            }
-            continue;
-        }
-        if (take(c, T_STRUCT)) {
-            if (!parse_struct_def(c, 0) ||
-                !expect(c, T_SEMI, "expected ; after struct")) {
-                return -1;
-            }
-            continue;
-        }
-        if (take(c, T_VOID)) {
-            ret = 0;
-        } else if (take(c, T_LONG)) {
-            ret = 1;
-            gw = 8;
-            take(c, T_INT);
-        } else if (take(c, T_SHORT)) {
-            ret = 1;
-            gw = 2;
-            take(c, T_INT);
-        } else if (take(c, T_BOOL) || take(c, T_CHAR)) {
-            ret = 1;
-            gw = 1;
-        } else if (take(c, T_INT)) {
-            ret = 1;
-            gw = 4;
-        } else if (take(c, T_FLOAT)) {
-            ret = 2;
-            gw = 4;
-            isf = 1;
-        } else if (cur(c)->kind == T_ID) {
-            int ti;
-            int found = 0;
-            for (ti = 0; ti < c->ntypedef; ++ti) {
-                if (same(c->td_name[ti], cur(c)->name)) {
-                    found = 1;
-                    ret = 1;
-                    gw = (uint8_t)c->td_width[ti];
-                    ptr = (uint8_t)c->td_ptr[ti];
-                    ++c->pos;
-                    break;
+                tn = cur(c);
+                if (!expect(c, T_ID, "expected typedef name")) {
+                    return -1;
                 }
             }
-            if (!found) {
+            if (take(c, T_LBRACK)) {
+                int dummy = 1;
+                if (!parse_array_dim(c, &dummy)) {
+                    return -1;
+                }
+                dt.ptr = 1;
+                dt.w = 8;
+            }
+            if (!expect(c, T_SEMI, "expected ; after typedef")) {
+                return -1;
+            }
+            {
+                int ti = typedef_find(c, tn->name);
+                if (ti < 0 && c->ntypedef < TYPEDEF_MAX) {
+                    ti = c->ntypedef++;
+                    text(c->td_name[ti], NAME_MAX, tn->name);
+                }
+                if (ti >= 0) {
+                    c->td_width[ti] = dt.ptr ? 8 : dt.w;
+                    c->td_ptr[ti] = dt.ptr;
+                    c->td_struct[ti] = dt.sid;
+                }
+            }
+            continue;
+        }
+        {
+            DeclType dt;
+            char nbuf[NAME_MAX];
+            int gsid = -1;
+            nbuf[0] = 0;
+            if (!parse_type_n(c, &dt, nbuf, NAME_MAX)) {
                 fail(c, cur(c)->line, cur(c)->column, "expected function or struct");
                 return -1;
             }
-        } else {
-            fail(c, cur(c)->line, cur(c)->column, "expected function or struct");
-            return -1;
-        }
-        while (take(c, T_STAR)) {
-            ptr = 1;
-        }
-        name = cur(c);
-        if (!expect(c, T_ID, "expected function name")) {
-            return -1;
-        }
-        if (cur(c)->kind != T_LP) {
-            int gsym;
-            if (take(c, T_LBRACK)) {
-                Token *sz = cur(c);
-                if (!expect(c, T_NUM, "expected array size") ||
-                    !expect(c, T_RBRACK, "expected ]")) {
-                    return -1;
+            ptr = dt.ptr;
+            gw = (uint8_t)(ptr ? 8 : (dt.w >= 8 ? 8 : (dt.w ? dt.w : 4)));
+            isf = dt.isf;
+            gsid = dt.sid;
+            if (cur(c)->kind == T_SEMI) {
+                if (nbuf[0]) {
+                    Token vn;
+                    int gsym;
+                    vn.kind = T_ID;
+                    vn.line = cur(c)->line;
+                    vn.column = cur(c)->column;
+                    vn.value = 0;
+                    text(vn.name, NAME_MAX, nbuf);
+                    gsym = sym_add(c, &vn, isf, gw, ptr);
+                    if (gsym < 0) {
+                        return -1;
+                    }
+                    c->syms[gsym].is_global = 1;
+                    c->syms[gsym].is_unsigned = uns;
+                    c->syms[gsym].struct_id = (int16_t)gsid;
                 }
-                gsym = sym_add_array(c, name, sz->value, isf, gw == 1 && !ptr, ptr ? 8 : gw);
+                ++c->pos;
+                continue;
+            }
+            if (dt.is_void && !ptr) {
+                ret = 0;
+            } else if (isf) {
+                ret = 2;
             } else {
-                gsym = sym_add(c, name, isf, gw, ptr);
+                ret = 1;
             }
-            if (gsym < 0) {
+            if (nbuf[0]) {
+                Token tmp;
+                tmp.kind = T_ID;
+                tmp.line = cur(c)->line;
+                tmp.column = cur(c)->column;
+                tmp.value = 0;
+                text(tmp.name, NAME_MAX, nbuf);
+                name = &c->tokens[c->pos];
+                {
+                    int gi;
+                    if (cur(c)->kind != T_LP) {
+                        Token vn = tmp;
+                        int gsym;
+                        gsym = sym_add(c, &vn, isf, gw, ptr);
+                        if (gsym < 0) {
+                            return -1;
+                        }
+                        c->syms[gsym].is_global = 1;
+                        c->syms[gsym].is_unsigned = uns;
+                        c->syms[gsym].struct_id = (int16_t)gsid;
+                        if (!expect(c, T_SEMI, "expected ; after global")) {
+                            return -1;
+                        }
+                        continue;
+                    }
+                    if (!parse_function(c, ret, &tmp, (int16_t)gsid)) {
+                        return -1;
+                    }
+                    (void)gi;
+                    continue;
+                }
+            }
+            name = cur(c);
+            if (!expect(c, T_ID, "expected function name")) {
                 return -1;
             }
-            c->syms[gsym].is_global = 1;
-            c->syms[gsym].is_unsigned = uns;
-            if (take(c, T_ASSIGN)) {
-                int gi = expression(c);
-                if (gi < 0) {
+            if (cur(c)->kind != T_LP) {
+                int gsym;
+                for (;;) {
+                    if (take(c, T_LBRACK)) {
+                        int count = 256;
+                        if (!parse_array_dim(c, &count)) {
+                            return -1;
+                        }
+                        gsym = sym_add_array(c, name, count, isf, gw == 1 && !ptr,
+                                             ptr ? 8 : gw);
+                    } else {
+                        gsym = sym_add(c, name, isf, gw, ptr);
+                    }
+                    if (gsym < 0) {
+                        return -1;
+                    }
+                    c->syms[gsym].is_global = 1;
+                    c->syms[gsym].is_unsigned = uns;
+                    c->syms[gsym].struct_id = (int16_t)gsid;
+                    if (take(c, T_ASSIGN)) {
+                        if (take(c, T_LB)) {
+                            int depth = 1;
+                            while (depth && cur(c)->kind != T_EOF) {
+                                if (take(c, T_LB)) {
+                                    depth++;
+                                } else if (take(c, T_RB)) {
+                                    depth--;
+                                } else {
+                                    ++c->pos;
+                                }
+                            }
+                        } else {
+                            int gi = assignment_expr(c);
+                            if (gi < 0) {
+                                return -1;
+                            }
+                            if (c->nginits < GINIT_MAX) {
+                                c->ginit_sym[c->nginits] = gsym;
+                                c->ginit_expr[c->nginits] = gi;
+                                c->nginits++;
+                            }
+                        }
+                    }
+                    if (!take(c, T_COMMA)) {
+                        break;
+                    }
+                    while (take(c, T_STAR)) {
+                        ptr = 1;
+                        gw = 8;
+                    }
+                    name = cur(c);
+                    if (!expect(c, T_ID, "expected identifier")) {
+                        return -1;
+                    }
+                }
+                if (!expect(c, T_SEMI, "expected ; after global")) {
                     return -1;
                 }
-                if (c->nginits < GINIT_MAX) {
-                    c->ginit_sym[c->nginits] = gsym;
-                    c->ginit_expr[c->nginits] = gi;
-                    c->nginits++;
-                }
+                continue;
             }
-            if (!expect(c, T_SEMI, "expected ; after global")) {
+            if (!parse_function(c, ret, name, (int16_t)gsid)) {
                 return -1;
             }
-            continue;
-        }
-        if (!parse_function(c, ret, name)) {
-            return -1;
-        }
-        if (c->funcs[c->nfuncs - 1].is_main) {
-            main_i = c->nfuncs - 1;
+            if (c->funcs[c->nfuncs - 1].is_main) {
+                main_i = c->nfuncs - 1;
+            }
         }
     }
     (void)main_i;
@@ -4190,7 +6075,7 @@ static int parse_decls(Compiler *c) {
 static int program(Compiler *c) {
     int main_i = -1;
     int i;
-    if (parse_decls(c) < 0) {
+    if (parse_decls(c) != 1) {
         return -1;
     }
     for (i = 0; i < c->nfuncs; ++i) {
@@ -4303,6 +6188,7 @@ static int patch(Compiler *c, int p, size_t target, Node *x) {
 }
 
 static int gen_expr(Compiler *c, int id);
+static int gen_stmt(Compiler *c, int id);
 
 static int gen_float_binop(Compiler *c, Node *n, uint8_t op) {
     int lf = c->nodes[n->left].is_float;
@@ -4345,6 +6231,12 @@ static int gen_field_addr(Compiler *c, int sym, int fi, int idx_id, Node *n) {
     int sid = c->syms[sym].struct_id;
     if (sid >= 0 && fi >= 0 && fi < c->structs[sid].nfields) {
         off = c->structs[sid].foff[fi];
+    }
+    if ((n->kind == N_FIELD || n->kind == N_ARROW) && n->third > 15) {
+        off = (uint16_t)(off + (uint16_t)(n->third >> 4));
+    }
+    if (n->kind == N_FIELD_ASSIGN) {
+        off = (uint16_t)(off + (uint16_t)((unsigned)n->third >> 16));
     }
     if (idx_id == -3) {
         if (!push(c, (int32_t)c->syms[sym].address, n) ||
@@ -4456,10 +6348,46 @@ static int gen_call(Compiler *c, Node *n) {
             return byte(c, CL_OP_STOREB, n) ? 0 : -1;
         }
         fn = func_find(c, n->name);
+        if (n->right == -2) {
+            for (i = 0; i < n->value; ++i) {
+                leaves = gen_expr(c, c->args[n->left + i]);
+                if (leaves != 1) {
+                    fail(c, n->line, n->column, "argument has no value");
+                    return -1;
+                }
+                if (i < FUNC_ARG_MAX) {
+                    if (!push(c, (int32_t)c->icall_base + i * 8, n) ||
+                        !byte(c, CL_OP_STORE64, n)) {
+                        return -1;
+                    }
+                } else if (!push(c, (int32_t)c->va_base + (i - FUNC_ARG_MAX) * 8, n) ||
+                           !byte(c, CL_OP_STORE64, n)) {
+                    return -1;
+                }
+            }
+            if (gen_expr(c, n->third) != 1 || !byte(c, CL_OP_CALLI, n)) {
+                return -1;
+            }
+            return 1;
+        }
         if (fn < 0) {
             int sy = n->right > 0 ? n->right - 1 : -1;
             if (sy < 0) {
-                fail(c, n->line, n->column, "unknown function");
+                char msg[80];
+                int k = 0;
+                const char *p = "unknown function ";
+                while (p[k]) {
+                    msg[k] = p[k];
+                    k++;
+                }
+                {
+                    int j = 0;
+                    while (n->name[j] && k + 1 < 80) {
+                        msg[k++] = n->name[j++];
+                    }
+                }
+                msg[k] = 0;
+                fail(c, n->line, n->column, msg);
                 return -1;
             }
             for (i = 0; i < n->value; ++i) {
@@ -4515,6 +6443,57 @@ static int gen_call(Compiler *c, Node *n) {
         n->is_float = (uint8_t)(c->funcs[fn].ret == 2);
         return c->funcs[fn].ret ? 1 : 0;
     }
+    if (b && same(n->name, "fopen") && n->value >= 1) {
+        if (gen_expr(c, c->args[n->left]) != 1) {
+            return -1;
+        }
+        for (i = 1; i < n->value; ++i) {
+            if (gen_expr(c, c->args[n->left + i]) != 1 || !byte(c, CL_OP_DROP, n)) {
+                return -1;
+            }
+        }
+        if (!push(c, b->id, n) || !byte(c, CL_OP_SYS, n)) {
+            return -1;
+        }
+        return 1;
+    }
+    if (b && (same(n->name, "fread") || same(n->name, "fwrite")) &&
+        n->value == 4) {
+        if (gen_expr(c, c->args[n->left + 3]) != 1) {
+            return -1;
+        }
+        if (gen_expr(c, c->args[n->left]) != 1) {
+            return -1;
+        }
+        if (gen_expr(c, c->args[n->left + 1]) != 1) {
+            return -1;
+        }
+        if (gen_expr(c, c->args[n->left + 2]) != 1) {
+            return -1;
+        }
+        if (!byte(c, CL_OP_MUL, n)) {
+            return -1;
+        }
+        if (!push(c, b->id, n) || !byte(c, CL_OP_SYS, n)) {
+            return -1;
+        }
+        return 1;
+    }
+    if (b && same(n->name, "fseek") && n->value == 3) {
+        if (gen_expr(c, c->args[n->left]) != 1) {
+            return -1;
+        }
+        if (gen_expr(c, c->args[n->left + 1]) != 1) {
+            return -1;
+        }
+        if (gen_expr(c, c->args[n->left + 2]) != 1 || !byte(c, CL_OP_DROP, n)) {
+            return -1;
+        }
+        if (!push(c, b->id, n) || !byte(c, CL_OP_SYS, n)) {
+            return -1;
+        }
+        return 1;
+    }
     if (n->value != b->argc) {
         fail(c, n->line, n->column, "wrong builtin argument count");
         return -1;
@@ -4552,6 +6531,44 @@ static int gen_narrow(Compiler *c, Node *n, int width, int uns) {
         return 0;
     }
     return 1;
+}
+
+static int expr_ptr_stride(Compiler *c, int nid) {
+    Node *n;
+    if (nid < 0) {
+        return 0;
+    }
+    n = &c->nodes[nid];
+    if (n->kind == N_VAR) {
+        Symbol *s = &c->syms[n->value];
+        if (s->is_ptr) {
+            return s->stride ? (int)s->stride : 1;
+        }
+        if (s->is_array) {
+            return s->stride ? (int)s->stride : 1;
+        }
+    }
+    if (n->kind == N_CAST && (n->value & CAST_PTR)) {
+        int pw = CAST_POINTEE(n->value);
+        if (pw <= 1) {
+            return 1;
+        }
+        if (pw < 4) {
+            return 4;
+        }
+        return pw;
+    }
+    if (n->kind == N_ADD || n->kind == N_SUB) {
+        int sl = expr_ptr_stride(c, n->left);
+        if (sl) {
+            return sl;
+        }
+        return expr_ptr_stride(c, n->right);
+    }
+    if (n->kind == N_ADDR) {
+        return expr_ptr_stride(c, n->left);
+    }
+    return 0;
 }
 
 static int gen_expr(Compiler *c, int id) {
@@ -4625,7 +6642,12 @@ static int gen_expr(Compiler *c, int id) {
             return -1;
         }
         sid = c->syms[n->value].struct_id;
-        if (sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields) {
+        if (n->third > 0) {
+            w = (uint8_t)(n->third & 15);
+            if (w == 0) {
+                w = 4;
+            }
+        } else if (sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields) {
             w = c->structs[sid].fwidth[n->left];
         }
         if (n->is_float) {
@@ -4645,9 +6667,85 @@ static int gen_expr(Compiler *c, int id) {
         if (gen_field_addr(c, n->value, n->left, -3, n) != 1) {
             return -1;
         }
-        sid = c->syms[n->value].struct_id;
-        if (sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields) {
-            w = c->structs[sid].fwidth[n->left];
+        if (n->right >= 0) {
+            if (gen_expr(c, n->right) != 1) {
+                return -1;
+            }
+            if (!push(c, 4, n) || !byte(c, CL_OP_MUL, n) ||
+                !byte(c, CL_OP_ADD, n)) {
+                return -1;
+            }
+            w = 4;
+        } else {
+            sid = c->syms[n->value].struct_id;
+            if (n->third > 0) {
+                w = (uint8_t)(n->third & 15);
+                if (w == 0) {
+                    w = 4;
+                }
+            } else if (sid >= 0 && n->left >= 0 &&
+                       n->left < c->structs[sid].nfields) {
+                w = c->structs[sid].fwidth[n->left];
+            }
+        }
+        if (n->is_float) {
+            return byte(c, CL_OP_FLOAD, n) ? 1 : -1;
+        }
+        if (w >= 8) {
+            return byte(c, CL_OP_LOAD64, n) ? 1 : -1;
+        }
+        if (w == 1) {
+            return byte(c, CL_OP_LOADB, n) ? 1 : -1;
+        }
+        return byte(c, CL_OP_LOAD, n) ? 1 : -1;
+    }
+    if (n->kind == N_PTRFIELD) {
+        uint8_t w = 4;
+        {
+            Node *L = &c->nodes[n->left];
+            if (L->kind == N_FIELD && n->right >= 0) {
+                if (gen_field_addr(c, L->value, L->left, L->right, n) != 1) {
+                    return -1;
+                }
+                if ((L->third >> 4) != 0 &&
+                    (!push(c, L->third >> 4, n) || !byte(c, CL_OP_ADD, n))) {
+                    return -1;
+                }
+            } else if (L->kind == N_ARROW && n->right >= 0) {
+                if (gen_field_addr(c, L->value, L->left, -3, n) != 1) {
+                    return -1;
+                }
+            } else if (L->kind == N_PTRFIELD) {
+                if (gen_expr(c, n->left) != 1) {
+                    return -1;
+                }
+            } else if (gen_expr(c, n->left) != 1) {
+                return -1;
+            }
+            if ((n->value & 0x10000) && !byte(c, CL_OP_LOAD64, n)) {
+                return -1;
+            }
+        }
+        if (n->right >= 0) {
+            if (gen_expr(c, n->right) != 1) {
+                return -1;
+            }
+            if (!push(c, n->value ? n->value : 4, n) || !byte(c, CL_OP_MUL, n) ||
+                !byte(c, CL_OP_ADD, n)) {
+                return -1;
+            }
+            if (n->third == 0) {
+                return 1;
+            }
+        } else {
+            w = (uint8_t)n->value;
+            if (w == 0) {
+                w = 4;
+            }
+        }
+        if (n->third != 0 &&
+            (!push(c, n->third, n) || !byte(c, CL_OP_ADD, n))) {
+            return -1;
         }
         if (n->is_float) {
             return byte(c, CL_OP_FLOAD, n) ? 1 : -1;
@@ -4684,8 +6782,41 @@ static int gen_expr(Compiler *c, int id) {
         return byte(c, CL_OP_NOT, n) ? 1 : -1;
     }
     if (n->kind == N_ADDR) {
-        if (c->nodes[n->left].kind == N_VAR) {
-            return push(c, c->syms[c->nodes[n->left].value].address, n) ? 1 : -1;
+        Node *l = &c->nodes[n->left];
+        if (l->kind == N_VAR) {
+            return push(c, c->syms[l->value].address, n) ? 1 : -1;
+        }
+        if (l->kind == N_INDEX) {
+            return gen_index_addr(c, l->value, l->left, l);
+        }
+        if (l->kind == N_FIELD) {
+            return gen_field_addr(c, l->value, l->left, l->right, l);
+        }
+        if (l->kind == N_ARROW) {
+            return gen_field_addr(c, l->value, l->left, -3, l);
+        }
+        if (l->kind == N_DEREF) {
+            return gen_expr(c, l->left);
+        }
+        if (l->kind == N_PTRFIELD) {
+            if (gen_expr(c, l->left) != 1) {
+                return -1;
+            }
+            if (l->right >= 0) {
+                if (gen_expr(c, l->right) != 1) {
+                    return -1;
+                }
+                if (!push(c, (l->value & 0xffff) ? (l->value & 0xffff) : 4, n) ||
+                    !byte(c, CL_OP_MUL, n) ||
+                    !byte(c, CL_OP_ADD, n)) {
+                    return -1;
+                }
+            }
+            if (l->third != 0 &&
+                (!push(c, l->third, n) || !byte(c, CL_OP_ADD, n))) {
+                return -1;
+            }
+            return 1;
         }
         fail(c, n->line, n->column, "& needs lvalue");
         return -1;
@@ -4735,6 +6866,107 @@ static int gen_expr(Compiler *c, int id) {
             }
         }
         return 1;
+    }
+    if (n->kind == N_ASSIGN) {
+        int v = gen_expr(c, n->left);
+        if (v != 1 || !byte(c, CL_OP_DUP, n) ||
+            !push(c, c->syms[n->value].address, n) ||
+            !byte(c, mem_st(&c->syms[n->value]), n)) {
+            return -1;
+        }
+        return 1;
+    }
+    if (n->kind == N_INDEX_ASSIGN) {
+        uint8_t op = mem_st(&c->syms[n->value]);
+        if (gen_expr(c, n->left) != 1) {
+            return -1;
+        }
+        if (!byte(c, CL_OP_DUP, n)) {
+            return -1;
+        }
+        if (gen_index_addr(c, n->value, n->right, n) != 1) {
+            return -1;
+        }
+        if (c->syms[n->value].packed ||
+            (c->syms[n->value].is_ptr && c->syms[n->value].pointee == 1)) {
+            op = CL_OP_STOREB;
+        } else if (c->syms[n->value].is_ptr && c->syms[n->value].pointee >= 8) {
+            op = CL_OP_STORE64;
+        }
+        return byte(c, op, n) ? 1 : -1;
+    }
+    if (n->kind == N_FIELD_ASSIGN) {
+        int sid = c->syms[n->value].struct_id;
+        uint8_t isf;
+        int fi = n->third & 255;
+        int fw = (n->third >> 8) & 255;
+        uint8_t op;
+        if (sid < 0 || fi < 0) {
+            fail(c, n->line, n->column, "bad field assign");
+            return -1;
+        }
+        isf = n->is_float;
+        if (!isf && sid >= 0 && fi < c->structs[sid].nfields) {
+            isf = c->structs[sid].is_float[fi];
+        }
+        if (fw == 0 && sid >= 0 && fi < c->structs[sid].nfields) {
+            fw = c->structs[sid].fwidth[fi];
+        }
+        if (gen_expr(c, n->left) != 1) {
+            return -1;
+        }
+        if (!byte(c, CL_OP_DUP, n)) {
+            return -1;
+        }
+        if (gen_field_addr(c, n->value, fi, n->right, n) != 1) {
+            return -1;
+        }
+        if (isf) {
+            op = CL_OP_FSTORE;
+        } else if (fw >= 8) {
+            op = CL_OP_STORE64;
+        } else if (fw == 1) {
+            op = CL_OP_STOREB;
+        } else {
+            op = CL_OP_STORE;
+        }
+        return byte(c, op, n) ? 1 : -1;
+    }
+    if (n->kind == N_DEREF_ASSIGN) {
+        uint8_t op = CL_OP_STORE;
+        int src = n->right;
+        if (gen_expr(c, n->left) != 1) {
+            return -1;
+        }
+        if (!byte(c, CL_OP_DUP, n)) {
+            return -1;
+        }
+        if (gen_expr(c, n->right) != 1) {
+            return -1;
+        }
+        while (src >= 0 && c->nodes[src].kind == N_CAST) {
+            int32_t cv = c->nodes[src].value;
+            if (cv & CAST_PTR) {
+                int pw = CAST_POINTEE(cv);
+                if (pw <= 1) {
+                    op = CL_OP_STOREB;
+                } else if (pw >= 8) {
+                    op = CL_OP_STORE64;
+                }
+                src = -1;
+                break;
+            }
+            src = c->nodes[src].left;
+        }
+        if (src >= 0 && c->nodes[src].kind == N_VAR) {
+            Symbol *s = &c->syms[c->nodes[src].value];
+            if (s->is_ptr && s->pointee == 1) {
+                op = CL_OP_STOREB;
+            } else if (s->is_ptr && s->pointee >= 8) {
+                op = CL_OP_STORE64;
+            }
+        }
+        return byte(c, op, n) ? 1 : -1;
     }
     if (n->kind == N_CAST) {
         int32_t cv = n->value;
@@ -4811,6 +7043,36 @@ static int gen_expr(Compiler *c, int id) {
             !byte(c, n->kind == N_PREINC ? CL_OP_ADD : CL_OP_SUB, n) ||
             !byte(c, CL_OP_DUP, n) || !push(c, c->syms[sym].address, n) ||
             !byte(c, mem_st(&c->syms[sym]), n)) {
+            return -1;
+        }
+        return 1;
+    }
+    if (n->kind == N_POSTINC || n->kind == N_POSTDEC) {
+        int sym = n->value;
+        if (c->nodes[n->left].kind == N_VAR) {
+            sym = c->nodes[n->left].value;
+        }
+        if (sym < 0 || !push(c, c->syms[sym].address, n) ||
+            !byte(c, mem_ld(&c->syms[sym]), n) || !byte(c, CL_OP_DUP, n) ||
+            !push(c, 1, n) ||
+            !byte(c, n->kind == N_POSTINC ? CL_OP_ADD : CL_OP_SUB, n) ||
+            !push(c, c->syms[sym].address, n) ||
+            !byte(c, mem_st(&c->syms[sym]), n)) {
+            return -1;
+        }
+        return 1;
+    }
+    if (n->kind == N_POSTINC || n->kind == N_POSTDEC) {
+        int psym = n->value;
+        if (c->nodes[n->left].kind == N_VAR) {
+            psym = c->nodes[n->left].value;
+        }
+        if (psym < 0 || !push(c, c->syms[psym].address, n) ||
+            !byte(c, mem_ld(&c->syms[psym]), n) || !byte(c, CL_OP_DUP, n) ||
+            !push(c, 1, n) ||
+            !byte(c, n->kind == N_POSTINC ? CL_OP_ADD : CL_OP_SUB, n) ||
+            !push(c, c->syms[psym].address, n) ||
+            !byte(c, mem_st(&c->syms[psym]), n)) {
             return -1;
         }
         return 1;
@@ -4903,10 +7165,50 @@ static int gen_expr(Compiler *c, int id) {
             return -1;
         }
     }
+    if ((n->kind == N_ADD || n->kind == N_SUB) && !n->is_float) {
+        int sl = expr_ptr_stride(c, n->left);
+        int sr = expr_ptr_stride(c, n->right);
+        if (sl && !sr) {
+            if (gen_expr(c, n->left) != 1 || gen_expr(c, n->right) != 1) {
+                return -1;
+            }
+            if (!push(c, sl, n) || !byte(c, CL_OP_MUL, n) ||
+                !byte(c, n->kind == N_ADD ? CL_OP_ADD : CL_OP_SUB, n)) {
+                return -1;
+            }
+            return 1;
+        }
+        if (sr && !sl && n->kind == N_ADD) {
+            if (gen_expr(c, n->right) != 1 || gen_expr(c, n->left) != 1) {
+                return -1;
+            }
+            if (!push(c, sr, n) || !byte(c, CL_OP_MUL, n) ||
+                !byte(c, CL_OP_ADD, n)) {
+                return -1;
+            }
+            return 1;
+        }
+        if (sl && sr && n->kind == N_SUB && sl == sr) {
+            if (gen_expr(c, n->left) != 1 || gen_expr(c, n->right) != 1) {
+                return -1;
+            }
+            if (!byte(c, CL_OP_SUB, n) || !push(c, sl, n) ||
+                !byte(c, CL_OP_DIV, n)) {
+                return -1;
+            }
+            return 1;
+        }
+    }
     a = gen_expr(c, n->left);
+    if (a < 0) {
+        return -1;
+    }
     b = gen_expr(c, n->right);
+    if (b < 0) {
+        return -1;
+    }
     if (a != 1 || b != 1) {
-        fail(c, n->line, n->column, "operator needs values");
+        fail(c, n->line, n->column, "op needs values");
         return -1;
     }
     switch (n->kind) {
@@ -5041,30 +7343,35 @@ static int gen_stmt(Compiler *c, int id) {
     if (n->kind == N_FIELD_ASSIGN) {
         int sid = c->syms[n->value].struct_id;
         uint8_t isf;
-        if (sid < 0 || n->third < 0) {
+        int fi = n->third & 255;
+        int fw = (n->third >> 8) & 255;
+        if (sid < 0 || fi < 0) {
             return fail(c, n->line, n->column, "bad field assign");
         }
-        isf = c->structs[sid].is_float[n->third];
+        isf = n->is_float;
+        if (!isf && sid >= 0 && fi < c->structs[sid].nfields) {
+            isf = c->structs[sid].is_float[fi];
+        }
+        if (fw == 0 && sid >= 0 && fi < c->structs[sid].nfields) {
+            fw = c->structs[sid].fwidth[fi];
+        }
         v = gen_expr(c, n->left);
         if (v != 1) {
             return 0;
         }
-        if (gen_field_addr(c, n->value, n->third, n->right, n) != 1) {
+        if (gen_field_addr(c, n->value, fi, n->right, n) != 1) {
             return 0;
         }
         if (isf) {
             return byte(c, CL_OP_FSTORE, n);
         }
-        {
-            uint8_t w = c->structs[sid].fwidth[n->third];
-            if (w >= 8) {
-                return byte(c, CL_OP_STORE64, n);
-            }
-            if (w == 1) {
-                return byte(c, CL_OP_STOREB, n);
-            }
-            return byte(c, CL_OP_STORE, n);
+        if (fw >= 8) {
+            return byte(c, CL_OP_STORE64, n);
         }
+        if (fw == 1) {
+            return byte(c, CL_OP_STOREB, n);
+        }
+        return byte(c, CL_OP_STORE, n);
     }
     if (n->kind == N_EXPR) {
         v = gen_expr(c, n->left);
@@ -5231,8 +7538,8 @@ static int gen_stmt(Compiler *c, int id) {
     }
     if (n->kind == N_SWITCH) {
         int s;
-        int case_jmp[64];
-        int case_id[64];
+        int case_jmp[SWITCH_CASE_MAX];
+        int case_id[SWITCH_CASE_MAX];
         int nc = 0;
         int has_def = 0;
         int to_def = -1;
@@ -5256,7 +7563,7 @@ static int gen_stmt(Compiler *c, int id) {
             Node *st = &c->nodes[s];
             if (st->kind == N_CASE) {
                 int jz;
-                if (nc == 64) {
+                if (nc == SWITCH_CASE_MAX) {
                     return fail(c, n->line, n->column, "too many cases");
                 }
                 if (!byte(c, CL_OP_DUP, n) || !push(c, st->value, n) ||
@@ -5330,7 +7637,7 @@ static int gen_stmt(Compiler *c, int id) {
         return 1;
     }
     if (n->kind == N_LABEL) {
-        if (c->nlabels < 256) {
+        if (c->nlabels < LABEL_MAX) {
             text(c->label_name[c->nlabels], NAME_MAX, n->name);
             c->label_pc[c->nlabels] = (int)c->pc;
             c->nlabels++;
@@ -5342,7 +7649,7 @@ static int gen_stmt(Compiler *c, int id) {
         if (p < 0) {
             return 0;
         }
-        if (c->ngoto < 256) {
+        if (c->ngoto < LABEL_MAX) {
             c->goto_at[c->ngoto] = p;
             text(c->goto_name[c->ngoto], NAME_MAX, n->name);
             c->ngoto++;
@@ -5535,6 +7842,7 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
     c->pp_skip = 0;
     c->pp_depth = 0;
     c->ndef = 0;
+    add_builtin_macros(c);
     c->nlabels = 0;
     c->ngoto = 0;
     c->ntypedef = 0;
@@ -5543,6 +7851,9 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
     c->nginits = 0;
     c->va_base = 0;
     c->icall_base = 0;
+    c->tu_id = 0;
+    c->saw_static = 0;
+    c->pack_pragma = 0;
     result->code_size = 0;
     result->entry = 0;
     result->variables = 0;
@@ -5553,7 +7864,21 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
     {
         size_t ulen = 0;
         int unit_line = 1;
-        if (!expand_file(c, path ? path : "", source, source_size, &ulen,
+        char *src = g_tu;
+        size_t nn = source_size;
+        if (source != g_tu) {
+            size_t k = 0;
+            if (nn >= CHRIS_SOURCE_MAX) {
+                nn = CHRIS_SOURCE_MAX - 1;
+            }
+            while (k < nn) {
+                g_tu[k] = source[k];
+                k++;
+            }
+            g_tu[nn] = 0;
+        }
+        nn = compact_line_cont(src, nn);
+        if (!expand_file(c, path ? path : "", src, nn, &ulen,
                          &unit_line, 0)) {
             return 0;
         }
@@ -5595,12 +7920,12 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
         if (!read) {
             return 0;
         }
-        n = read(user, paths[0], g_inc[INCLUDE_DEPTH - 1], (int)CHRIS_SOURCE_MAX - 1);
+        n = read(user, paths[0], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
             return 0;
         }
-        g_inc[INCLUDE_DEPTH - 1][n] = 0;
-        return chrisc_compile_ex(paths[0], g_inc[INCLUDE_DEPTH - 1], (size_t)n, read,
+        g_tu[n] = 0;
+        return chrisc_compile_ex(paths[0], g_tu, (size_t)n, read,
                                  user, code, code_cap, result);
     }
     c->ntok = c->pos = c->nnode = c->nargs = c->nsyms = 0;
@@ -5623,6 +7948,7 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
     c->pp_skip = 0;
     c->pp_depth = 0;
     c->ndef = 0;
+    add_builtin_macros(c);
     c->nlabels = 0;
     c->ngoto = 0;
     c->ntypedef = 0;
@@ -5631,6 +7957,9 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
     c->nginits = 0;
     c->va_base = 0;
     c->icall_base = 0;
+    c->tu_id = 0;
+    c->saw_static = 0;
+    c->pack_pragma = 0;
     result->code_size = 0;
     result->entry = 0;
     result->variables = 0;
@@ -5645,15 +7974,17 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
         if (!read) {
             return 0;
         }
-        n = read(user, paths[i], g_inc[INCLUDE_DEPTH - 1], (int)CHRIS_SOURCE_MAX - 1);
+        n = read(user, paths[i], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
             return fail(c, 1, 1, "cannot read source file");
         }
-        g_inc[INCLUDE_DEPTH - 1][n] = 0;
+        g_tu[n] = 0;
+        n = (int)compact_line_cont(g_tu, (size_t)n);
+        c->tu_id = i + 1;
         c->ntok = c->pos = 0;
         c->pp_skip = 0;
         c->pp_depth = 0;
-        if (!expand_file(c, paths[i], g_inc[INCLUDE_DEPTH - 1], (size_t)n, &ulen,
+        if (!expand_file(c, paths[i], g_tu, (size_t)n, &ulen,
                          &unit_line, 0)) {
             return 0;
         }
@@ -5663,7 +7994,7 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
         if (!lex(c, g_unit, ulen)) {
             return 0;
         }
-        if (parse_decls(c) < 0) {
+        if (parse_decls(c) != 1) {
             return 0;
         }
     }

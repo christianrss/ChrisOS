@@ -2,40 +2,22 @@
 #define STRING_H
 #include "STDDEF.H"
 
-size_t strlen(char *s) {
-    size_t n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-int strcmp(char *a, char *b) {
-    int i = 0;
-    while (a[i] && a[i] == b[i]) i++;
-    return (int)(unsigned char)a[i] - (int)(unsigned char)b[i];
-}
-
-char *strcpy(char *d, char *s) {
-    int i = 0;
-    while (s[i]) {
-        d[i] = s[i];
-        i++;
-    }
-    d[i] = 0;
-    return d;
-}
-
-void *memcpy(void *d, void *s, size_t n) {
-    char *dd = d;
-    char *ss = s;
-    size_t i;
-    for (i = 0; i < n; i++) dd[i] = ss[i];
-    return d;
-}
-
-void *memset(void *d, int c, size_t n) {
-    char *dd = d;
-    size_t i;
-    for (i = 0; i < n; i++) dd[i] = (char)c;
-    return d;
-}
+int strlen(char *s);
+int strcmp(char *a, char *b);
+char *strcpy(char *d, char *s);
+void memcpy(char *d, char *s, int n);
+void memmove(char *d, char *s, int n);
+int strncmp(char *a, char *b, int n);
+void memset(char *d, int c, int n);
+int strcasecmp(char *a, char *b);
+int strncasecmp(char *a, char *b, int n);
+char *strdup(char *s);
+char *strstr(char *h, char *n);
+char *strncpy(char *d, char *s, int n);
+char *strerror(int err);
+char *strchr(char *s, int c);
+char *strrchr(char *s, int c);
+int memcmp(char *a, char *b, int n);
+char *memchr(char *s, int c, int n);
+char *strcat(char *d, char *s);
 #endif
