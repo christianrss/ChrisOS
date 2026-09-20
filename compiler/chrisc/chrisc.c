@@ -276,7 +276,20 @@ static const Builtin builtins[] = {
     {"thrd_create", 62, 2, 1, 0}, {"thrd_join", 63, 1, 1, 0},
     {"cla_load", 64, 1, 1, 0},
     {"fseek", 65, 2, 1, 0},
-    {"fb_blit", 72, 3, 0, 0}, {"setpal", 73, 1, 0, 0}
+    {"fb_blit", 72, 3, 0, 0}, {"setpal", 73, 1, 0, 0},
+    {"mouse_x", 80, 0, 1, 0}, {"mouse_y", 81, 0, 1, 0},
+    {"mouse_btn", 82, 0, 1, 0}, {"ev_key", 83, 0, 1, 0},
+    {"ev_text", 84, 0, 1, 0}, {"fillrgb", 85, 5, 0, 0},
+    {"text", 86, 4, 0, 0}, {"glyph", 87, 4, 0, 0},
+    {"surf_place", 88, 4, 0, 0}, {"surf_move", 89, 2, 0, 0},
+    {"surf_raise", 90, 0, 0, 0}, {"surf_close", 91, 0, 0, 0},
+    {"readdir", 92, 3, 1, 0}, {"mkdir", 93, 1, 1, 0},
+    {"unlink", 94, 1, 1, 0}, {"rename", 95, 2, 1, 0},
+    {"app_spawn", 96, 1, 1, 0}, {"app_kill", 97, 1, 1, 0},
+    {"app_count", 98, 0, 1, 0}, {"app_info", 99, 2, 1, 0},
+    {"sys_cc", 100, 1, 1, 0}, {"sys_run", 101, 1, 1, 0},
+    {"sys_make", 102, 2, 1, 0}, {"disp_w", 103, 0, 1, 0},
+    {"disp_h", 104, 0, 1, 0}
 };
 
 static int alpha(int c) {

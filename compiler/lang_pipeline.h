@@ -5,7 +5,7 @@
 #include "editor.h"
 #include "chrisc/chrisc.h"
 
-#define LANG_VM_SLOTS 8
+#define LANG_VM_SLOTS 16
 #define LANG_VM_BUDGET 64000u
 #define LANG_SPLASH_SLOT 0
 
@@ -13,6 +13,8 @@ void lang_init(ClvmSysFn sys, void *sys_user);
 int lang_save(Editor *editor);
 int lang_compile(Editor *editor);
 int lang_run(Editor *editor, const char *clv_name);
+int lang_run_path(const char *clv_name);
+int lang_compile_path(const char *src_path);
 int lang_run_jit(Editor *editor, const char *clv_name);
 int lang_compile_run(Editor *editor);
 int lang_compile_run_jit(Editor *editor);
@@ -28,6 +30,12 @@ int lang_slot_fullscreen(int slot);
 int lang_slot_task(int slot);
 void lang_bind_task(int slot, int task_id);
 int lang_find_slot_by_task(int task_id);
+int lang_find_slot_by_gfx(const void *gfx_ctx);
+void lang_slot_push_key(int slot, int key);
+void lang_slot_push_text(int slot, int ch);
+int lang_slot_take_key(int slot);
+int lang_slot_take_text(int slot);
+void lang_slot_request_close(int slot);
 int lang_compile_file(const char *src_path, const char *clv_path);
 int lang_compile_many(const char **paths, int npaths);
 int lang_compile_list(const char *lst_path);

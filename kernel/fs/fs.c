@@ -188,6 +188,42 @@ static void seed_dirs(Cfs *fs) {
     if (rc != CFS_OK && rc != CFS_EEXIST) {
         seed_log_fail("BIN", rc);
     }
+    rc = cfs_mkdir(fs, "LIB");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("LIB", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/DESKTOP");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/DESKTOP", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/TASKBAR");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/TASKBAR", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/SHELL");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/SHELL", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/EXPLORER");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/EXPLORER", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/EDITOR");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/EDITOR", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/TASKMGR");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/TASKMGR", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/BALL");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/BALL", rc);
+    }
 }
 
 void fs_init(void) {

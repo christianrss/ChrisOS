@@ -1,4 +1,5 @@
 #include "task.h"
+#include "graphics.h"
 
 static Task g_tasks[TASK_MAX];
 static uint32_t g_next_z;
@@ -154,8 +155,7 @@ bool task_point_inside(const Task *task, int x, int y) {
     return x >= task->frame.x &&
            x < task->frame.x + task->frame.width &&
            y >= task->frame.y &&
-           y < task->frame.y + TASK_TITLE_HEIGHT +
-               task->frame.body_height;
+           y < task->frame.y + task->frame.body_height;
 }
 
 int task_focus_at(int x, int y) {
@@ -173,7 +173,15 @@ int task_focus_at(int x, int y) {
     }
 
     if (best_id >= 0) {
-        task_raise(best_id);
+        Task *best = &g_tasks[best_id];
+        int wallpaper = best->frame.x <= 0 && best->frame.y <= 0 &&
+                        best->frame.width >= g_gfx.width &&
+                        best->frame.body_height >= g_gfx.height;
+        if (wallpaper) {
+            g_focused_id = best_id;
+        } else {
+            task_raise(best_id);
+        }
     } else {
         g_focused_id = -1;
     }

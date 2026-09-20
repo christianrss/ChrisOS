@@ -89,6 +89,7 @@ void kstart(void) {
     desktop_init();
     boot_splash_run(120);
     boot_splash_stop();
+    desktop_boot_apps();
     serial_puts("ChrisOS: desktop 60Hz\n");
     desktop_run();
 }

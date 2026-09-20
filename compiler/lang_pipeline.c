@@ -28,6 +28,7 @@
 #define LANG_NAME_MAX 96
 #define LANG_PIXELS (CLVM_SYS_GAME_W * CLVM_SYS_GAME_H)
 #define LANG_LST_MAX 128
+#define LANG_EVQ 8
 typedef struct LangSlot {
     int used;
     uint8_t *file;
@@ -55,6 +56,13 @@ typedef struct LangSlot {
     int map_n;
     int step_line;
     uint16_t last_line;
+    int ev_key_q[LANG_EVQ];
+    int ev_text_q[LANG_EVQ];
+    int ev_key_n;
+    int ev_key_r;
+    int ev_text_n;
+    int ev_text_r;
+    int dying;
 } LangSlot;
 
 static LangSlot slots[LANG_VM_SLOTS];
@@ -92,8 +100,42 @@ static void scopy(char *dst, int cap, const char *src) {
     dst[i] = 0;
 }
 
+static int last_dot_at(const char *s);
+
 static void status(Editor *e, const char *s) {
-    ed_set_status(e, s);
+    if (e) {
+        ed_set_status(e, s);
+    }
+}
+
+static void slot_ev_reset(int i) {
+    if (i < 0 || i >= LANG_VM_SLOTS) {
+        return;
+    }
+    slots[i].ev_key_n = 0;
+    slots[i].ev_key_r = 0;
+    slots[i].ev_text_n = 0;
+    slots[i].ev_text_r = 0;
+}
+
+static int replace_ext(const char *in, const char *ext, char out[LANG_NAME_MAX]) {
+    int dot;
+    int i;
+    if (!in || !ext || !out) {
+        return 0;
+    }
+    scopy(out, LANG_NAME_MAX, in);
+    dot = last_dot_at(out);
+    if (dot < 0) {
+        return 0;
+    }
+    i = 0;
+    while (ext[i] && dot + 1 + i < LANG_NAME_MAX - 1) {
+        out[dot + 1 + i] = ext[i];
+        i++;
+    }
+    out[dot + 1 + i] = 0;
+    return 1;
 }
 
 static void append(char *out, int cap, int *n, const char *s) {
@@ -759,9 +801,47 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     slots[i].nbreak = 0;
     slots[i].step_line = 0;
     slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
+    slot_ev_reset(i);
+    slots[i].dying = 0;
     app_window_open(i, name);
     status(e, use_jit ? "running jit" : "running");
     return 1;
+}
+
+int lang_compile_path(const char *src) {
+    char outn[LANG_NAME_MAX];
+    if (!src || !src[0]) {
+        return 0;
+    }
+    if (suffix(src, ".LST")) {
+        return lang_compile_list(src);
+    }
+    if (!output_name(src, outn)) {
+        return 0;
+    }
+    return lang_compile_file(src, outn);
+}
+
+int lang_run_path(const char *name) {
+    static Editor dummy;
+    char probe[1];
+    char alt[LANG_NAME_MAX];
+
+    dummy.name[0] = 0;
+    dummy.status[0] = 0;
+    if (!name || !name[0]) {
+        return 0;
+    }
+    if (fs_read(name, probe, 1) < 0) {
+        if (replace_ext(name, "LST", alt) && lang_compile_list(alt)) {
+            return lang_run_internal(&dummy, name, 0);
+        }
+        if (replace_ext(name, "CC", alt) && lang_compile_file(alt, name)) {
+            return lang_run_internal(&dummy, name, 0);
+        }
+        return 0;
+    }
+    return lang_run_internal(&dummy, name, 0);
 }
 
 int lang_run(Editor *e, const char *name) {
@@ -1036,8 +1116,9 @@ void lang_tick(uint32_t now) {
             } else {
                 r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
             }
-            if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
-                slots[i].used = 0;
+            if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT || slots[i].dying) {
+                lang_kill(i);
+            }
         }
     }
 }
@@ -1057,6 +1138,9 @@ int lang_kill(int slot) {
     if (slot < 0 || slot >= LANG_VM_SLOTS) {
         return 0;
     }
+    if (!slots[slot].used && !slots[slot].dying) {
+        return 0;
+    }
     if (slots[slot].jit.phys != 0) {
         jit_free(&slots[slot].jit);
     }
@@ -1070,6 +1154,7 @@ int lang_kill(int slot) {
         slots[slot].file_cap = 0;
     }
     slots[slot].used = 0;
+    slots[slot].dying = 0;
     slots[slot].task_id = -1;
     slots[slot].name[0] = 0;
     slots[slot].use_jit = 0;
@@ -1141,6 +1226,80 @@ int lang_find_slot_by_task(int task_id) {
         }
     }
     return -1;
+}
+
+int lang_find_slot_by_gfx(const void *gfx_ctx) {
+    int i;
+    if (!gfx_ctx) {
+        return -1;
+    }
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && (const void *)&slots[i].gfx == gfx_ctx) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void lang_slot_push_key(int slot, int key) {
+    int i;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return;
+    }
+    if (slots[slot].ev_key_n >= LANG_EVQ) {
+        return;
+    }
+    i = (slots[slot].ev_key_r + slots[slot].ev_key_n) % LANG_EVQ;
+    slots[slot].ev_key_q[i] = key;
+    slots[slot].ev_key_n++;
+}
+
+void lang_slot_push_text(int slot, int ch) {
+    int i;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return;
+    }
+    if (slots[slot].ev_text_n >= LANG_EVQ) {
+        return;
+    }
+    i = (slots[slot].ev_text_r + slots[slot].ev_text_n) % LANG_EVQ;
+    slots[slot].ev_text_q[i] = ch;
+    slots[slot].ev_text_n++;
+}
+
+int lang_slot_take_key(int slot) {
+    int k;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return 0;
+    }
+    if (slots[slot].ev_key_n <= 0) {
+        return 0;
+    }
+    k = slots[slot].ev_key_q[slots[slot].ev_key_r];
+    slots[slot].ev_key_r = (slots[slot].ev_key_r + 1) % LANG_EVQ;
+    slots[slot].ev_key_n--;
+    return k;
+}
+
+int lang_slot_take_text(int slot) {
+    int c;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return 0;
+    }
+    if (slots[slot].ev_text_n <= 0) {
+        return 0;
+    }
+    c = slots[slot].ev_text_q[slots[slot].ev_text_r];
+    slots[slot].ev_text_r = (slots[slot].ev_text_r + 1) % LANG_EVQ;
+    slots[slot].ev_text_n--;
+    return c;
+}
+
+void lang_slot_request_close(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return;
+    }
+    slots[slot].dying = 1;
 }
 
 void lang_write_map(const char *clv_path, const ChrisResult *r) {

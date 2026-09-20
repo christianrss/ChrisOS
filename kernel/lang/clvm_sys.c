@@ -23,13 +23,17 @@
 #include "ui.h"
 #include "voxel.h"
 #include "zbuf.h"
+#include "font.h"
+#include "input.h"
+#include "lang_pipeline.h"
+#include "chrismake.h"
 
 #define CLVM_FD_MAX 32
 #define CLVM_FD_PER_SLOT 8
 #define CLVM_FD_CAP 65536u
 #define CLVM_FD_MAX_BYTES (16u * 1024u * 1024u)
 #define CLVM_TH_MAX 4
-#define CLVM_PAL_SLOTS 8
+#define CLVM_PAL_SLOTS 16
 
 typedef struct ClvmTh {
     int used;
@@ -352,7 +356,7 @@ void clvm_gfx_native_size(int *w, int *h) {
     int nw;
     int nh;
     nw = g_gfx.width;
-    nh = g_gfx.height - UI_TASKBAR_HEIGHT - TASK_TITLE_HEIGHT;
+    nh = g_gfx.height;
     clamp_view(&nw, &nh);
     if (w)
         *w = nw;
@@ -408,6 +412,204 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h) {
     math3d_set_screen(nw, nh);
     gfx_zbuf_prepare(ctx, nw, nh);
     return 0;
+}
+
+static int lang_slot_of(ClvmGfxCtx *ctx) {
+    return lang_find_slot_by_gfx(ctx);
+}
+
+static Task *task_of_ctx(ClvmGfxCtx *ctx) {
+    int slot;
+    int tid;
+    slot = lang_slot_of(ctx);
+    if (slot < 0) {
+        return 0;
+    }
+    tid = lang_slot_task(slot);
+    return task_get(tid);
+}
+
+static void slot_put(uint32_t *pix, int gw, int gh, int x, int y, uint32_t rgb) {
+    if (!pix || x < 0 || y < 0 || x >= gw || y >= gh) {
+        return;
+    }
+    pix[y * gw + x] = rgb;
+}
+
+static void slot_fillrgb(uint32_t *pix, int gw, int gh, int x, int y, int rw,
+                         int rh, uint32_t rgb) {
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+    int px;
+    int py;
+    if (!pix || rw <= 0 || rh <= 0) {
+        return;
+    }
+    x0 = x;
+    y0 = y;
+    x1 = x + rw;
+    y1 = y + rh;
+    if (x0 < 0) {
+        x0 = 0;
+    }
+    if (y0 < 0) {
+        y0 = 0;
+    }
+    if (x1 > gw) {
+        x1 = gw;
+    }
+    if (y1 > gh) {
+        y1 = gh;
+    }
+    for (py = y0; py < y1; ++py) {
+        for (px = x0; px < x1; ++px) {
+            pix[py * gw + px] = rgb;
+        }
+    }
+}
+
+static void slot_glyph(uint32_t *pix, int gw, int gh, int x, int y,
+                       unsigned int ch, uint32_t rgb) {
+    int row;
+    int col;
+    int fw;
+    int fh;
+    fw = font_arial_width;
+    fh = font_arial_height;
+    for (row = 0; row < fh; ++row) {
+        uint32_t bits = font_row(ch, row);
+        for (col = 0; col < fw; ++col) {
+            uint32_t mask = 1u << (unsigned int)(fw - col - 1);
+            if ((bits & mask) != 0) {
+                slot_put(pix, gw, gh, x + col, y + row, rgb);
+            }
+        }
+    }
+}
+
+static void slot_text(uint32_t *pix, int gw, int gh, int x, int y, const char *s,
+                      uint32_t rgb) {
+    int pen;
+    int adv;
+    int row_y;
+    if (!s) {
+        return;
+    }
+    pen = x;
+    row_y = y;
+    adv = gfx_text_advance(font_arial_width);
+    while (*s) {
+        unsigned char ch = (unsigned char)*s++;
+        if (ch == '\n') {
+            pen = x;
+            row_y += font_arial_height;
+            continue;
+        }
+        slot_glyph(pix, gw, gh, pen, row_y, ch, rgb);
+        pen += adv;
+    }
+}
+
+typedef struct {
+    int want;
+    int cur;
+    char *out;
+    int cap;
+    int found;
+} ClvmReadDir;
+
+static int readdir_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
+    ClvmReadDir *r = (ClvmReadDir *)ctx;
+    int i;
+    (void)size;
+    (void)type;
+    if (!r || !name) {
+        return 0;
+    }
+    if (r->cur == r->want) {
+        i = 0;
+        if (r->out && r->cap > 1) {
+            while (name[i] && i + 1 < r->cap) {
+                r->out[i] = name[i];
+                i++;
+            }
+            r->out[i] = 0;
+        }
+        r->found = 1;
+        return 1;
+    }
+    r->cur++;
+    return 0;
+}
+
+static int sys_make_recipe(void *user, const char *recipe, char *err, int err_cap) {
+    const char *p;
+    int i;
+    char path[FS_PATH];
+    (void)user;
+    if (!recipe) {
+        return 0;
+    }
+    p = recipe;
+    while (*p == ' ' || *p == '\t' || *p == '@') {
+        p++;
+    }
+    if (p[0] == 'c' && p[1] == 'c' && (p[2] == ' ' || p[2] == '\t')) {
+        p += 3;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        i = 0;
+        while (p[i] && p[i] != ' ' && p[i] != '\t' && p[i] != '\n' &&
+               i + 1 < FS_PATH) {
+            path[i] = p[i];
+            i++;
+        }
+        path[i] = 0;
+        if (!lang_compile_path(path)) {
+            if (err && err_cap > 0) {
+                const char *le = lang_last_error();
+                i = 0;
+                if (le) {
+                    while (le[i] && i + 1 < err_cap) {
+                        err[i] = le[i];
+                        i++;
+                    }
+                }
+                err[i] = 0;
+            }
+            return 0;
+        }
+        return 1;
+    }
+    if (p[0] == 'r' && p[1] == 'u' && p[2] == 'n' &&
+        (p[3] == ' ' || p[3] == '\t')) {
+        p += 4;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        i = 0;
+        while (p[i] && p[i] != ' ' && p[i] != '\t' && p[i] != '\n' &&
+               i + 1 < FS_PATH) {
+            path[i] = p[i];
+            i++;
+        }
+        path[i] = 0;
+        if (!lang_run_path(path)) {
+            return 0;
+        }
+        return 1;
+    }
+    if (err && err_cap > 0) {
+        err[0] = 0;
+    }
+    return 0;
+}
+
+static int push_ok(ClvmVm *vm, int ok) {
+    return clvm_vm_push(vm, ok ? 0 : -1) ? 0 : -1;
 }
 
 int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
@@ -834,6 +1036,320 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         g_pal_set[slot] = 1;
         return 0;
     }
+    case 80: {
+        InputMouse m = input_mouse_snapshot();
+        if (!clvm_vm_push(vm, m.x)) {
+            return -1;
+        }
+        return 0;
+    }
+    case 81: {
+        InputMouse m = input_mouse_snapshot();
+        if (!clvm_vm_push(vm, m.y)) {
+            return -1;
+        }
+        return 0;
+    }
+    case 82: {
+        InputMouse m = input_mouse_snapshot();
+        int32_t btn = 0;
+        if (m.left_down) {
+            btn |= 1;
+        }
+        if (m.right_down) {
+            btn |= 2;
+        }
+        if (m.middle_down) {
+            btn |= 4;
+        }
+        if (!clvm_vm_push(vm, btn)) {
+            return -1;
+        }
+        return 0;
+    }
+    case 83: {
+        int slot = lang_slot_of(ctx);
+        if (!clvm_vm_push(vm, lang_slot_take_key(slot))) {
+            return -1;
+        }
+        return 0;
+    }
+    case 84: {
+        int slot = lang_slot_of(ctx);
+        if (!clvm_vm_push(vm, lang_slot_take_text(slot))) {
+            return -1;
+        }
+        return 0;
+    }
+    case 85:
+        if (!pop_i32(vm, &e) || !pop_i32(vm, &d) || !pop_i32(vm, &c) ||
+            !pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        slot_fillrgb(pix, gw, gh, a, b, c, d, (uint32_t)e);
+        return 0;
+    case 86: {
+        char msg[192];
+        if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
+            !pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)c, msg, (int)sizeof(msg))) {
+            return -1;
+        }
+        slot_text(pix, gw, gh, a, b, msg, (uint32_t)d);
+        return 0;
+    }
+    case 87:
+        if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
+            !pop_i32(vm, &a)) {
+            return -1;
+        }
+        slot_glyph(pix, gw, gh, a, b, (unsigned int)c, (uint32_t)d);
+        return 0;
+    case 88: {
+        Task *t;
+        if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
+            !pop_i32(vm, &a)) {
+            return -1;
+        }
+        t = task_of_ctx(ctx);
+        if (!t) {
+            return 0;
+        }
+        t->frame.x = a;
+        t->frame.y = b;
+        if (c > 0) {
+            t->frame.width = c;
+        }
+        if (d > 0) {
+            t->frame.body_height = d;
+        }
+        if (t->frame.y < 0) {
+            t->frame.y = 0;
+        }
+        return 0;
+    }
+    case 89: {
+        Task *t;
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        t = task_of_ctx(ctx);
+        if (!t) {
+            return 0;
+        }
+        t->frame.x = a;
+        t->frame.y = b;
+        if (t->frame.y < 0) {
+            t->frame.y = 0;
+        }
+        return 0;
+    }
+    case 90: {
+        Task *t = task_of_ctx(ctx);
+        if (t) {
+            if (!(t->frame.x <= 0 && t->frame.y <= 0 &&
+                  t->frame.width >= g_gfx.width &&
+                  t->frame.body_height >= g_gfx.height)) {
+                task_raise(t->id);
+            }
+        }
+        return 0;
+    }
+    case 91: {
+        int slot = lang_slot_of(ctx);
+        Task *t = task_of_ctx(ctx);
+        if (t) {
+            task_close(t->id);
+        }
+        lang_slot_request_close(slot);
+        return 0;
+    }
+    case 92: {
+        char path[FS_PATH];
+        char name[64];
+        ClvmReadDir rd;
+        int rc;
+        if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        }
+        name[0] = 0;
+        rd.want = b;
+        rd.cur = 0;
+        rd.out = name;
+        rd.cap = (int)sizeof(name);
+        rd.found = 0;
+        rc = fs_list_at(path, readdir_cb, &rd);
+        if (!rd.found) {
+            (void)rc;
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        {
+            int n = 0;
+            while (name[n]) {
+                n++;
+            }
+            n++;
+            if (!vm_copy_out(vm, c, n, (const uint8_t *)name)) {
+                return clvm_vm_push(vm, -1) ? 0 : -1;
+            }
+        }
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 93: {
+        char path[FS_PATH];
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH) || !path_ok(path)) {
+            return push_ok(vm, 0);
+        }
+        return push_ok(vm, fs_mkdir(path) == 0);
+    }
+    case 94: {
+        char path[FS_PATH];
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH) || !path_ok(path)) {
+            return push_ok(vm, 0);
+        }
+        return push_ok(vm, fs_unlink(path) == 0);
+    }
+    case 95: {
+        char oldp[FS_PATH];
+        char newp[FS_PATH];
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, oldp, FS_PATH) ||
+            !guest_cstr(vm, (uint64_t)(uint32_t)b, newp, FS_PATH) ||
+            !path_ok(oldp) || !path_ok(newp)) {
+            return push_ok(vm, 0);
+        }
+        return push_ok(vm, fs_rename(oldp, newp) == 0);
+    }
+    case 96: {
+        char path[FS_PATH];
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, lang_run_path(path) ? 1 : 0) ? 0 : -1;
+    }
+    case 97: {
+        Task *t;
+        int slot;
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        t = task_iter(a);
+        if (!t) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        if (t->type == TASK_APP) {
+            slot = t->state.app.lang_slot;
+            task_close(t->id);
+            lang_slot_request_close(slot);
+        } else {
+            task_close(t->id);
+        }
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 98:
+        if (!clvm_vm_push(vm, task_count())) {
+            return -1;
+        }
+        return 0;
+    case 99: {
+        Task *t;
+        const char *title;
+        int n;
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        t = task_iter(a);
+        if (!t) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        title = task_title(t);
+        n = 0;
+        while (title[n]) {
+            n++;
+        }
+        n++;
+        if (!vm_copy_out(vm, b, n, (const uint8_t *)title)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 100: {
+        char path[FS_PATH];
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, lang_compile_path(path) ? 1 : 0) ? 0 : -1;
+    }
+    case 101: {
+        char path[FS_PATH];
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, lang_run_path(path) ? 1 : 0) ? 0 : -1;
+    }
+    case 102: {
+        static char mktext[32768];
+        static char mkerr[160];
+        char path[FS_PATH];
+        char target[64];
+        int n;
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH) ||
+            !guest_cstr(vm, (uint64_t)(uint32_t)b, target, (int)sizeof(target))) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        n = fs_read(path, mktext, (int)sizeof(mktext) - 1);
+        if (n < 0) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        mktext[n] = 0;
+        if (!target[0]) {
+            target[0] = 'a';
+            target[1] = 'l';
+            target[2] = 'l';
+            target[3] = 0;
+        }
+        return clvm_vm_push(vm, chrismake_run(mktext, target, sys_make_recipe, 0,
+                                             mkerr, (int)sizeof(mkerr))
+                                    ? 1
+                                    : 0)
+                   ? 0
+                   : -1;
+    }
+    case 103:
+        if (!clvm_vm_push(vm, g_gfx.width)) {
+            return -1;
+        }
+        return 0;
+    case 104:
+        if (!clvm_vm_push(vm, g_gfx.height)) {
+            return -1;
+        }
+        return 0;
     default:
         return -1;
     }

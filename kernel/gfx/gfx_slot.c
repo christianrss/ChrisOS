@@ -6,7 +6,7 @@
 #include "heap.h"
 #include "zbuf.h"
 
-#define GFX_SLOT_MAX 8
+#define GFX_SLOT_MAX 16
 #define GFX_SLOT_FULLHD_W 1920
 #define GFX_SLOT_FULLHD_H 1080
 

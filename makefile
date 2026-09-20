@@ -269,6 +269,13 @@ test_chrisc_include: tools/test_chrisc_include.c compiler/chrisc/chrisc.c compil
 		-o $(HOST_BIN)/test_chrisc_include
 	$(HOST_BIN)/test_chrisc_include
 
+test_chrisc_apps: tools/test_chrisc_apps.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_apps.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c \
+		-o $(HOST_BIN)/test_chrisc_apps
+	$(HOST_BIN)/test_chrisc_apps
+
 test_chrisc_string: tools/test_chrisc_string.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
 	mkdir -p $(HOST_BIN)
@@ -559,7 +566,37 @@ disk-lib: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/HELLO.TXT SRC/HELLO.TXT
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/PHYS.CC GAMES/PHYS.CC
 
-disk: disk-hello disk-fault disk-cube disk-world disk-watch disk-blink disk-exit42 disk-lib disk-doom host-cfs-put
+disk-apps: $(DISK_IMG) host-cfs-put-file
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.H LIB/WIN.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.CC LIB/WIN.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/UI.H LIB/UI.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/UI.CC LIB/UI.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/APP.H LIB/APP.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/APP.CC LIB/APP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CATALOG APPS/CATALOG
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CC APPS/DESKTOP/DESKTOP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.LST APPS/DESKTOP/DESKTOP.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/Makefile APPS/DESKTOP/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CC APPS/TASKBAR/TASKBAR.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.LST APPS/TASKBAR/TASKBAR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/Makefile APPS/TASKBAR/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.CC APPS/SHELL/SHELL.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.LST APPS/SHELL/SHELL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/Makefile APPS/SHELL/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.CC APPS/EXPLORER/EXPLORER.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.LST APPS/EXPLORER/EXPLORER.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/Makefile APPS/EXPLORER/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.CC APPS/EDITOR/EDITOR.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.LST APPS/EDITOR/EDITOR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/Makefile APPS/EDITOR/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.CC APPS/TASKMGR/TASKMGR.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.LST APPS/TASKMGR/TASKMGR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/Makefile APPS/TASKMGR/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.CC APPS/BALL/BALL.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.LST APPS/BALL/BALL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/Makefile APPS/BALL/Makefile
+
+disk: disk-hello disk-fault disk-cube disk-world disk-watch disk-blink disk-exit42 disk-lib disk-doom disk-apps host-cfs-put
 	$(HOST_BIN)/cfs_put $(DISK_IMG)
 
 test_chrismake: tools/test_chrismake.c kernel/tools/chrismake.c kernel/tools/chrismake.h
@@ -592,7 +629,7 @@ test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
 		-o $(HOST_BIN)/test_native_link
 	$(HOST_BIN)/test_native_link
 
-host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_clasm test_clasm_games test_tile test_tile_bin
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_clasm test_clasm_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
