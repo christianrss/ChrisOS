@@ -1,6 +1,8 @@
 /* LEARN:WS64-W09 */
 #include "desktop.h"
 
+#include "cls/cls.h"
+#include "fs.h"
 #include "graphics.h"
 #include "input.h"
 #include "lang_pipeline.h"
@@ -36,8 +38,24 @@ void desktop_init(void) {
 }
 
 void desktop_boot_apps(void) {
+    char err[80];
+    char flag[4];
+    int n;
+    err[0] = 0;
+    (void)cls_runtime_load("LIB/WIN.CLS", err, (int)sizeof(err));
     boot_one("APPS/DESKTOP/DESKTOP.CLV", "APPS/DESKTOP/DESKTOP.LST");
     boot_one("APPS/TASKBAR/TASKBAR.CLV", "APPS/TASKBAR/TASKBAR.LST");
+    /* Optional headless smoke: SYS/SMOKE.DOOM content starts with '1'. */
+    n = fs_read("SYS/SMOKE.DOOM", flag, 1);
+    if (n == 1 && flag[0] == '1') {
+        serial_puts("boot: SYS/SMOKE.DOOM -> ENGINE.CLV\n");
+        boot_one("GAMES/DOOM/ENGINE.CLV", "GAMES/DOOM/ENGINE.LST");
+    }
+    n = fs_read("SYS/SMOKE.WORLD", flag, 1);
+    if (n == 1 && flag[0] == '1') {
+        serial_puts("boot: SYS/SMOKE.WORLD -> WORLD.CLV\n");
+        boot_one("GAMES/WORLD.CLV", "GAMES/WORLD.LST");
+    }
 }
 
 void desktop_frame(uint64_t ticks) {

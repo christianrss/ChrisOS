@@ -76,7 +76,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	compiler/clvm/clvm_vm.o kernel/tools/app_window.o \
 	compiler/jit/jit.o compiler/jit/jit_emit.o compiler/jit/jit_compile.o \
 	compiler/jit/jit_runtime.o \
-	compiler/gc/gc.o compiler/il/il.o compiler/cla/cla.o \
+	compiler/gc/gc.o compiler/il/il.o compiler/cla/cla.o compiler/cls/cls.o \
 	kernel/tools/taskmgr.o kernel/metal/apic.o kernel/metal/ioapic.o \
 	kernel/metal/spin.o kernel/metal/smp.o kernel/metal/job.o \
 	kernel/metal/kthread.o kernel/metal/kcc_job.o kernel/net/net_xfer.o \
@@ -479,7 +479,9 @@ disk-watch: $(DISK_IMG) host-cfs-put-file
 disk-blink: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/BLINK.CVA GAMES/BLINK.CVA
 
-disk-doom: $(DISK_IMG) host-cfs-put-file GAMES/DOOM/DOOM1.WAD
+disk-doom: $(DISK_IMG) host-cfs-put-file GAMES/DOOM/DOOM1.WAD host-mk-clv
+	$(HOST_BIN)/mk_clv GAMES/DOOM/ENGINE.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/ENGINE.CLV GAMES/DOOM/ENGINE.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.CC GAMES/DOOM/DOOM.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_CHRIS.CC GAMES/DOOM/I_CHRIS.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_SOUND.CC GAMES/DOOM/I_SOUND.CC
@@ -490,8 +492,10 @@ disk-doom: $(DISK_IMG) host-cfs-put-file GAMES/DOOM/DOOM1.WAD
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.LST GAMES/DOOM/DOOM.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/ENGINE.LST GAMES/DOOM/ENGINE.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/Makefile GAMES/DOOM/Makefile
-	$(HOST_BIN)/cfs_put_file $(DISK_IMG) Makefile GAMES/DOOM/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM1.WAD GAMES/DOOM/DOOM1.WAD
+	@if [ -f GAMES/DOOM/DOOM1.MINI.WAD ]; then \
+		$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM1.MINI.WAD GAMES/DOOM/DOOM1.MINI.WAD; \
+	fi
 	@while IFS= read -r f; do \
 		f=$$(printf '%s' "$$f" | tr -d '\r'); \
 		[ -n "$$f" ] || continue; \
@@ -501,11 +505,14 @@ disk-doom: $(DISK_IMG) host-cfs-put-file GAMES/DOOM/DOOM1.WAD
 		$(HOST_BIN)/cfs_put_file $(DISK_IMG) $$h $$h; \
 	done
 
-GAMES/DOOM/DOOM1.WAD: tools/mk_miniwad.c
+# Keep mini WAD recipe available but do not overwrite Freedoom IWAD.
+GAMES/DOOM/DOOM1.MINI.WAD: tools/mk_miniwad.c
 	mkdir -p GAMES/DOOM $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -o $(HOST_BIN)/mk_miniwad tools/mk_miniwad.c
-	$(HOST_BIN)/mk_miniwad GAMES/DOOM/DOOM1.WAD
+	$(HOST_BIN)/mk_miniwad GAMES/DOOM/DOOM1.MINI.WAD
 
+GAMES/DOOM/DOOM1.WAD:
+	@test -s GAMES/DOOM/DOOM1.WAD || (echo "Missing GAMES/DOOM/DOOM1.WAD (shareware IWAD, <=8MiB CFS limit)" && exit 1)
 test_doom_compile: tools/test_doom_compile.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
 	mkdir -p $(HOST_BIN)
@@ -566,9 +573,36 @@ disk-lib: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/HELLO.TXT SRC/HELLO.TXT
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/PHYS.CC GAMES/PHYS.CC
 
-disk-apps: $(DISK_IMG) host-cfs-put-file
+disk-apps: $(DISK_IMG) host-cfs-put-file host-mk-clv
+	$(HOST_BIN)/mk_clv APPS/DESKTOP/DESKTOP.LST
+	$(HOST_BIN)/mk_clv APPS/TASKBAR/TASKBAR.LST
+	$(HOST_BIN)/mk_clv APPS/SHELL/SHELL.LST
+	$(HOST_BIN)/mk_clv APPS/EXPLORER/EXPLORER.LST
+	$(HOST_BIN)/mk_clv APPS/EDITOR/EDITOR.LST
+	$(HOST_BIN)/mk_clv APPS/TASKMGR/TASKMGR.LST
+	$(HOST_BIN)/mk_clv APPS/BALL/BALL.LST
+	$(HOST_BIN)/mk_clv APPS/PREFS/PREFS.LST
+	$(HOST_BIN)/mk_clv GAMES/DOOM/DOOM.LST
+	$(HOST_BIN)/mk_clv GAMES/DOOM/ENGINE.LST
+	$(HOST_BIN)/mk_clv LIB/WIN.LST --cls LIB/WIN
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.CLV GAMES/DOOM/DOOM.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/ENGINE.CLV GAMES/DOOM/ENGINE.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.LST GAMES/DOOM/DOOM.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/ENGINE.LST GAMES/DOOM/ENGINE.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.CC GAMES/DOOM/DOOM.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/MAIN.CC GAMES/DOOM/MAIN.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_CHRIS.CC GAMES/DOOM/I_CHRIS.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_INPUT.CC GAMES/DOOM/I_INPUT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_VIDEO.CC GAMES/DOOM/I_VIDEO.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/I_SOUND.CC GAMES/DOOM/I_SOUND.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/W_FILE.CC GAMES/DOOM/W_FILE.CC
+	@if [ -f GAMES/DOOM/DOOM1.WAD ]; then \
+		$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM1.WAD GAMES/DOOM/DOOM1.WAD; \
+	fi
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.H LIB/WIN.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.CC LIB/WIN.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.LST LIB/WIN.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.CLS LIB/WIN.CLS
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/UI.H LIB/UI.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/UI.CC LIB/UI.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/APP.H LIB/APP.H
@@ -576,25 +610,53 @@ disk-apps: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CATALOG APPS/CATALOG
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CC APPS/DESKTOP/DESKTOP.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.LST APPS/DESKTOP/DESKTOP.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CLV APPS/DESKTOP/DESKTOP.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/Makefile APPS/DESKTOP/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CC APPS/TASKBAR/TASKBAR.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.LST APPS/TASKBAR/TASKBAR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CLV APPS/TASKBAR/TASKBAR.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/Makefile APPS/TASKBAR/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.CC APPS/SHELL/SHELL.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.LST APPS/SHELL/SHELL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.CLV APPS/SHELL/SHELL.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/Makefile APPS/SHELL/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.CC APPS/EXPLORER/EXPLORER.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.LST APPS/EXPLORER/EXPLORER.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.CLV APPS/EXPLORER/EXPLORER.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/Makefile APPS/EXPLORER/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.CC APPS/EDITOR/EDITOR.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.LST APPS/EDITOR/EDITOR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.CLV APPS/EDITOR/EDITOR.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/Makefile APPS/EDITOR/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.CC APPS/TASKMGR/TASKMGR.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.LST APPS/TASKMGR/TASKMGR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.CLV APPS/TASKMGR/TASKMGR.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/Makefile APPS/TASKMGR/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.CC APPS/BALL/BALL.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.LST APPS/BALL/BALL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.CLV APPS/BALL/BALL.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/Makefile APPS/BALL/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.CC APPS/PREFS/PREFS.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.LST APPS/PREFS/PREFS.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.CLV APPS/PREFS/PREFS.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/Makefile APPS/PREFS/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/HELLO.TXT SRC/HELLO.TXT
+
+host-mk-clv: tools/mk_clv.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c \
+		compiler/clvm/clvm_format.c compiler/cls/cls.c compiler/gc/gc.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		-Icompiler/cls -Icompiler/gc -Icompiler \
+		tools/mk_clv.c compiler/chrisc/chrisc.c compiler/clvm/clasm.c \
+		compiler/clvm/clvm_format.c compiler/cls/cls.c compiler/gc/gc.c \
+		-o $(HOST_BIN)/mk_clv
+
+test_cls: tools/test_cls.c compiler/cls/cls.c compiler/gc/gc.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/cls -Icompiler/gc -Icompiler \
+		tools/test_cls.c compiler/cls/cls.c compiler/gc/gc.c \
+		-o $(HOST_BIN)/test_cls
+	$(HOST_BIN)/test_cls
 
 disk: disk-hello disk-fault disk-cube disk-world disk-watch disk-blink disk-exit42 disk-lib disk-doom disk-apps host-cfs-put
 	$(HOST_BIN)/cfs_put $(DISK_IMG)
@@ -629,7 +691,7 @@ test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
 		-o $(HOST_BIN)/test_native_link
 	$(HOST_BIN)/test_native_link
 
-host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_clasm test_clasm_games test_tile test_tile_bin
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
@@ -701,7 +763,7 @@ host-jit-vm-test: tools/test_jit_vm.c tools/jit_host_stub.c compiler/jit/jit_emi
 		kernel/gfx/zbuf.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/jit -Icompiler/chrisc \
-		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -msse2 \
+		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -Ikernel/metal -msse2 \
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_jit_vm.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
@@ -715,7 +777,7 @@ host-jit-native-test: tools/test_jit_native.c tools/jit_host_stub.c compiler/jit
 		compiler/clvm/clvm_vm.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/jit -Icompiler/chrisc \
-		-Icompiler/clvm -Icompiler -Ikernel/lang \
+		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/metal \
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_jit_native.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
@@ -729,7 +791,7 @@ host-jit-bench-test: tools/test_jit_bench.c tools/jit_host_stub.c compiler/jit/j
 		kernel/gfx/zbuf.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -O2 -D_POSIX_C_SOURCE=200809L -Icompiler/jit -Icompiler/chrisc \
-		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -msse2 \
+		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/gfx -Ikernel/metal -msse2 \
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_jit_bench.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
@@ -795,6 +857,10 @@ $(OBJ_DIR)/compiler/il/%.o: compiler/il/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/compiler/cla/%.o: compiler/cla/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/compiler/cls/%.o: compiler/cls/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

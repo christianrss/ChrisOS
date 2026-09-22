@@ -7,6 +7,7 @@
 
 #define LANG_VM_SLOTS 16
 #define LANG_VM_BUDGET 64000u
+#define LANG_VM_BUDGET_GAME 20000000u
 #define LANG_SPLASH_SLOT 0
 
 void lang_init(ClvmSysFn sys, void *sys_user);
@@ -14,6 +15,10 @@ int lang_save(Editor *editor);
 int lang_compile(Editor *editor);
 int lang_run(Editor *editor, const char *clv_name);
 int lang_run_path(const char *clv_name);
+int lang_run_path_replace(const char *clv_name);
+int lang_run_path_arg(const char *clv_name, const char *arg);
+void lang_set_app_arg(const char *arg);
+int lang_copy_app_arg(char *out, int cap);
 int lang_compile_path(const char *src_path);
 int lang_run_jit(Editor *editor, const char *clv_name);
 int lang_compile_run(Editor *editor);

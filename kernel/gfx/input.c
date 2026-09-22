@@ -1,6 +1,24 @@
 #include "input.h"
 
+#ifdef __freestanding__
+#include "fs.h"
+#else
+static int fs_read(const char *path, void *data, int n) {
+    (void)path;
+    (void)data;
+    (void)n;
+    return -1;
+}
+static int fs_write(const char *path, const void *data, int n) {
+    (void)path;
+    (void)data;
+    (void)n;
+    return -1;
+}
+#endif
+
 #define INPUT_QUEUE_CAPACITY 64u
+#define INPUT_KB_CFG "SYS/KB.CFG"
 
 typedef struct {
     volatile uint32_t version;
@@ -28,11 +46,13 @@ static bool g_extended;
 static bool g_left_shift;
 static bool g_right_shift;
 static bool g_caps_lock;
+static bool g_altgr;
+static InputLayout g_layout = INPUT_LAYOUT_US;
 
 /* LEARN:F5P02 */
 static volatile uint8_t g_keys[128];
 
-static const char normal_map[128] = {
+static const char us_normal[128] = {
     [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4',
     [0x06] = '5', [0x07] = '6', [0x08] = '7', [0x09] = '8',
     [0x0A] = '9', [0x0B] = '0', [0x0C] = '-', [0x0D] = '=',
@@ -47,13 +67,39 @@ static const char normal_map[128] = {
     [0x33] = ',', [0x34] = '.', [0x35] = '/', [0x39] = ' '
 };
 
-static const char shifted_map[128] = {
+static const char us_shifted[128] = {
     [0x02] = '!', [0x03] = '@', [0x04] = '#', [0x05] = '$',
     [0x06] = '%', [0x07] = '^', [0x08] = '&', [0x09] = '*',
     [0x0A] = '(', [0x0B] = ')', [0x0C] = '_', [0x0D] = '+',
     [0x1A] = '{', [0x1B] = '}', [0x27] = ':', [0x28] = '"',
     [0x29] = '~', [0x2B] = '|', [0x33] = '<', [0x34] = '>',
     [0x35] = '?'
+};
+
+/* ABNT-2 (set 1): brackets/semicolon/slash match a Brazilian keyboard. */
+static const char abnt_normal[128] = {
+    [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4',
+    [0x06] = '5', [0x07] = '6', [0x08] = '7', [0x09] = '8',
+    [0x0A] = '9', [0x0B] = '0', [0x0C] = '-', [0x0D] = '=',
+    [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r',
+    [0x14] = 't', [0x15] = 'y', [0x16] = 'u', [0x17] = 'i',
+    [0x18] = 'o', [0x19] = 'p', [0x1A] = '\'', [0x1B] = '[',
+    [0x1E] = 'a', [0x1F] = 's', [0x20] = 'd', [0x21] = 'f',
+    [0x22] = 'g', [0x23] = 'h', [0x24] = 'j', [0x25] = 'k',
+    [0x26] = 'l', [0x27] = 'c', [0x28] = '~', [0x29] = '\'',
+    [0x2B] = ']', [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c',
+    [0x2F] = 'v', [0x30] = 'b', [0x31] = 'n', [0x32] = 'm',
+    [0x33] = ',', [0x34] = '.', [0x35] = ';', [0x39] = ' ',
+    [0x56] = '\\', [0x73] = '/'
+};
+
+static const char abnt_shifted[128] = {
+    [0x02] = '!', [0x03] = '@', [0x04] = '#', [0x05] = '$',
+    [0x06] = '%', [0x07] = '^', [0x08] = '&', [0x09] = '*',
+    [0x0A] = '(', [0x0B] = ')', [0x0C] = '_', [0x0D] = '+',
+    [0x1A] = '`', [0x1B] = '{', [0x27] = 'C', [0x28] = '^',
+    [0x2B] = '}', [0x33] = '<', [0x34] = '>', [0x35] = ':',
+    [0x56] = '|', [0x73] = '?'
 };
 
 static void compiler_barrier(void) {
@@ -141,6 +187,59 @@ void input_init(int screen_width, int screen_height) {
     g_left_shift = false;
     g_right_shift = false;
     g_caps_lock = false;
+    g_altgr = false;
+    (void)input_load_layout_file(INPUT_KB_CFG);
+}
+
+void input_set_layout(InputLayout layout) {
+    if (layout != INPUT_LAYOUT_US && layout != INPUT_LAYOUT_ABNT2) {
+        layout = INPUT_LAYOUT_US;
+    }
+    g_layout = layout;
+}
+
+InputLayout input_get_layout(void) {
+    return g_layout;
+}
+
+int input_load_layout_file(const char *path) {
+    char buf[16];
+    int n;
+    if (!path || !path[0]) {
+        return 0;
+    }
+    n = fs_read(path, buf, (int)sizeof(buf) - 1);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = 0;
+    if ((buf[0] == 'a' || buf[0] == 'A') &&
+        (buf[1] == 'b' || buf[1] == 'B')) {
+        g_layout = INPUT_LAYOUT_ABNT2;
+        return 1;
+    }
+    if ((buf[0] == 'u' || buf[0] == 'U') &&
+        (buf[1] == 's' || buf[1] == 'S')) {
+        g_layout = INPUT_LAYOUT_US;
+        return 1;
+    }
+    return 0;
+}
+
+int input_save_layout_file(const char *path) {
+    const char *text;
+    int n;
+    if (!path || !path[0]) {
+        path = INPUT_KB_CFG;
+    }
+    if (g_layout == INPUT_LAYOUT_ABNT2) {
+        text = "abnt2\n";
+        n = 6;
+    } else {
+        text = "us\n";
+        n = 3;
+    }
+    return fs_write(path, text, n) == n ? 1 : 0;
 }
 
 void input_keystate_clear(void) {
@@ -169,6 +268,8 @@ void input_keyboard_irq(uint8_t scancode) {
     bool shifted;
     char character;
     InputKey key;
+    const char *normal_map;
+    const char *shifted_map;
 
     input_keystate_note(scancode);
 
@@ -186,6 +287,11 @@ void input_keyboard_irq(uint8_t scancode) {
     }
     if (!g_extended && code == 0x36) {
         g_right_shift = !released;
+        return;
+    }
+    if (g_extended && code == 0x38) {
+        g_altgr = !released;
+        g_extended = false;
         return;
     }
 
@@ -212,8 +318,23 @@ void input_keyboard_irq(uint8_t scancode) {
         return;
     }
 
+    if (g_layout == INPUT_LAYOUT_ABNT2) {
+        normal_map = abnt_normal;
+        shifted_map = abnt_shifted;
+    } else {
+        normal_map = us_normal;
+        shifted_map = us_shifted;
+    }
+
     shifted = g_left_shift || g_right_shift;
     character = normal_map[code];
+    if (g_layout == INPUT_LAYOUT_ABNT2 && g_altgr) {
+        if (code == 0x10) {
+            character = '/';
+        } else if (code == 0x11) {
+            character = '?';
+        }
+    }
     if (character >= 'a' && character <= 'z') {
         if (shifted != g_caps_lock) {
             character = (char)(character - 'a' + 'A');

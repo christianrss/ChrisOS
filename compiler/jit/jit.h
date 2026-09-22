@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define JIT_PAGES 256u
+#define JIT_PAGES 6144u
 #define JIT_MAX (JIT_PAGES * 4096u)
 
 typedef struct JitBuf {

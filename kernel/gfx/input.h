@@ -48,6 +48,11 @@ typedef struct {
     uint32_t left_press_sequence;
 } InputMouse;
 
+typedef enum {
+    INPUT_LAYOUT_US = 0,
+    INPUT_LAYOUT_ABNT2 = 1
+} InputLayout;
+
 void input_init(int screen_width, int screen_height);
 void input_keyboard_irq(uint8_t scancode);
 void input_mouse_irq_byte(uint8_t byte);
@@ -62,6 +67,10 @@ void input_consume_left_press(void);
 void input_keystate_note(uint8_t scancode);
 int input_key_down(int scancode);
 void input_keystate_clear(void);
+void input_set_layout(InputLayout layout);
+InputLayout input_get_layout(void);
+int input_load_layout_file(const char *path);
+int input_save_layout_file(const char *path);
 
 
 #endif

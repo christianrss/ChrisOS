@@ -2,6 +2,7 @@
 #include "app_window.h"
 
 #include "clvm_sys.h"
+#include "font.h"
 #include "graphics.h"
 #include "lang_pipeline.h"
 #include "task.h"
@@ -29,11 +30,40 @@ static void app_title(char *dst, const char *name) {
     dst[i] = 0;
 }
 
+#define APP_CHROME_H 20
+
+static void app_draw_chrome(Task *task, int gw) {
+    int x;
+    int y;
+    int w;
+    const char *title;
+    if (!task) {
+        return;
+    }
+    x = task->frame.x;
+    y = task->frame.y;
+    w = gw > 0 ? gw : task->frame.width;
+    if (w < 64) {
+        w = 64;
+    }
+    gfx_fill_rect(x, y, w, APP_CHROME_H, 0x00306090u);
+    gfx_fill_rect(x + w - 22, y, 22, APP_CHROME_H, 0x00C02828u);
+    title = task_title(task);
+    gfx_draw_text(font_row, font_arial_width, font_arial_height, title, x + 6,
+                  y + 3, 0x00FFFFFFu);
+    gfx_draw_text(font_row, font_arial_width, font_arial_height, "X",
+                  x + w - 15, y + 3, 0x00FFFFFFu);
+}
+
 static void app_run(Task *task, uint64_t ticks) {
     int slot;
     uint32_t *pix;
     int gw;
     int gh;
+    int bh;
+    int remain;
+    int chrome;
+    int by;
     (void)ticks;
     if (!task) {
         return;
@@ -49,8 +79,34 @@ static void app_run(Task *task, uint64_t ticks) {
     }
     gw = lang_slot_w(slot);
     gh = lang_slot_h(slot);
-    clvm_sys_blit_to(pix, task->frame.x, task->frame.y, gw, gh, task->frame.width,
-                     task->frame.body_height);
+    /* Title chrome only for classic game buffers (not win_begin UI apps). */
+    chrome = (gw <= CLVM_SYS_GAME_W + 32 && gh <= CLVM_SYS_GAME_H + 32)
+                 ? APP_CHROME_H
+                 : 0;
+    /* Keep surface width 1:1 with pixel buffer — never stretch. */
+    if (task->frame.width != gw) {
+        task->frame.width = gw;
+    }
+    if (task->frame.body_height != gh + chrome) {
+        task->frame.body_height = gh + chrome;
+    }
+    if (chrome > 0) {
+        app_draw_chrome(task, gw);
+    }
+    by = task->frame.y + chrome;
+    bh = gh;
+    if (by < g_gfx.height) {
+        remain = g_gfx.height - by;
+        if (bh > remain) {
+            bh = remain;
+        }
+    } else {
+        return;
+    }
+    if (bh < 1) {
+        return;
+    }
+    clvm_sys_blit_to(pix, task->frame.x, by, gw, gh, gw, bh);
 }
 
 void app_window_open(int lang_slot, const char *title) {
@@ -80,14 +136,31 @@ void app_window_open(int lang_slot, const char *title) {
     if (gh < 32) {
         gh = CLVM_SYS_GAME_H;
     }
-    offset = g_window_cascade * 28;
-    frame.x = 40 + offset;
-    frame.y = 40 + offset;
-    frame.width = gw;
-    frame.body_height = gh;
-    ++g_window_cascade;
-    if (g_window_cascade > 8) {
-        g_window_cascade = 1;
+    if (gw >= g_gfx.width && gh >= g_gfx.height) {
+        frame.x = 0;
+        frame.y = 0;
+        frame.width = gw;
+        frame.body_height = gh;
+    } else {
+        offset = g_window_cascade * 28;
+        /* Prefer the right half so Go-spawned games are not buried under Editor. */
+        frame.x = g_gfx.width - gw - 48 - (offset % 56);
+        if (frame.x < 48) {
+            frame.x = 48 + offset;
+        }
+        frame.y = 48 + offset;
+        if (frame.y + gh + APP_CHROME_H > g_gfx.height - 48) {
+            frame.y = 48;
+        }
+        frame.width = gw;
+        frame.body_height =
+            gh + ((gw <= CLVM_SYS_GAME_W + 32 && gh <= CLVM_SYS_GAME_H + 32)
+                      ? APP_CHROME_H
+                      : 0);
+        ++g_window_cascade;
+        if (g_window_cascade > 8) {
+            g_window_cascade = 1;
+        }
     }
     id = task_spawn(TASK_APP, frame, app_run);
     if (id < 0) {
@@ -101,5 +174,7 @@ void app_window_open(int lang_slot, const char *title) {
     task->state.app.lang_slot = lang_slot;
     lang_bind_task(lang_slot, id);
     task_set_title(id, named);
-    task_raise(id);
+    if (!(frame.x == 0 && frame.y == 0 && frame.width >= g_gfx.width)) {
+        task_raise(id);
+    }
 }

@@ -106,8 +106,7 @@ void gfx_fill_circle(int cx, int cy, int radius, uint32_t color) {
 }
 
 int gfx_text_advance(int glyph_width) {
-    int advance = glyph_width - glyph_width / 5;
-    return advance > 0 ? advance : 1;
+    return glyph_width > 0 ? glyph_width : 1;
 }
 
 static void draw_glyph_clipped(GfxFontRowFn font, int glyph_width,

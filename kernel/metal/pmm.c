@@ -191,6 +191,10 @@ static uint64_t claim_run(uint64_t start, uint64_t count) {
     return start;
 }
 
+void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
+                          void *user);
+uint64_t pmm_claim_at(uint64_t phys, uint64_t pages);
+
 static uint64_t scan_usable_for_run(uint64_t count, uint64_t from_phys) {
     uint64_t index;
     uint64_t n;
@@ -221,6 +225,19 @@ static uint64_t scan_usable_for_run(uint64_t count, uint64_t from_phys) {
         run = 0;
         run_start = addr;
         while (addr < end) {
+            uint64_t page;
+            uint64_t byte;
+
+            /* Skip whole used bitmap bytes (8 pages) without per-page checks. */
+            page = addr / PMM_PAGE;
+            byte = page / 8ull;
+            if ((page & 7ull) == 0ull && byte < PMM_BITMAP_BYTES &&
+                pmm_bitmap[byte] == 0xFFu) {
+                run = 0;
+                addr += 8ull * PMM_PAGE;
+                run_start = addr;
+                continue;
+            }
             if (!page_in_range(addr) || bitmap_is_used(addr)) {
                 run = 0;
                 run_start = addr + PMM_PAGE;
@@ -236,6 +253,21 @@ static uint64_t scan_usable_for_run(uint64_t count, uint64_t from_phys) {
     return 0;
 }
 
+struct contig_find {
+    uint64_t need;
+    uint64_t found;
+};
+
+static int contig_find_cb(uint64_t phys, uint64_t pages, void *user) {
+    struct contig_find *f = (struct contig_find *)user;
+
+    if (f == 0 || pages < f->need) {
+        return 1;
+    }
+    f->found = phys;
+    return 0;
+}
+
 uint64_t pmm_alloc(void) {
     uint64_t phys;
 
@@ -247,13 +279,24 @@ uint64_t pmm_alloc(void) {
 }
 
 uint64_t pmm_alloc_contig(uint64_t count) {
+    struct contig_find find;
     uint64_t phys;
 
     if (count == 0) {
         return 0;
     }
-    phys = scan_usable_for_run(count, 0);
-    return phys;
+    /* First free run that fits — byte-skipped walk in foreach. */
+    find.need = count;
+    find.found = 0;
+    pmm_foreach_free_run(contig_find_cb, &find);
+    if (find.found != 0) {
+        phys = pmm_claim_at(find.found, count);
+        if (phys != 0) {
+            return phys;
+        }
+    }
+    /* Fallback if claim raced / fragmented mid-run. */
+    return scan_usable_for_run(count, 0);
 }
 
 void pmm_free(uint64_t phys) {
@@ -315,6 +358,21 @@ void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
         run = 0;
         run_start = addr;
         while (addr < end) {
+            uint64_t page;
+            uint64_t byte;
+
+            page = addr / PMM_PAGE;
+            byte = page / 8ull;
+            if ((page & 7ull) == 0ull && byte < PMM_BITMAP_BYTES &&
+                pmm_bitmap[byte] == 0xFFu) {
+                if (run != 0 && cb(run_start, run, user) == 0) {
+                    return;
+                }
+                run = 0;
+                addr += 8ull * PMM_PAGE;
+                run_start = addr;
+                continue;
+            }
             if (!page_in_range(addr) || bitmap_is_used(addr)) {
                 if (run != 0 && cb(run_start, run, user) == 0) {
                     return;

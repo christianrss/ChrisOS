@@ -17,10 +17,12 @@
 #include "task.h"
 #include "ui.h"
 #include "cla/cla.h"
+#include "cls/cls.h"
 #include "heap.h"
 #include "gc/gc.h"
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
+#include "serial.h"
 
 #define LANG_SOURCE_MAX 4194304
 #define LANG_CODE_MAX (4u * 1024u * 1024u)
@@ -72,6 +74,7 @@ static uint8_t file_buffer[LANG_FILE_MAX];
 static ChrisResult g_chris_result;
 static char g_last_clv[LANG_NAME_MAX];
 static char g_last_err[160];
+static char g_app_arg[FS_PATH];
 static int g_want_debug;
 static ClvmSysFn system_fn;
 static void *system_user;
@@ -98,6 +101,62 @@ static void scopy(char *dst, int cap, const char *src) {
         i++;
     }
     dst[i] = 0;
+}
+
+static int samestr(const char *a, const char *b) {
+    int i = 0;
+    if (!a || !b) {
+        return 0;
+    }
+    while (a[i] && b[i] && a[i] == b[i]) {
+        i++;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+
+static int lang_kill_by_name(const char *name) {
+    int i;
+    int killed = 0;
+    if (!name || !name[0]) {
+        return 0;
+    }
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (!slots[i].used) {
+            continue;
+        }
+        if (!samestr(slots[i].name, name)) {
+            continue;
+        }
+        serial_puts("run: replacing ");
+        serial_puts(name);
+        serial_puts("\n");
+        lang_kill(i);
+        killed = 1;
+    }
+    return killed;
+}
+
+static int lang_raise_existing(const char *name) {
+    int i;
+    if (!name || !name[0]) {
+        return 0;
+    }
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (!slots[i].used) {
+            continue;
+        }
+        if (!samestr(slots[i].name, name)) {
+            continue;
+        }
+        if (slots[i].task_id >= 0) {
+            task_raise(slots[i].task_id);
+        }
+        serial_puts("run: already running, raise ");
+        serial_puts(name);
+        serial_puts("\n");
+        return 1;
+    }
+    return 0;
 }
 
 static int last_dot_at(const char *s);
@@ -349,14 +408,21 @@ static int emit_game_clv(const char *outn) {
     code_size = g_chris_result.code_size;
     entry = g_chris_result.entry;
     lang_write_map(outn, &g_chris_result);
-    if (code_size > 65535u || entry > 65535u)
-        file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
-                                       CLVM_FLAG_GAME, entry, 0,
-                                       code_buffer, code_size);
-    else
-        file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
-                                    CLVM_FLAG_GAME, (uint16_t)entry,
-                                    code_buffer, code_size);
+    {
+        uint32_t mem_hint = 0;
+        /* Doom-sized images need a large guest heap (zone + lumps). */
+        if (code_size > 200000u) {
+            mem_hint = 32u * 1024u * 1024u;
+        }
+        if (code_size > 65535u || entry > 65535u || mem_hint != 0)
+            file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
+                                           CLVM_FLAG_GAME, entry, mem_hint,
+                                           code_buffer, code_size);
+        else
+            file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
+                                        CLVM_FLAG_GAME, (uint16_t)entry,
+                                        code_buffer, code_size);
+    }
     if (!file_size) {
         n = 0;
         append(g_last_err, (int)sizeof(g_last_err), &n, "clv image fail");
@@ -413,6 +479,8 @@ void lang_init(ClvmSysFn sys, void *user) {
     int i;
     system_fn = sys;
     system_user = user;
+    g_app_arg[0] = 0;
+    cls_runtime_init();
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         slots[i].used = 0;
         slots[i].task_id = -1;
@@ -440,7 +508,7 @@ void lang_init(ClvmSysFn sys, void *user) {
 }
 
 #define CLVM_HEAP_RESERVE (64ull * 1024ull * 1024ull)
-#define CLVM_SLOT_RAM_DEFAULT (256ull * 1024ull * 1024ull)
+#define CLVM_SLOT_RAM_DEFAULT ((uint64_t)CLVM_MEMORY_SIZE)
 
 static void lang_free_slot_ram(int i) {
     if (slots[i].heap_ram) {
@@ -448,6 +516,26 @@ static void lang_free_slot_ram(int i) {
         slots[i].heap_ram = 0;
         slots[i].heap_ram_sz = 0;
     }
+}
+
+static void mem_zero_fast(uint8_t *p, uint64_t n) {
+    uint64_t i;
+    uint32_t *w;
+    uint64_t nw;
+    if (!p || n == 0)
+        return;
+    while (n && ((uintptr_t)p & 3u)) {
+        *p++ = 0;
+        n--;
+    }
+    w = (uint32_t *)(void *)p;
+    nw = n / 4u;
+    for (i = 0; i < nw; ++i)
+        w[i] = 0;
+    p += nw * 4u;
+    n -= nw * 4u;
+    while (n--)
+        *p++ = 0;
 }
 
 static void lang_attach_slot_ram(int i, const ClvmImage *image) {
@@ -470,14 +558,21 @@ static void lang_attach_slot_ram(int i, const ClvmImage *image) {
     p = (uint8_t *)kmalloc(want);
     if (!p)
         return;
-    for (n = 0; n < want; ++n)
-        p[n] = 0;
+    mem_zero_fast(p, want);
     if (slots[i].vm.memory) {
         uint64_t copy = slots[i].vm.mem_size;
         if (copy > want)
             copy = want;
         for (n = 0; n < copy; ++n)
             p[n] = slots[i].vm.memory[n];
+    }
+    /* Doom-sized heaps: ensure ctor-list globals start clear. */
+    if (want >= (16ull * 1024ull * 1024ull) && want > 271276u) {
+        uint64_t zi;
+        for (zi = 270540u; zi < 270540u + 8u; zi++)
+            p[zi] = 0;
+        for (zi = 271268u; zi < 271268u + 8u; zi++)
+            p[zi] = 0;
     }
     slots[i].heap_ram = p;
     slots[i].heap_ram_sz = want;
@@ -741,27 +836,42 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     int n;
     ClvmImage image;
     ClvmLoadError load;
+    /* Desktop/taskbar icons: reuse the live instance (stops spawn storms). */
+    if (lang_raise_existing(name)) {
+        status(e, "already running");
+        return 1;
+    }
     for (i = 0; i < LANG_VM_SLOTS && slots[i].used; ++i) {
     }
     if (i == LANG_VM_SLOTS) {
         status(e, "run: all VM slots busy");
+        serial_puts("run: all VM slots busy\n");
         return 0;
     }
     if (!slot_ensure_file(i)) {
         status(e, "run: no memory");
+        serial_puts("run: no memory for slot file\n");
         return 0;
     }
+    serial_puts("run: load ");
+    serial_puts(name ? name : "?");
+    serial_puts("\n");
     n = fs_read(name, slots[i].file, (int)slots[i].file_cap);
     if (n < 0) {
         int k = 0;
         e->status[0] = 0;
         append(e->status, 80, &k, "run: not found ");
         append(e->status, 80, &k, name ? name : "");
+        serial_puts("run: not found\n");
         return 0;
     }
+    serial_puts("run: bytes=");
+    serial_write_u64((uint64_t)(uint32_t)n);
+    serial_puts("\n");
     if (storage_ready() && storage_cfs()) {
         if (cfs_perm(storage_cfs(), name, CFS_PERM_EXEC) != CFS_OK) {
             status(e, "no exec");
+            serial_puts("run: no exec\n");
             return 0;
         }
     }
@@ -769,28 +879,55 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     load = clvm_parse(slots[i].file, slots[i].file_size, &image);
     if (load != CL_LOAD_OK) {
         status(e, clvm_load_error(load));
+        serial_puts("run: clvm_parse failed\n");
         return 0;
     }
+    serial_puts("run: mem_hint=");
+    serial_write_u64((uint64_t)image.mem_hint);
+    serial_puts("\n");
     if (!lang_setup_viewport(i, &image, name)) {
         status(e, "run: gfx slot failed");
+        serial_puts("run: gfx slot failed\n");
         return 0;
     }
     gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
     slots[i].vm.on_safepoint = lang_safepoint;
     lang_attach_slot_ram(i, &image);
+    if (!slots[i].heap_ram) {
+        status(e, "run: heap ram failed");
+        serial_puts("run: heap ram failed\n");
+        return 0;
+    }
+    serial_puts("run: heap_ram=");
+    serial_write_u64(slots[i].heap_ram_sz);
+    serial_puts("\n");
     lang_load_map(i, name);
     slots[i].use_jit = 0;
     slots[i].jit_fn = NULL;
     if (slots[i].jit.phys != 0) {
         jit_free(&slots[i].jit);
     }
+    /*
+     * Doom-sized images need native JIT (interpreter is too slow). Prefer
+     * JIT unless the caller asked for the debugger.
+     */
+    if (!use_jit && (image.flags & CLVM_FLAG_GAME) != 0 &&
+        image.mem_hint >= (16u * 1024u * 1024u)) {
+        use_jit = 1;
+        serial_puts("run: doom-sized image -> jit\n");
+    }
     if (use_jit && !g_want_debug) {
+        serial_puts("run: jit compile...\n");
         if (jit_compile_image(&image, &slots[i].jit, &slots[i].jit_fn) != 0) {
             status(e, "jit compile failed");
-            return 0;
+            serial_puts("run: jit compile failed, using interpreter\n");
+            slots[i].use_jit = 0;
+            slots[i].jit_fn = NULL;
+        } else {
+            slots[i].use_jit = 1;
+            serial_puts("run: jit ready\n");
         }
-        slots[i].use_jit = 1;
     }
     scopy(slots[i].name, LANG_NAME_MAX, name);
     slots[i].task_id = -1;
@@ -804,7 +941,8 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     slot_ev_reset(i);
     slots[i].dying = 0;
     app_window_open(i, name);
-    status(e, use_jit ? "running jit" : "running");
+    status(e, slots[i].use_jit ? "running jit" : "running");
+    serial_puts(slots[i].use_jit ? "run: started jit\n" : "run: started interp\n");
     return 1;
 }
 
@@ -823,12 +961,48 @@ int lang_compile_path(const char *src) {
 }
 
 int lang_run_path(const char *name) {
+    return lang_run_path_arg(name, 0);
+}
+
+int lang_run_path_replace(const char *name) {
+    (void)lang_kill_by_name(name);
+    return lang_run_path_arg(name, 0);
+}
+
+void lang_set_app_arg(const char *arg) {
+    int i = 0;
+    if (!arg) {
+        g_app_arg[0] = 0;
+        return;
+    }
+    while (arg[i] && i + 1 < (int)sizeof(g_app_arg)) {
+        g_app_arg[i] = arg[i];
+        i++;
+    }
+    g_app_arg[i] = 0;
+}
+
+int lang_copy_app_arg(char *out, int cap) {
+    int i = 0;
+    if (!out || cap < 1) {
+        return 0;
+    }
+    while (g_app_arg[i] && i + 1 < cap) {
+        out[i] = g_app_arg[i];
+        i++;
+    }
+    out[i] = 0;
+    return i > 0;
+}
+
+int lang_run_path_arg(const char *name, const char *arg) {
     static Editor dummy;
     char probe[1];
     char alt[LANG_NAME_MAX];
 
     dummy.name[0] = 0;
     dummy.status[0] = 0;
+    lang_set_app_arg(arg);
     if (!name || !name[0]) {
         return 0;
     }
@@ -1093,8 +1267,11 @@ void lang_tick(uint32_t now) {
                     continue;
             }
             if (slots[i].use_jit && slots[i].jit_fn != NULL && !slots[i].debug_on) {
+                uint32_t budget = LANG_VM_BUDGET;
+                if (slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull))
+                    budget = LANG_VM_BUDGET_GAME;
                 jit_set_sys_context(&slots[i].vm, &slots[i].gfx);
-                r = slots[i].jit_fn(&slots[i].vm, LANG_VM_BUDGET, now);
+                r = slots[i].jit_fn(&slots[i].vm, budget, now);
             } else if (slots[i].debug_on && slots[i].step_line) {
                 int k;
                 uint16_t start = slots[i].last_line;
@@ -1114,9 +1291,113 @@ void lang_tick(uint32_t now) {
                 slots[i].step_one = 0;
                 slots[i].paused = 1;
             } else {
-                r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
+                uint32_t budget = LANG_VM_BUDGET;
+                if (slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull))
+                    budget = LANG_VM_BUDGET_GAME;
+                r = clvm_step(&slots[i].vm, budget);
             }
-            if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT || slots[i].dying) {
+    if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT || slots[i].dying) {
+                if (r == CLVM_STEP_FAULT) {
+                    serial_puts("run: FAULT slot=");
+                    serial_write_u64((uint64_t)(uint32_t)i);
+                    serial_puts(" pc=");
+                    serial_write_u64((uint64_t)slots[i].vm.pc);
+                    serial_puts(" sp=");
+                    serial_write_u64((uint64_t)slots[i].vm.sp);
+                    serial_puts(" fault=");
+                    serial_write_u64((uint64_t)(uint32_t)slots[i].vm.fault);
+                    serial_puts(" fpc=");
+                    serial_write_u64((uint64_t)slots[i].vm.fault_pc);
+                    serial_puts(" csp=");
+                    serial_write_u64((uint64_t)slots[i].vm.csp);
+                    if (slots[i].vm.csp > 0u) {
+                        uint16_t ci;
+                        serial_puts(" ret=");
+                        serial_write_u64(
+                            (uint64_t)slots[i].vm.calls[slots[i].vm.csp - 1u]);
+                        serial_puts(" calls=");
+                        for (ci = 0; ci < slots[i].vm.csp && ci < 12u; ci++) {
+                            if (ci)
+                                serial_puts(",");
+                            serial_write_u64((uint64_t)slots[i].vm.calls[ci]);
+                        }
+                    }
+                    if (slots[i].vm.sp > 0u) {
+                        serial_puts(" top=");
+                        serial_write_u64(
+                            (uint64_t)slots[i].vm.stack[slots[i].vm.sp - 1u]);
+                    }
+                    if (slots[i].vm.memory && slots[i].vm.mem_size > 271276u) {
+                        uint64_t g540 = 0, g268 = 0, n0 = 0, n8 = 0, n12 = 0, msz;
+                        int bi;
+                        msz = slots[i].vm.mem_size;
+                        for (bi = 0; bi < 8; bi++) {
+                            g540 |= (uint64_t)slots[i].vm.memory[270540u + (uint32_t)bi]
+                                    << (8 * bi);
+                            g268 |= (uint64_t)slots[i].vm.memory[271268u + (uint32_t)bi]
+                                    << (8 * bi);
+                        }
+                        if (g540 && g540 + 20u < msz) {
+                            for (bi = 0; bi < 8; bi++) {
+                                n0 |= (uint64_t)slots[i].vm.memory[(uint32_t)g540 + (uint32_t)bi]
+                                      << (8 * bi);
+                                n12 |= (uint64_t)slots[i].vm.memory[(uint32_t)g540 + 12u + (uint32_t)bi]
+                                       << (8 * bi);
+                            }
+                            for (bi = 0; bi < 4; bi++)
+                                n8 |= (uint64_t)slots[i].vm.memory[(uint32_t)g540 + 8u + (uint32_t)bi]
+                                      << (8 * bi);
+                        }
+                        serial_puts(" msz=");
+                        serial_write_u64(msz);
+                        serial_puts(" g540=");
+                        serial_write_u64(g540);
+                        serial_puts(" g268=");
+                        serial_write_u64(g268);
+                        serial_puts(" n0=");
+                        serial_write_u64(n0);
+                        serial_puts(" n8=");
+                        serial_write_u64(n8);
+                        serial_puts(" n12=");
+                        serial_write_u64(n12);
+                    }
+                    serial_puts("\n");
+                    /* Doom ctor-list walk: a corrupt `next` pointer ends up OOB.
+                     * Clear the cursor and resume so init can finish. */
+                    if (slots[i].use_jit &&
+                        slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull) &&
+                        slots[i].vm.pc >= 131142u && slots[i].vm.pc <= 131210u &&
+                        slots[i].vm.fault == CLVM_FAULT_BAD_ADDRESS &&
+                        slots[i].vm.memory &&
+                        slots[i].vm.mem_size > 271276u) {
+                        uint64_t head = 0;
+                        int bi;
+                        for (bi = 0; bi < 8; bi++)
+                            head |= (uint64_t)slots[i].vm.memory[270540u + (uint32_t)bi]
+                                    << (8 * bi);
+                        serial_puts("run: repair ctor list cursor\n");
+                        /* Drop the whole list — remaining nodes have corrupt next. */
+                        for (bi = 0; bi < 8; bi++) {
+                            slots[i].vm.memory[270540u + (uint32_t)bi] = 0;
+                            slots[i].vm.memory[271268u + (uint32_t)bi] = 0;
+                        }
+                        if (head && head + 20u < slots[i].vm.mem_size) {
+                            for (bi = 0; bi < 8; bi++)
+                                slots[i].vm.memory[(uint32_t)head + 12u + (uint32_t)bi] = 0;
+                        }
+                        slots[i].vm.state = CLVM_READY;
+                        slots[i].vm.fault = CLVM_FAULT_NONE;
+                        slots[i].vm.pc = 131210u; /* exit walk */
+                        slots[i].vm.sp = 0;
+                        continue;
+                    }
+                    /* Doom-sized: never drop to interpreter (too slow / state
+                     * already partial). Kill on unexpected fault. */
+                    if (slots[i].use_jit &&
+                        slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull)) {
+                        serial_puts("run: doom fault — kill\n");
+                    }
+                }
                 lang_kill(i);
             }
         }

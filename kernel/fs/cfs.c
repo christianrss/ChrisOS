@@ -475,6 +475,7 @@ static int file_lba(Cfs *fs, CfsInode *n, uint32_t block, uint32_t *lba,
 
 static int inode_ptr_free(Cfs *fs, CfsInode *n) {
     uint32_t k, mid;
+    uint8_t dbl[STOR_SECTOR_SIZE];
     int rc;
     if (n->indirect) {
         rc = block_free(fs, n->indirect);
@@ -482,10 +483,11 @@ static int inode_ptr_free(Cfs *fs, CfsInode *n) {
         n->indirect = 0u;
     }
     if (n->double_indirect) {
-        rc = cache_read(fs, n->double_indirect, fs->sector);
+        /* Local copy: block_free/bitmap_set clobber fs->sector. */
+        rc = cache_read(fs, n->double_indirect, dbl);
         if (rc != CFS_OK) return rc;
         for (k = 0; k < CFS_PTRS_PER_BLOCK; k++) {
-            mid = cfs_get32(fs->sector + k * 4u);
+            mid = cfs_get32(dbl + k * 4u);
             if (mid) {
                 rc = block_free(fs, mid);
                 if (rc != CFS_OK) return rc;
@@ -500,6 +502,7 @@ static int inode_ptr_free(Cfs *fs, CfsInode *n) {
 
 static int inode_ptr_prune(Cfs *fs, CfsInode *n, uint32_t need) {
     uint32_t i, idx, mid_idx, leaf_idx, mid, k;
+    uint8_t dbl[STOR_SECTOR_SIZE];
     int rc;
 
     for (i = need; i < CFS_DIRECT_COUNT; i++)
@@ -516,10 +519,10 @@ static int inode_ptr_prune(Cfs *fs, CfsInode *n, uint32_t need) {
             }
         }
         if (n->double_indirect) {
-            rc = cache_read(fs, n->double_indirect, fs->sector);
+            rc = cache_read(fs, n->double_indirect, dbl);
             if (rc != CFS_OK) return rc;
             for (k = 0; k < CFS_PTRS_PER_BLOCK; k++) {
-                mid = cfs_get32(fs->sector + k * 4u);
+                mid = cfs_get32(dbl + k * 4u);
                 if (mid) {
                     rc = block_free(fs, mid);
                     if (rc != CFS_OK) return rc;
@@ -540,31 +543,39 @@ static int inode_ptr_prune(Cfs *fs, CfsInode *n, uint32_t need) {
     }
     mid_idx = idx / CFS_PTRS_PER_BLOCK;
     leaf_idx = idx % CFS_PTRS_PER_BLOCK;
-    rc = cache_read(fs, n->double_indirect, fs->sector);
+    /* Keep double-indirect table in a local buffer — helpers reuse fs->sector. */
+    rc = cache_read(fs, n->double_indirect, dbl);
     if (rc != CFS_OK) return rc;
     for (i = mid_idx + 1u; i < CFS_PTRS_PER_BLOCK; i++) {
-        mid = cfs_get32(fs->sector + i * 4u);
+        mid = cfs_get32(dbl + i * 4u);
         if (mid) {
             rc = block_free(fs, mid);
             if (rc != CFS_OK) return rc;
-            cfs_put32(fs->sector + i * 4u, 0u);
+            cfs_put32(dbl + i * 4u, 0u);
         }
     }
-    mid = cfs_get32(fs->sector + mid_idx * 4u);
+    mid = cfs_get32(dbl + mid_idx * 4u);
     if (mid) {
-        for (k = leaf_idx; k < CFS_PTRS_PER_BLOCK; k++) {
-            uint32_t data;
-            rc = ptr_block_get(fs, mid, k, &data);
+        if (leaf_idx == 0u) {
+            /* Entire mid block unused: free it and drop the pointer. */
+            rc = block_free(fs, mid);
             if (rc != CFS_OK) return rc;
-            if (data) {
-                rc = block_free(fs, data);
+            cfs_put32(dbl + mid_idx * 4u, 0u);
+        } else {
+            for (k = leaf_idx; k < CFS_PTRS_PER_BLOCK; k++) {
+                uint32_t data;
+                rc = ptr_block_get(fs, mid, k, &data);
                 if (rc != CFS_OK) return rc;
-                rc = ptr_block_set(fs, mid, k, 0u);
-                if (rc != CFS_OK) return rc;
+                if (data) {
+                    rc = block_free(fs, data);
+                    if (rc != CFS_OK) return rc;
+                    rc = ptr_block_set(fs, mid, k, 0u);
+                    if (rc != CFS_OK) return rc;
+                }
             }
         }
     }
-    return cache_write(fs, n->double_indirect, fs->sector);
+    return cache_write(fs, n->double_indirect, dbl);
 }
 
 static int inode_alloc(Cfs *fs, uint32_t *id) {

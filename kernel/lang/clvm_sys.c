@@ -27,6 +27,8 @@
 #include "input.h"
 #include "lang_pipeline.h"
 #include "chrismake.h"
+#include "cls/cls.h"
+#include "serial.h"
 
 #define CLVM_FD_MAX 32
 #define CLVM_FD_PER_SLOT 8
@@ -160,6 +162,18 @@ static int path_ok(const char *p) {
     return 1;
 }
 
+/* Strip leading "./" segments Doom's IWAD search adds. */
+static void path_normalize(char *p) {
+    int i;
+    while (p[0] == '.' && p[1] == '/' ) {
+        i = 0;
+        do {
+            p[i] = p[i + 2];
+            i++;
+        } while (p[i - 1]);
+    }
+}
+
 static int vm_cstr(ClvmVm *vm, int32_t addr, char *out, int cap) {
     int i = 0;
     if (!vm || !out || cap < 2 || addr < 0)
@@ -220,11 +234,23 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
     uint16_t ty = 0;
     uint32_t cap;
 
-    if (!vm_cstr(vm, path_addr, path, FS_PATH) || !path_ok(path))
+    if (!vm_cstr(vm, path_addr, path, FS_PATH)) {
+        serial_puts("fopen: bad path addr\n");
         return clvm_vm_push(vm, -1) ? 0 : -1;
-    if (fd_count_slot(slot) >= CLVM_FD_PER_SLOT)
+    }
+    path_normalize(path);
+    serial_puts("fopen: ");
+    serial_puts(path);
+    serial_puts("\n");
+    if (!path_ok(path)) {
+        serial_puts("fopen: path_ok fail\n");
         return clvm_vm_push(vm, -1) ? 0 : -1;
-    for (i = 0; i < CLVM_FD_MAX && g_fds[i].used; ++i) {
+    }
+    if (fd_count_slot(slot) >= CLVM_FD_PER_SLOT) {
+        serial_puts("fopen: too many fds\n");
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    }
+    for (i = 3; i < CLVM_FD_MAX && g_fds[i].used; ++i) {
     }
     if (i == CLVM_FD_MAX)
         return clvm_vm_push(vm, -1) ? 0 : -1;
@@ -235,8 +261,13 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
                 return clvm_vm_push(vm, -1) ? 0 : -1;
         }
     }
+    /* Missing files: fail (do not open an empty ghost fd). */
+    if (fs_stat(path, &sz, &ty) != 0 || ty != CFS_INODE_FILE) {
+        serial_puts("fopen: missing\n");
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    }
     cap = CLVM_FD_CAP;
-    if (fs_stat(path, &sz, &ty) == 0 && sz > 0) {
+    if (sz > 0) {
         cap = sz;
         if (cap > CLVM_FD_MAX_BYTES)
             cap = CLVM_FD_MAX_BYTES;
@@ -261,6 +292,9 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
     g_fds[i].dirty = 0;
     g_fds[i].size = (uint32_t)n;
     g_fds[i].pos = 0;
+    serial_puts("fopen ok size=");
+    serial_write_u64((uint64_t)(uint32_t)n);
+    serial_puts("\n");
     g_fds[i].cap = cap;
     return clvm_vm_push(vm, i) ? 0 : -1;
 }
@@ -300,6 +334,24 @@ static int sys_fread(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
 
 static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
     uint32_t end;
+    /* Stdout/stderr style fds used by putchar/printf: mirror to serial. */
+    if ((fd == 1 || fd == 2) && n > 0) {
+        char tmp[128];
+        int32_t left = n;
+        int32_t off = 0;
+        while (left > 0) {
+            int32_t take = left < 128 ? left : 128;
+            int32_t i;
+            if (!vm_copy_in(vm, addr + off, take, (uint8_t *)tmp))
+                return clvm_vm_push(vm, -1) ? 0 : -1;
+            /* Raw bytes — do not stop at embedded NUL (serial_puts would). */
+            for (i = 0; i < take; i++)
+                serial_putc(tmp[i]);
+            off += take;
+            left -= take;
+        }
+        return clvm_vm_push(vm, n) ? 0 : -1;
+    }
     if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used || n < 0)
         return clvm_vm_push(vm, -1) ? 0 : -1;
     end = g_fds[fd].pos + (uint32_t)n;
@@ -342,10 +394,10 @@ static void gfx_zbuf_prepare(ClvmGfxCtx *ctx, int gw, int gh) {
 }
 
 static void clamp_view(int *w, int *h) {
-    if (*w < CLVM_SYS_GAME_W)
-        *w = CLVM_SYS_GAME_W;
-    if (*h < CLVM_SYS_GAME_H)
-        *h = CLVM_SYS_GAME_H;
+    if (*w < 64)
+        *w = 64;
+    if (*h < 24)
+        *h = 24;
     if (*w > CLVM_SYS_GAME_MAX_W)
         *w = CLVM_SYS_GAME_MAX_W;
     if (*h > CLVM_SYS_GAME_MAX_H)
@@ -370,6 +422,7 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h) {
     int slot;
     int nw;
     int nh;
+    int ui2d;
 
     if (ctx == 0)
         return -1;
@@ -380,7 +433,13 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h) {
         nh = h;
         clamp_view(&nw, &nh);
     }
-    if (ctx->slot_id >= 0 && ctx->w == nw && ctx->h == nh && ctx->pixels != 0) {
+    /*
+     * Large UI / wallpaper: 2D slot (no z-buffer, halves VRAM).
+     * Game-sized viewports keep a private z-buffer for mesh/voxel.
+     */
+    ui2d = (nw > CLVM_SYS_GAME_W + 32 || nh > CLVM_SYS_GAME_H + 32);
+    if (ctx->slot_id >= 0 && ctx->w == nw && ctx->h == nh && ctx->pixels != 0 &&
+        (ui2d ? ctx->zbuf == 0 : ctx->zbuf != 0)) {
         math3d_set_screen(nw, nh);
         gfx_zbuf_prepare(ctx, nw, nh);
         return 0;
@@ -388,13 +447,22 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h) {
     pix = 0;
     zb = 0;
     slot = -1;
-    if (ctx->slot_id >= 0)
-        slot = gfx_slot_resize(ctx->slot_id, nw, nh, &pix, &zb);
-    if (slot < 0)
-        slot = gfx_slot_alloc(nw, nh, &pix, &zb);
+    if (ui2d) {
+        if (ctx->slot_id >= 0)
+            slot = gfx_slot_resize2d(ctx->slot_id, nw, nh, &pix);
+        if (slot < 0)
+            slot = gfx_slot_alloc2d(nw, nh, &pix);
+        zb = 0;
+    } else {
+        if (ctx->slot_id >= 0)
+            slot = gfx_slot_resize(ctx->slot_id, nw, nh, &pix, &zb);
+        if (slot < 0)
+            slot = gfx_slot_alloc(nw, nh, &pix, &zb);
+    }
     if (slot < 0 && (nw != CLVM_SYS_GAME_W || nh != CLVM_SYS_GAME_H)) {
         nw = CLVM_SYS_GAME_W;
         nh = CLVM_SYS_GAME_H;
+        ui2d = 0;
         if (ctx->slot_id >= 0)
             slot = gfx_slot_resize(ctx->slot_id, nw, nh, &pix, &zb);
         if (slot < 0)
@@ -442,8 +510,8 @@ static void slot_fillrgb(uint32_t *pix, int gw, int gh, int x, int y, int rw,
     int y0;
     int x1;
     int y1;
-    int px;
     int py;
+    int row_w;
     if (!pix || rw <= 0 || rh <= 0) {
         return;
     }
@@ -463,10 +531,12 @@ static void slot_fillrgb(uint32_t *pix, int gw, int gh, int x, int y, int rw,
     if (y1 > gh) {
         y1 = gh;
     }
+    row_w = x1 - x0;
+    if (row_w <= 0) {
+        return;
+    }
     for (py = y0; py < y1; ++py) {
-        for (px = x0; px < x1; ++px) {
-            pix[py * gw + px] = rgb;
-        }
+        gfx_fast_fill_u32(pix + py * gw + x0, row_w, rgb);
     }
 }
 
@@ -671,6 +741,9 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 6:
         if (!pop_i32(vm, &a))
             return -1;
+        /* Bind this slot's z-buffer before clear — otherwise clear hits the
+         * previous slot's bind (or static) and 3D draws into a dirty private zbuf. */
+        gfx_zbuf_prepare(ctx, gw, gh);
         gfx2d_clear(pix, gw, gh, a);
         return 0;
     case 10:
@@ -725,8 +798,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             !pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
         gfx_zbuf_prepare(ctx, gw, gh);
-        if (mesh_draw(vm, a, b, c, d, e, pix, gw, gh) != 0)
-            return -1;
+        (void)mesh_draw(vm, a, b, c, d, e, pix, gw, gh);
         return 0;
     case 23: {
         int32_t color;
@@ -739,8 +811,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             !pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
         gfx_zbuf_prepare(ctx, gw, gh);
-        if (mesh_draw_f(vm, a, b, c, ox, oy, oz, yaw, color, pix, gw, gh) != 0)
-            return -1;
+        (void)mesh_draw_f(vm, a, b, c, ox, oy, oz, yaw, color, pix, gw, gh);
         return 0;
     }
     case 33: {
@@ -834,7 +905,8 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 51:
         if (!pop_i32(vm, &a))
             return -1;
-        return sys_fclose(a);
+        (void)sys_fclose(a);
+        return clvm_vm_push(vm, 0) ? 0 : -1;
     case 52:
         if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
@@ -847,7 +919,10 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         char path[FS_PATH];
         uint32_t sz = 0;
         uint16_t ty = 0;
-        if (!pop_i32(vm, &a) || !vm_cstr(vm, a, path, FS_PATH) || !path_ok(path))
+    if (!pop_i32(vm, &a) || !vm_cstr(vm, a, path, FS_PATH))
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        path_normalize(path);
+        if (!path_ok(path))
             return clvm_vm_push(vm, -1) ? 0 : -1;
         if (fs_stat(path, &sz, &ty) != 0)
             return clvm_vm_push(vm, -1) ? 0 : -1;
@@ -1089,7 +1164,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         slot_fillrgb(pix, gw, gh, a, b, c, d, (uint32_t)e);
         return 0;
     case 86: {
-        char msg[192];
+        char msg[2048];
         if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
             !pop_i32(vm, &a)) {
             return -1;
@@ -1235,13 +1310,21 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     }
     case 96: {
         char path[FS_PATH];
+        int ok;
         if (!pop_i32(vm, &a)) {
             return -1;
         }
         if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
             return clvm_vm_push(vm, 0) ? 0 : -1;
         }
-        return clvm_vm_push(vm, lang_run_path(path) ? 1 : 0) ? 0 : -1;
+        serial_puts("app_spawn ");
+        serial_puts(path);
+        serial_puts("\n");
+        ok = lang_run_path(path) ? 1 : 0;
+        if (!ok) {
+            serial_puts("app_spawn failed\n");
+        }
+        return clvm_vm_push(vm, ok) ? 0 : -1;
     }
     case 97: {
         Task *t;
@@ -1307,7 +1390,8 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
             return clvm_vm_push(vm, 0) ? 0 : -1;
         }
-        return clvm_vm_push(vm, lang_run_path(path) ? 1 : 0) ? 0 : -1;
+        /* Editor Go: replace any previous run of this CLV. */
+        return clvm_vm_push(vm, lang_run_path_replace(path) ? 1 : 0) ? 0 : -1;
     }
     case 102: {
         static char mktext[32768];
@@ -1350,6 +1434,124 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         }
         return 0;
+    case 105: {
+        char msg[160];
+        const char *le;
+        int n = 0;
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        le = lang_last_error();
+        if (!le) {
+            le = "";
+        }
+        while (le[n] && n + 1 < (int)sizeof(msg)) {
+            msg[n] = le[n];
+            n++;
+        }
+        msg[n] = 0;
+        n++;
+        if (!vm_copy_out(vm, a, n, (const uint8_t *)msg)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 106: {
+        char path[FS_PATH];
+        char arg[FS_PATH];
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH) ||
+            !guest_cstr(vm, (uint64_t)(uint32_t)b, arg, FS_PATH)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, lang_run_path_arg(path, arg) ? 1 : 0) ? 0 : -1;
+    }
+    case 107: {
+        char arg[FS_PATH];
+        int n;
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!lang_copy_app_arg(arg, (int)sizeof(arg))) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        n = 0;
+        while (arg[n]) {
+            n++;
+        }
+        n++;
+        if (!vm_copy_out(vm, a, n, (const uint8_t *)arg)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 108: {
+        char path[FS_PATH];
+        char err[120];
+        int id;
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        }
+        err[0] = 0;
+        id = cls_runtime_load(path, err, (int)sizeof(err));
+        if (id < 0 && err[0]) {
+            serial_puts(err);
+            serial_puts("\n");
+        }
+        return clvm_vm_push(vm, id) ? 0 : -1;
+    }
+    case 109: {
+        char path[FS_PATH];
+        char err[120];
+        int id;
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        }
+        err[0] = 0;
+        id = cls_runtime_reload(path, err, (int)sizeof(err));
+        if (id < 0 && err[0]) {
+            serial_puts(err);
+            serial_puts("\n");
+        }
+        return clvm_vm_push(vm, id) ? 0 : -1;
+    }
+    case 110: {
+        char path[FS_PATH];
+        uint32_t sz;
+        uint16_t ty;
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (!guest_cstr(vm, (uint64_t)(uint32_t)a, path, FS_PATH)) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        if (fs_stat(path, &sz, &ty) != 0) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        return clvm_vm_push(vm, ty == CFS_INODE_DIR ? 1 : 0) ? 0 : -1;
+    }
+    case 111: {
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (a == 1) {
+            input_set_layout(INPUT_LAYOUT_ABNT2);
+        } else {
+            input_set_layout(INPUT_LAYOUT_US);
+        }
+        (void)input_save_layout_file("SYS/KB.CFG");
+        return clvm_vm_push(vm, (int32_t)input_get_layout()) ? 0 : -1;
+    }
+    case 112:
+        return clvm_vm_push(vm, (int32_t)input_get_layout()) ? 0 : -1;
     default:
         return -1;
     }
@@ -1360,9 +1562,6 @@ void clvm_sys_blit_to(const uint32_t *src, int dx, int dy, int sw, int sh,
     int y;
     int dw;
     int dh;
-    static int sxmap[1920];
-    static int map_sw = -1;
-    static int map_dw = -1;
 
     if (!src || g_gfx.back == 0 || g_gfx.width <= 0 || g_gfx.height <= 0)
         return;
@@ -1384,30 +1583,17 @@ void clvm_sys_blit_to(const uint32_t *src, int dx, int dy, int sw, int sh,
         return;
 
     gfx_mark_dirty(dx, dy, dw, dh);
-    if (sw == dw && sh == dh) {
-        for (y = 0; y < dh; ++y) {
-            uint32_t *dst = g_gfx.back + (dy + y) * g_gfx.width + dx;
-            const uint32_t *row = src + (size_t)y * (size_t)sw;
-            gfx_fast_copy_u32(dst, row, dw);
-        }
+    /* Never scale: 1:1 copy of the top-left overlapping region only. */
+    if (dw > sw)
+        dw = sw;
+    if (dh > sh)
+        dh = sh;
+    if (dw <= 0 || dh <= 0)
         return;
-    }
-    if (dw > 1920)
-        dw = 1920;
-    if (map_sw != sw || map_dw != dw) {
-        int x;
-        for (x = 0; x < dw; ++x)
-            sxmap[x] = x * sw / dw;
-        map_sw = sw;
-        map_dw = dw;
-    }
     for (y = 0; y < dh; ++y) {
         uint32_t *dst = g_gfx.back + (dy + y) * g_gfx.width + dx;
-        int sy = y * sh / dh;
-        const uint32_t *row = src + (size_t)sy * (size_t)sw;
-        int x;
-        for (x = 0; x < dw; ++x)
-            dst[x] = row[sxmap[x]];
+        const uint32_t *row = src + (size_t)y * (size_t)sw;
+        gfx_fast_copy_u32(dst, row, dw);
     }
 }
 

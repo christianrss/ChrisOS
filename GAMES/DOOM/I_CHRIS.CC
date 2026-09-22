@@ -8,52 +8,50 @@ int DG_Ticks;
 int DG_Running;
 
 void DG_SetWindowTitle(char *title) {
-    title = title;
+  title = title;
 }
 
 void DG_Init() {
-    int i;
-    DG_ScreenW = 320;
-    DG_ScreenH = 200;
-    viewport(320, 200);
-    i = 0;
-    while (i < 768) {
-        DG_Pal[i] = (char)((i / 3) & 255);
-        i = i + 1;
-    }
-    setpal(DG_Pal);
-    DG_Ticks = ticks();
-    DG_Running = 1;
+  int i;
+  DG_ScreenW = 320;
+  DG_ScreenH = 200;
+  viewport(320, 200);
+  i = 0;
+  while (i < 768) {
+    DG_Pal[i] = (char)((i / 3) & 255);
+    i = i + 1;
+  }
+  setpal(DG_Pal);
+  DG_Ticks = ticks();
+  DG_Running = 1;
 }
 
 void DG_DrawFrame() {
-    fb_blit(DG_Screen, DG_ScreenW, DG_ScreenH);
+  fb_blit(DG_Screen, DG_ScreenW, DG_ScreenH);
 }
 
 void DG_SleepMs(int ms) {
-    wait(ms);
+  int t;
+  t = (ms * 60) / 1000;
+  if (t < 1) {
+    t = 1;
+  }
+  wait(t);
 }
 
 int DG_GetTicksMs() {
-    return ticks();
+  return (ticks() * 1000) / 60;
 }
 
-int DG_GetKey() {
-    if (key(1)) {
-        DG_Running = 0;
-        return 27;
-    }
-    if (key(17))
-        return 119;
-    if (key(31))
-        return 115;
-    if (key(30))
-        return 97;
-    if (key(32))
-        return 100;
-    if (key(57))
-        return 32;
-    return 0;
+/* doomgeneric polls this; Chris input uses I_StartTic → D_PostEvent instead. */
+int DG_GetKey(int *pressed, int *key) {
+  if (pressed) {
+    *pressed = 0;
+  }
+  if (key) {
+    *key = 0;
+  }
+  return 0;
 }
 
 void I_Sound_stub() {

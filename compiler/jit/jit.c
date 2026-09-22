@@ -4,9 +4,10 @@
 #include "clvm_sys.h"
 #include "mm.h"
 #include "pmm.h"
+#include "serial.h"
 
 #define JIT_VIRT_BASE 0xffffffff92000000ull
-#define JIT_VIRT_LIMIT (JIT_VIRT_BASE + 256ull * PMM_PAGE)
+#define JIT_VIRT_LIMIT (JIT_VIRT_BASE + 8192ull * PMM_PAGE)
 
 static uint64_t g_jit_virt_next = JIT_VIRT_BASE;
 static ClvmVm *g_jit_vm;
@@ -19,14 +20,22 @@ int jit_alloc(JitBuf *buf) {
     if (buf == NULL) {
         return -1;
     }
+    serial_puts("jit: alloc begin pages=");
+    serial_write_u64((uint64_t)JIT_PAGES);
+    serial_puts("\n");
     buf->pages = JIT_PAGES;
     buf->phys = pmm_alloc_contig(buf->pages);
     if (buf->phys == 0) {
+        serial_puts("jit: alloc contig failed\n");
         return -1;
     }
+    serial_puts("jit: alloc phys=");
+    serial_write_hex(buf->phys);
+    serial_puts("\n");
     if (g_jit_virt_next + (uint64_t)buf->pages * PMM_PAGE > JIT_VIRT_LIMIT) {
         pmm_free_contig(buf->phys, buf->pages);
         buf->phys = 0;
+        serial_puts("jit: alloc virt exhausted\n");
         return -1;
     }
     virt = g_jit_virt_next;
@@ -40,6 +49,9 @@ int jit_alloc(JitBuf *buf) {
     g_jit_virt_next += (uint64_t)buf->pages * PMM_PAGE;
     buf->used = 0;
     buf->cap = (uint32_t)buf->pages * (uint32_t)PMM_PAGE;
+    serial_puts("jit: alloc map done cap=");
+    serial_write_u64((uint64_t)buf->cap);
+    serial_puts("\n");
     return 0;
 }
 

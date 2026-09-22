@@ -60,13 +60,12 @@ int vsprintf(char *dst, char *fmt, va_list ap) {
                     o = o + 1;
                 }
                 i = i + skip;
-            } else if (spec == 'x' || spec == 'p') {
-                int n;
+            } else if (spec == 'x' || spec == 'p' || spec == 'u') {
+                unsigned int n;
                 char d[16];
                 int nd = 0;
-                n = v;
-                if (n < 0)
-                    n = -n;
+                int guard;
+                n = (unsigned int)v;
                 if (spec == 'p') {
                     dst[o] = '0';
                     o = o + 1;
@@ -77,11 +76,13 @@ int vsprintf(char *dst, char *fmt, va_list ap) {
                     d[0] = '0';
                     nd = 1;
                 }
-                while (n) {
-                    int h = n - (n / 16) * 16;
+                guard = 0;
+                while (n != 0 && guard < 16) {
+                    int h = (int)(n & 15);
                     d[nd] = (char)(h < 10 ? '0' + h : 'a' + (h - 10));
                     nd = nd + 1;
-                    n = n / 16;
+                    n = n >> 4;
+                    guard = guard + 1;
                 }
                 while (nd) {
                     nd = nd - 1;

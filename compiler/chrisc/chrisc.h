@@ -27,6 +27,12 @@ typedef struct ChrisResult {
     ChrisDiag diag;
     int map_n;
     ChrisMapEnt map[CHRIS_MAP_MAX];
+    uint16_t abi_major;
+    uint16_t abi_minor;
+    int nexports;
+    char export_name[64][32];
+    uint32_t export_pc[64];
+    uint16_t export_argc[64];
 } ChrisResult;
 
 typedef int (*ChriscReadFn)(void *user, const char *path, char *out, int cap);

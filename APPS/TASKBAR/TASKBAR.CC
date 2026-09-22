@@ -1,52 +1,48 @@
 int g_bar_prev;
 
-int bar_hit(int mx, int x0, int x1) {
-  if (mx >= x0) {
-    if (mx < x1) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
 void main() {
   int dw;
   int dh;
   int mx;
   int my;
   int mb;
+  int h;
   int sec;
   int m;
   int s;
   char clk[6];
   dw = disp_w();
   dh = disp_h();
-  if (dw < 1) {
+  if (dw < 320) {
     dw = 640;
   }
-  if (dh < 40) {
+  if (dh < 80) {
     dh = 400;
   }
-  viewport(640, 32);
-  surf_place(0, dh - 32, dw, 32);
+  h = 40;
+  viewport(dw, h);
+  surf_place(0, dh - h, dw, h);
   g_bar_prev = 0;
   while (1) {
-    surf_raise();
-    surf_place(0, dh - 32, dw, 32);
     mb = mouse_btn();
-    mx = mouse_x() * 640 / dw;
+    mx = mouse_x();
     my = mouse_y();
-    fillrgb(0, 0, 640, 32, 0x00203040);
-    fillrgb(4, 6, 56, 20, 0x00007090);
-    text(10, 8, "Shell", 0x00FFFFFF);
-    fillrgb(64, 6, 56, 20, 0x00008070);
-    text(70, 8, "Files", 0x00FFFFFF);
-    fillrgb(124, 6, 56, 20, 0x00804020);
-    text(134, 8, "Edit", 0x00FFFFFF);
-    fillrgb(184, 6, 56, 20, 0x00604080);
-    text(190, 8, "Tasks", 0x00FFFFFF);
-    fillrgb(244, 6, 56, 20, 0x00008040);
-    text(256, 8, "Ball", 0x00FFFFFF);
+    fillrgb(0, 0, dw, h, 0x00203040);
+    text(8, 12, "ChrisOS", 0x00E0F0FF);
+    fillrgb(80, 8, 64, 24, 0x006090);
+    text(90, 12, "Shell", 0x00FFFFFF);
+    fillrgb(152, 8, 64, 24, 0x008070);
+    text(162, 12, "Files", 0x00FFFFFF);
+    fillrgb(224, 8, 64, 24, 0x804020);
+    text(238, 12, "Edit", 0x00FFFFFF);
+    fillrgb(296, 8, 64, 24, 0x604080);
+    text(306, 12, "Tasks", 0x00FFFFFF);
+    fillrgb(368, 8, 64, 24, 0x008040);
+    text(382, 12, "Ball", 0x00FFFFFF);
+    fillrgb(440, 8, 64, 24, 0x802010);
+    text(452, 12, "Doom", 0x00FFFFFF);
+    fillrgb(512, 8, 64, 24, 0x406080);
+    text(522, 12, "Prefs", 0x00FFFFFF);
     sec = ticks() / 60;
     m = (sec / 60) % 60;
     s = sec % 60;
@@ -56,24 +52,44 @@ void main() {
     clk[3] = 48 + (s / 10);
     clk[4] = 48 + (s % 10);
     clk[5] = 0;
-    text(580, 8, clk, 0x00E0F0FF);
+    text(dw - 56, 12, clk, 0x00E0F0FF);
     if (mb) {
       if (g_bar_prev == 0) {
-        if (my >= dh - 32) {
-          if (bar_hit(mx, 4, 60)) {
-            app_launch("APPS/SHELL/SHELL.CLV");
+        if (my >= dh - h) {
+          if (mx >= 80) {
+            if (mx < 144) {
+              app_launch("APPS/SHELL/SHELL.CLV");
+            }
           }
-          if (bar_hit(mx, 64, 120)) {
-            app_launch("APPS/EXPLORER/EXPLORER.CLV");
+          if (mx >= 152) {
+            if (mx < 216) {
+              app_launch("APPS/EXPLORER/EXPLORER.CLV");
+            }
           }
-          if (bar_hit(mx, 124, 180)) {
-            app_launch("APPS/EDITOR/EDITOR.CLV");
+          if (mx >= 224) {
+            if (mx < 288) {
+              app_launch("APPS/EDITOR/EDITOR.CLV");
+            }
           }
-          if (bar_hit(mx, 184, 240)) {
-            app_launch("APPS/TASKMGR/TASKMGR.CLV");
+          if (mx >= 296) {
+            if (mx < 360) {
+              app_launch("APPS/TASKMGR/TASKMGR.CLV");
+            }
           }
-          if (bar_hit(mx, 244, 300)) {
-            app_launch("APPS/BALL/BALL.CLV");
+          if (mx >= 368) {
+            if (mx < 432) {
+              app_launch("APPS/BALL/BALL.CLV");
+            }
+          }
+          if (mx >= 440) {
+            if (mx < 504) {
+              app_launch("GAMES/DOOM/ENGINE.CLV");
+            }
+          }
+          if (mx >= 512) {
+            if (mx < 576) {
+              app_launch("APPS/PREFS/PREFS.CLV");
+            }
           }
         }
       }
