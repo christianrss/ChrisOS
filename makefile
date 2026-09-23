@@ -73,7 +73,9 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	compiler/chrisld/chriso.o compiler/chrisasm/chrisasm.o \
 	compiler/chrisld/chrisld.o compiler/kcc/kcc.o \
 	kernel/fs/ata_pio.o kernel/fs/cfs.o kernel/fs/cfs_fsck.o \
-	kernel/fs/storage.o kernel/fs/fs.o \
+	kernel/fs/storage.o kernel/fs/fs.o kernel/fs/bdev.o kernel/fs/part.o \
+	kernel/fs/ahci.o kernel/fs/nvme.o kernel/fs/virtio_blk.o \
+	kernel/fs/usb_msc.o kernel/fs/install.o kernel/metal/acpi.o \
 	kernel/lang/lang_sys.o kernel/lang/clvm_sys.o \
 	compiler/lang_pipeline.o compiler/chrisc/chrisc.o \
 	compiler/clvm/clasm.o compiler/clvm/clvm_format.o \
@@ -188,6 +190,8 @@ disk-base: disk-ui
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/BMP.CC LIB/BMP.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/AC97.CC SYS/DRV/AC97.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/CC.CLV APPS/CC/CC.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/DOCC APPS/CC/DOCC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/STRUCT.CC APPS/CC/STRUCT.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/THREADS/COUNT.CLV APPS/THREADS/COUNT.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/HTTP.CLV APPS/NET/HTTP.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/FTP.CLV APPS/NET/FTP.CLV
@@ -686,6 +690,7 @@ disk-ui: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/mk_clv SYS/DRV/HWDISC.LST
 	$(HOST_BIN)/mk_clv SYS/DRV/FORMAT.LST
 	$(HOST_BIN)/mk_clv SYS/DRV/MKSTICK.LST
+	$(HOST_BIN)/mk_clv SYS/DRV/INSTALL.LST
 	$(HOST_BIN)/mk_clv SYS/ARCH/RISCV.LST
 	$(HOST_BIN)/mk_clv APPS/SHELL/SHELL.LST
 	$(HOST_BIN)/mk_clv APPS/EXPLORER/EXPLORER.LST
@@ -718,6 +723,9 @@ disk-ui: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CC SYS/DRV/MKSTICK.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.LST SYS/DRV/MKSTICK.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CLV SYS/DRV/MKSTICK.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/INSTALL.CC SYS/DRV/INSTALL.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/INSTALL.LST SYS/DRV/INSTALL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/INSTALL.CLV SYS/DRV/INSTALL.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CC SYS/ARCH/RISCV.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.LST SYS/ARCH/RISCV.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CLV SYS/ARCH/RISCV.CLV
@@ -784,6 +792,9 @@ disk-apps: disk-ui
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CC SYS/DRV/MKSTICK.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.LST SYS/DRV/MKSTICK.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CLV SYS/DRV/MKSTICK.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/INSTALL.CC SYS/DRV/INSTALL.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/INSTALL.LST SYS/DRV/INSTALL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/INSTALL.CLV SYS/DRV/INSTALL.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CC SYS/ARCH/RISCV.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.LST SYS/ARCH/RISCV.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CLV SYS/ARCH/RISCV.CLV
@@ -1101,18 +1112,47 @@ $(ISO): $(KERNEL) $(ISO_ROOT)/boot/limine/limine.conf \
 
 run: $(ISO) disk-ui run-stop
 	@test -f $(DISK_IMG) || $(MAKE) disk.img
+	@test -f $(BUILD_DIR)/ahci.img || dd if=/dev/zero of=$(BUILD_DIR)/ahci.img bs=1M count=32 status=none
+	@test -f $(BUILD_DIR)/nvme.img || dd if=/dev/zero of=$(BUILD_DIR)/nvme.img bs=1M count=32 status=none
+	@test -f $(BUILD_DIR)/vblk.img || dd if=/dev/zero of=$(BUILD_DIR)/vblk.img bs=1M count=32 status=none
+	@test -f $(BUILD_DIR)/usb.img || dd if=/dev/zero of=$(BUILD_DIR)/usb.img bs=1M count=32 status=none
 	@sleep 1
 	$(QEMU) -M pc -m $(QEMU_MEM) -smp 4 -boot order=dc \
 		-display $(QEMU_DISPLAY) \
-		-usb -device usb-tablet \
+		-usb -device usb-tablet,bus=usb-bus.0,port=2 \
 		-drive file=$(DISK_IMG),format=raw,if=ide,index=0 \
 		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
 		-device virtio-gpu-pci \
+		-drive if=none,id=ahcidisk,file=$(BUILD_DIR)/ahci.img,format=raw \
+		-device ich9-ahci,id=ahci \
+		-device ide-hd,drive=ahcidisk,bus=ahci.0 \
+		-drive if=none,id=nvmedisk,file=$(BUILD_DIR)/nvme.img,format=raw \
+		-device nvme,serial=chris,drive=nvmedisk \
+		-drive if=none,id=vblk,file=$(BUILD_DIR)/vblk.img,format=raw \
+		-device virtio-blk-pci,drive=vblk \
+		-drive if=none,id=usbdisk,file=$(BUILD_DIR)/usb.img,format=raw \
+		-device usb-storage,bus=usb-bus.0,port=1,drive=usbdisk \
 		-device virtio-net-pci,netdev=n0 \
 		-device AC97 \
 		-netdev user,id=n0,hostfwd=udp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_XFER_PORT)-:9016 \
 		-serial stdio -no-reboot -no-shutdown \
 		-cpu qemu64 -accel kvm
+
+RISCV_CC ?= riscv64-unknown-elf-gcc
+RISCV_ELF := $(BUILD_DIR)/riscv/kernel.elf
+
+.PHONY: riscv
+riscv: $(RISCV_ELF)
+
+$(RISCV_ELF): kernel/arch/riscv/boot.S kernel/arch/riscv/main.c kernel/arch/riscv/link.ld \
+	compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c
+	@mkdir -p $(BUILD_DIR)/riscv
+	clang --target=riscv64-unknown-elf -march=rv64gc -mabi=lp64 \
+		-std=c11 -Wall -Wextra -Werror -ffreestanding -fno-stack-protector \
+		-fno-pic -mcmodel=medany -O2 -DCHRIS_RISCV -Icompiler/clvm -Icompiler \
+		-nostdlib -fuse-ld=lld -Wl,-T,kernel/arch/riscv/link.ld -o $@ \
+		kernel/arch/riscv/boot.S kernel/arch/riscv/main.c \
+		compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c
 
 clean:
 	rm -rf $(BUILD_DIR)

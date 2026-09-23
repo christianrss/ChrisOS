@@ -16,6 +16,10 @@ int g_flo;
 int g_fhi;
 int g_idx;
 int g_qnote;
+int g_w;
+int g_h;
+int g_pages;
+int g_bytes;
 
 int find_gpu() {
   int id;
@@ -110,9 +114,25 @@ int features_ok() {
 
 int setup_queue() {
   int ulo;
+  g_w = disp_w();
+  g_h = disp_h();
+  if (g_w > 1920) {
+    g_w = 1920;
+  }
+  if (g_h > 1080) {
+    g_h = 1080;
+  }
+  if (g_w < 1) {
+    g_w = 320;
+  }
+  if (g_h < 1) {
+    g_h = 200;
+  }
+  g_bytes = g_w * g_h * 4;
+  g_pages = (g_bytes + 4095) / 4096;
   g_q = dma_alloc(1);
   g_cmd = dma_alloc(1);
-  g_fb = dma_alloc(64);
+  g_fb = dma_alloc(g_pages);
   if (g_q < 0) {
     return 0;
   }
@@ -191,8 +211,8 @@ int send_create() {
   cmd4(0, 0x0101);
   cmd4(24, 1);
   cmd4(28, 1);
-  cmd4(32, 320);
-  cmd4(36, 200);
+  cmd4(32, g_w);
+  cmd4(36, g_h);
   return kick(40);
 }
 
@@ -203,15 +223,15 @@ int send_attach() {
   cmd4(28, 1);
   cmd4(32, g_flo);
   cmd4(36, g_fhi);
-  cmd4(40, 256000);
+  cmd4(40, g_bytes);
   return kick(48);
 }
 
 int send_scanout() {
   clear_cmd();
   cmd4(0, 0x0103);
-  cmd4(32, 320);
-  cmd4(36, 200);
+  cmd4(32, g_w);
+  cmd4(36, g_h);
   cmd4(44, 1);
   return kick(48);
 }
@@ -247,7 +267,7 @@ int gpu_init() {
   if (resp != 0x1100) {
     return 0;
   }
-  if (gpu_arm(g_q, g_cmd, g_fb, 320, 200, g_nwin, g_noff) != 0) {
+  if (gpu_arm(g_q, g_cmd, g_fb, g_w, g_h, g_nwin, g_noff) != 0) {
     return 0;
   }
   return 1;
@@ -255,7 +275,9 @@ int gpu_init() {
 
 void main() {
   viewport(220, 40);
-  if (gpu_init() == 1) {
+  if (gpu_ready() == 1) {
+    text(4, 12, "gpu scanout", 0x00E0FFE0);
+  } else if (gpu_init() == 1) {
     text(4, 12, "virtio-gpu", 0x00E0FFE0);
   } else {
     text(4, 12, "no gpu", 0x00FF8080);

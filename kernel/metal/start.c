@@ -28,6 +28,7 @@
 #include "boot_splash.h"
 #include "proc.h"
 #include "ac97.h"
+#include "hwgate.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -69,6 +70,7 @@ void kstart(void) {
                   (int)boot->fb_pitch)) {
         panic("gfx_init recusou o framebuffer");
     }
+    (void)virtio_gpu_boot();
     gfx_clear(0x00101828u);
     gfx_present();
 
@@ -82,6 +84,7 @@ void kstart(void) {
     storage_init();
     fs_init();
     lang_init(clvm_sys_dispatch, 0);
+    lang_make_cc();
     speaker_off();
     (void)ac97_init();
 

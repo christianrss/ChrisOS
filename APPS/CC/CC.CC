@@ -55,6 +55,7 @@ int g_lnames;
 int g_laddr;
 int g_lwid;
 int g_larr;
+int g_foff;
 int g_nloc;
 int g_locbase;
 int g_nparam;
@@ -976,6 +977,116 @@ int is_ticks() {
   return 1;
 }
 
+int g_stnames;
+int g_stsz;
+int g_ns;
+int g_fldnm;
+int g_fldst;
+int g_fldoff;
+int g_nfld;
+int g_lsty;
+int g_for1;
+int g_for2;
+int g_for3;
+
+int eqname(int lit) {
+  g_k = 0;
+  while (g_k < 16) {
+    g_b = loadb(g_name + g_k);
+    g_c2 = loadb(lit + g_k);
+    if (g_b != g_c2) {
+      return 0;
+    }
+    if (g_b == 0) {
+      return 1;
+    }
+    g_k = g_k + 1;
+  }
+  return 1;
+}
+
+int bi_drv() {
+  if (g_bi != 0) {
+    return 0;
+  }
+  if (eqname("drv_pci") == 1) {
+    g_bi = 175;
+  }
+  if (eqname("drv_irq") == 1) {
+    g_bi = 174;
+  }
+  if (eqname("drv_outw") == 1) {
+    g_bi = 170;
+  }
+  if (eqname("drv_inw") == 1) {
+    g_bi = 171;
+  }
+  if (eqname("pci_write") == 1) {
+    g_bi = 210;
+  }
+  if (eqname("bar_map") == 1) {
+    g_bi = 211;
+  }
+  if (eqname("mmio_r32") == 1) {
+    g_bi = 212;
+  }
+  if (eqname("mmio_w32") == 1) {
+    g_bi = 213;
+  }
+  if (eqname("mmio_r8") == 1) {
+    g_bi = 214;
+  }
+  if (eqname("mmio_w8") == 1) {
+    g_bi = 215;
+  }
+  if (eqname("mmio_r16") == 1) {
+    g_bi = 216;
+  }
+  if (eqname("mmio_w16") == 1) {
+    g_bi = 217;
+  }
+  if (eqname("dma_alloc") == 1) {
+    g_bi = 218;
+  }
+  if (eqname("dma_lo") == 1) {
+    g_bi = 219;
+  }
+  if (eqname("dma_hi") == 1) {
+    g_bi = 220;
+  }
+  if (eqname("dma_w32") == 1) {
+    g_bi = 221;
+  }
+  if (eqname("dma_r32") == 1) {
+    g_bi = 222;
+  }
+  if (eqname("disk_sectors") == 1) {
+    g_bi = 223;
+  }
+  if (eqname("disk_read") == 1) {
+    g_bi = 224;
+  }
+  if (eqname("disk_write") == 1) {
+    g_bi = 225;
+  }
+  if (eqname("disk_format") == 1) {
+    g_bi = 226;
+  }
+  if (eqname("gpu_arm") == 1) {
+    g_bi = 227;
+  }
+  if (eqname("gpu_ready") == 1) {
+    g_bi = 228;
+  }
+  if (eqname("disk_count") == 1) {
+    g_bi = 229;
+  }
+  if (eqname("disk_install") == 1) {
+    g_bi = 230;
+  }
+  return 0;
+}
+
 int bi_desk() {
   if (g_bi != 0) {
     return 0;
@@ -1320,6 +1431,28 @@ int prim() {
     load_index();
     return 0;
   }
+  if (g_c == 46) {
+    g_i = g_i + 1;
+    g_push = g_addr;
+    stfix();
+    rdname();
+    popfix();
+    g_addr = g_pop;
+    g_j = 0;
+    g_ret = 0;
+    while (g_j < g_nfld) {
+      g_base = g_fldnm + g_j * 16;
+      if (cmp() == 1) {
+        g_ret = loadb(g_fldoff + g_j);
+      }
+      g_j = g_j + 1;
+    }
+    g_num = g_addr + g_ret;
+    epush();
+    g_op = 13;
+    op();
+    return 0;
+  }
   if (g_arr == 1) {
     g_num = g_addr;
     epush();
@@ -1357,6 +1490,7 @@ int call() {
     g_bi = 56;
   }
   bi_desk();
+  bi_drv();
   g_fnpc = 0 - 1;
   g_pending = 0 - 1;
   if (g_bi == 0) {
@@ -1664,6 +1798,101 @@ int do_if() {
   return 0;
 }
 
+int skip_to_semi() {
+  g_kind = 0;
+  while (g_i < g_len) {
+    g_c = loadb(g_src + g_i);
+    if (g_c == 40) {
+      g_kind = g_kind + 1;
+    }
+    if (g_c == 41) {
+      if (g_kind == 0) {
+        return 0;
+      }
+      g_kind = g_kind - 1;
+    }
+    g_i = g_i + 1;
+    if (g_c == 59) {
+      if (g_kind == 0) {
+        return 1;
+      }
+    }
+  }
+  return 0;
+}
+
+int do_for() {
+  sws();
+  if (g_c == 40) {
+    g_i = g_i + 1;
+  }
+  stmt();
+  g_for1 = g_i;
+  skip_to_semi();
+  g_for2 = g_i;
+  g_kind = 0;
+  g_stop = 0;
+  while (g_stop == 0) {
+    g_c = loadb(g_src + g_i);
+    if (g_c == 40) {
+      g_kind = g_kind + 1;
+    }
+    if (g_c == 41) {
+      if (g_kind == 0) {
+        g_i = g_i + 1;
+        g_stop = 1;
+      }
+      if (g_kind > 0) {
+        g_kind = g_kind - 1;
+      }
+    }
+    if (g_stop == 0) {
+      g_i = g_i + 1;
+    }
+  }
+  g_for3 = g_i;
+  g_save = g_pc;
+  g_i = g_for1;
+  expr();
+  g_site = g_pc;
+  g_op = 34;
+  op();
+  g_num = 0;
+  eu();
+  g_push = g_for2;
+  stfix();
+  g_push = g_save;
+  stfix();
+  g_push = g_site;
+  stfix();
+  g_i = g_for3;
+  blk();
+  g_for3 = g_i;
+  popfix();
+  g_site = g_pop;
+  popfix();
+  g_save = g_pop;
+  popfix();
+  g_for2 = g_pop;
+  g_for1 = g_save;
+  g_i = g_for2;
+  stmt();
+  g_op = 33;
+  op();
+  g_rel = g_for1 - g_pc;
+  g_rel = g_rel - 4;
+  g_num = g_rel;
+  eu();
+  g_rel = g_pc - g_site;
+  g_rel = g_rel - 5;
+  g_num = g_rel;
+  g_at = g_out + 16 + g_site;
+  g_at = g_at + 1;
+  st32();
+  g_i = g_for3;
+  return 0;
+}
+
 int do_while() {
   g_push = g_pc;
   stfix();
@@ -1725,6 +1954,41 @@ int stmt() {
     do_while();
     return 0;
   }
+  if (g_nlen == 3) {
+    if (loadb(g_name) == 102) {
+      if (loadb(g_name + 1) == 111) {
+        if (loadb(g_name + 2) == 114) {
+          sws();
+          g_i = g_i + 1;
+          do_for();
+          return 0;
+        }
+      }
+    }
+  }
+  g_j = 0;
+  g_ret = 0 - 1;
+  while (g_j < g_ns) {
+    g_base = g_stnames + g_j * 16;
+    if (cmp() == 1) {
+      g_ret = g_j;
+    }
+    g_j = g_j + 1;
+  }
+  if (g_ret >= 0) {
+    g_bytes = 0;
+    g_scale = 1;
+    g_arr = 1;
+    g_sz = loadb(g_stsz + g_ret);
+    rdname();
+    addloc();
+    storeb(g_lsty + g_nloc - 1, g_ret + 1);
+    sws();
+    if (g_c == 59) {
+      g_i = g_i + 1;
+    }
+    return 0;
+  }
   if (is_ret() == 1) {
     expr();
     sws();
@@ -1766,6 +2030,39 @@ int stmt() {
         if (g_scale == 1) {
           g_op = 27;
         }
+        op();
+        sws();
+        if (g_c == 59) {
+          g_i = g_i + 1;
+        }
+        return 0;
+      }
+    }
+    return 0;
+  }
+  if (g_c == 46) {
+    findloc();
+    g_save = g_addr;
+    g_i = g_i + 1;
+    rdname();
+    g_j = 0;
+    g_ret = 0;
+    while (g_j < g_nfld) {
+      g_base = g_fldnm + g_j * 16;
+      if (cmp() == 1) {
+        g_ret = loadb(g_fldoff + g_j);
+      }
+      g_j = g_j + 1;
+    }
+    g_save = g_save + g_ret;
+    sws();
+    if (g_c == 61) {
+      if (loadb(g_src + g_i + 1) != 61) {
+        g_i = g_i + 1;
+        expr();
+        g_num = g_save;
+        epush();
+        g_op = 14;
         op();
         sws();
         if (g_c == 59) {
@@ -1898,6 +2195,77 @@ int toplevel() {
     }
     if (is_void() == 1) {
       g_ty = 1;
+    }
+    if (g_nlen == 6) {
+      if (loadb(g_name) == 115) {
+        if (loadb(g_name + 1) == 116) {
+          if (loadb(g_name + 2) == 114) {
+            if (loadb(g_name + 3) == 117) {
+              if (loadb(g_name + 4) == 99) {
+                if (loadb(g_name + 5) == 116) {
+                  g_ty = 2;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    if (g_ty == 2) {
+      g_foff = 0;
+      rdname();
+      g_base = g_stnames + g_ns * 16;
+      g_k = 0;
+      while (g_k < 16) {
+        g_b = loadb(g_name + g_k);
+        storeb(g_base + g_k, g_b);
+        g_k = g_k + 1;
+      }
+      g_slot = g_ns;
+      g_ns = g_ns + 1;
+      sws();
+      if (g_c == 123) {
+        g_i = g_i + 1;
+      }
+      g_stop = 0;
+      while (g_stop == 0) {
+        sws();
+        if (g_c == 125) {
+          g_i = g_i + 1;
+          g_stop = 1;
+        }
+        if (g_c == 0) {
+          g_stop = 1;
+        }
+        if (g_stop == 0) {
+          rdname();
+          g_bytes = 4;
+          if (is_char() == 1) {
+            g_bytes = 1;
+          }
+          rdname();
+          g_base = g_fldnm + g_nfld * 16;
+          g_k = 0;
+          while (g_k < 16) {
+            g_b = loadb(g_name + g_k);
+            storeb(g_base + g_k, g_b);
+            g_k = g_k + 1;
+          }
+          storeb(g_fldst + g_nfld, g_slot);
+          storeb(g_fldoff + g_nfld, g_foff);
+          g_nfld = g_nfld + 1;
+          g_foff = g_foff + g_bytes;
+          sws();
+          if (g_c == 59) {
+            g_i = g_i + 1;
+          }
+        }
+      }
+      storeb(g_stsz + g_slot, g_foff);
+      sws();
+      if (g_c == 59) {
+        g_i = g_i + 1;
+      }
     }
     if (g_ty == 0) {
       if (g_i == g_mark) {
@@ -2163,6 +2531,14 @@ int main() {
   g_lwid = malloc(64);
   g_larr = malloc(64);
   g_sbuf = malloc(8192);
+  g_stnames = malloc(256);
+  g_stsz = malloc(16);
+  g_fldnm = malloc(1024);
+  g_fldst = malloc(64);
+  g_fldoff = malloc(64);
+  g_lsty = malloc(64);
+  g_ns = 0;
+  g_nfld = 0;
   g_nc = 0;
   g_pc = 0;
   g_i = 0;

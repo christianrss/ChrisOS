@@ -8,6 +8,25 @@
 #include "serial.h"
 #define CLVM_MEM_ALLOC(n) kmalloc(n)
 #define CLVM_MEM_FREE(p) kfree(p)
+#elif defined(CHRIS_RISCV)
+static uint8_t g_rvpool[2u * 1024u * 1024u];
+static size_t g_rvat;
+static void *rv_alloc(size_t n) {
+    size_t i;
+    uint8_t *p;
+    n = (n + 15u) & ~(size_t)15u;
+    if (g_rvat + n > sizeof(g_rvpool))
+        return 0;
+    p = g_rvpool + g_rvat;
+    g_rvat += n;
+    for (i = 0; i < n; ++i)
+        p[i] = 0;
+    return p;
+}
+#define CLVM_MEM_ALLOC(n) rv_alloc(n)
+#define CLVM_MEM_FREE(p) ((void)(p))
+#define serial_puts(s) ((void)0)
+#define serial_write_u64(v) ((void)(v))
 #else
 #include <stdlib.h>
 #define CLVM_MEM_ALLOC(n) calloc(1, (size_t)(n))

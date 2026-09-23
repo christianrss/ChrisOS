@@ -1,5 +1,12 @@
 /* LEARN:STOR64-S09 */
+#include "acpi.h"
+#include "ahci.h"
+#include "bdev.h"
+#include "install.h"
+#include "nvme.h"
 #include "storage.h"
+#include "usb_msc.h"
+#include "virtio_blk.h"
 
 #include "ata_pio.h"
 #include "cfs_format.h"
@@ -115,6 +122,14 @@ int storage_init(void) {
         return rc;
     }
     ata_pio_make_device(&g_ata, &g_disk);
+    bd_add("ata", &g_disk);
+    bd_set_boot(0);
+    acpi_probe();
+    (void)ahci_probe();
+    (void)nvme_probe();
+    (void)virtio_blk_probe();
+    (void)usb_msc_probe();
+    (void)install_selftest();
     rc = storage_format_if_empty(&g_disk, &formatted);
     if (rc == CFS_EFORMAT) {
         panic("cfs unknown disk, not formatting");
@@ -124,6 +139,11 @@ int storage_init(void) {
     }
     rc = cfs_mount(&g_cfs, &g_disk);
     if (rc != CFS_OK) {
+        serial_puts("cfs mount rc=");
+        serial_write_u64((uint64_t)(rc < 0 ? -rc : rc));
+        serial_puts(" sectors=");
+        serial_write_u64(g_disk.sector_count);
+        serial_puts("\n");
         panic("cfs mount failed");
     }
     g_ready = 1;

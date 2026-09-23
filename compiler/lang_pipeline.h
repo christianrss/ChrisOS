@@ -12,6 +12,7 @@
 #define LANG_SPLASH_SLOT 0
 
 void lang_init(ClvmSysFn sys, void *sys_user);
+void lang_make_cc(void);
 int lang_save(Editor *editor);
 int lang_compile(Editor *editor);
 int lang_run(Editor *editor, const char *clv_name);

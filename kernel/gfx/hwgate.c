@@ -6,12 +6,13 @@
 #include "mm.h"
 #include "pci.h"
 #include "pmm.h"
+#include "serial.h"
 #include "storage.h"
 
 #define HW_WIN 4
 #define HW_WIN_PAGES 16
-#define HW_DMA 4
-#define HW_DMA_PAGES 64
+#define HW_DMA 16
+#define HW_DMA_PAGES 2048
 #define HW_DISK_MAX 8
 
 typedef struct HwWin {
@@ -123,13 +124,10 @@ static volatile uint8_t *win_ptr(int win, uint32_t off) {
 
 uint32_t hw_mmio_r32(int win, uint32_t off) {
     volatile uint8_t *p = win_ptr(win, off);
-    uint32_t v;
     if (!p || (off & 3u)) {
         return 0;
     }
-    v = (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-        ((uint32_t)p[3] << 24);
-    return v;
+    return *(volatile uint32_t *)p;
 }
 
 int hw_mmio_w32(int win, uint32_t off, uint32_t val) {
@@ -137,10 +135,7 @@ int hw_mmio_w32(int win, uint32_t off, uint32_t val) {
     if (!p || (off & 3u)) {
         return -1;
     }
-    p[0] = (uint8_t)val;
-    p[1] = (uint8_t)(val >> 8);
-    p[2] = (uint8_t)(val >> 16);
-    p[3] = (uint8_t)(val >> 24);
+    *(volatile uint32_t *)p = val;
     return 0;
 }
 
@@ -166,7 +161,7 @@ uint32_t hw_mmio_r16(int win, uint32_t off) {
     if (!p || (off & 1u)) {
         return 0;
     }
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8);
+    return *(volatile uint16_t *)p;
 }
 
 int hw_mmio_w16(int win, uint32_t off, uint32_t val) {
@@ -174,8 +169,7 @@ int hw_mmio_w16(int win, uint32_t off, uint32_t val) {
     if (!p || (off & 1u)) {
         return -1;
     }
-    p[0] = (uint8_t)val;
-    p[1] = (uint8_t)(val >> 8);
+    *(volatile uint16_t *)p = (uint16_t)val;
     return 0;
 }
 
@@ -201,8 +195,8 @@ int hw_dma_alloc(int pages) {
         return -1;
     }
     virt = ram_virt(phys);
-    for (n = 0; n < pages * 4096; ++n) {
-        virt[n] = 0;
+    for (n = 0; n < pages * 4096; n += 4) {
+        *(uint32_t *)(virt + n) = 0;
     }
     g_dma[i].used = 1;
     g_dma[i].pages = pages;
@@ -377,44 +371,284 @@ static int gpu_kick(uint32_t len) {
     return -1;
 }
 
-static void gpu_rect(uint32_t type, uint32_t len) {
+static int gpu_submit(uint32_t type, int x, int y, int w, int h) {
     int i;
+    uint32_t off;
     for (i = 0; i < 64; ++i) {
         g_gpu.cmd[i] = 0;
         g_gpu.cmd[256 + i] = 0;
     }
     put32(g_gpu.cmd, 0, type);
-    put32(g_gpu.cmd, 32, (uint32_t)g_gpu.w);
-    put32(g_gpu.cmd, 36, (uint32_t)g_gpu.h);
+    put32(g_gpu.cmd, 24, (uint32_t)x);
+    put32(g_gpu.cmd, 28, (uint32_t)y);
+    put32(g_gpu.cmd, 32, (uint32_t)w);
+    put32(g_gpu.cmd, 36, (uint32_t)h);
     if (type == 0x0105u) {
+        off = (uint32_t)((y * g_gpu.w + x) * 4);
+        put32(g_gpu.cmd, 40, off);
         put32(g_gpu.cmd, 48, 1u);
-    } else {
-        put32(g_gpu.cmd, 40, 1u);
+        return gpu_kick(56u);
     }
-    (void)len;
-    (void)gpu_kick(type == 0x0105u ? 56u : 48u);
+    put32(g_gpu.cmd, 40, 1u);
+    return gpu_kick(48u);
+}
+
+int hw_gpu_ready(void) {
+    return g_gpu.live;
+}
+
+void hw_gpu_flush_rect(int x, int y, int w, int h) {
+    int row;
+    int col;
+    int x1;
+    int y1;
+    if (!g_gpu.live || !g_gfx.front || w < 1 || h < 1) {
+        return;
+    }
+    if (x < 0) {
+        w += x;
+        x = 0;
+    }
+    if (y < 0) {
+        h += y;
+        y = 0;
+    }
+    if (x >= g_gpu.w || y >= g_gpu.h) {
+        return;
+    }
+    x1 = x + w;
+    y1 = y + h;
+    if (x1 > g_gpu.w)
+        x1 = g_gpu.w;
+    if (y1 > g_gpu.h)
+        y1 = g_gpu.h;
+    if (x1 > g_gfx.width)
+        x1 = g_gfx.width;
+    if (y1 > g_gfx.height)
+        y1 = g_gfx.height;
+    if (x1 <= x || y1 <= y) {
+        return;
+    }
+    for (row = y; row < y1; ++row) {
+        uint32_t *dst = (uint32_t *)(g_gpu.fb + (row * g_gpu.w + x) * 4);
+        const uint32_t *src = g_gfx.front + row * g_gfx.pitch_pixels + x;
+        for (col = 0; col < x1 - x; ++col) {
+            dst[col] = src[col] | 0xFF000000u;
+        }
+    }
+    if (gpu_submit(0x0105u, x, y, x1 - x, y1 - y) != 0) {
+        return;
+    }
+    (void)gpu_submit(0x0104u, x, y, x1 - x, y1 - y);
 }
 
 void hw_gpu_flush(void) {
-    int x;
-    int y;
-    int gw;
-    int gh;
-    if (!g_gpu.live || !g_gfx.front) {
-        return;
-    }
-    gw = g_gfx.width < g_gpu.w ? g_gfx.width : g_gpu.w;
-    gh = g_gfx.height < g_gpu.h ? g_gfx.height : g_gpu.h;
-    for (y = 0; y < gh; ++y) {
-        for (x = 0; x < gw; ++x) {
-            uint32_t p = g_gfx.front[y * g_gfx.pitch_pixels + x];
-            p |= 0xFF000000u;
-            put32(g_gpu.fb, (uint32_t)((y * g_gpu.w + x) * 4), p);
-        }
-    }
-    gpu_rect(0x0105u, 56u);
     if (!g_gpu.live) {
         return;
     }
-    gpu_rect(0x0104u, 48u);
+    hw_gpu_flush_rect(0, 0, g_gpu.w, g_gpu.h);
+}
+
+static int vg_find(int *bus_out, int *dev_out) {
+    int bus;
+    int dev;
+    uint32_t id;
+    for (bus = 0; bus < 8; ++bus) {
+        for (dev = 0; dev < 32; ++dev) {
+            id = pci_read((uint8_t)bus, (uint8_t)dev, 0, 0);
+            if ((id & 0xFFFFu) == 0xFFFFu) {
+                continue;
+            }
+            if ((id & 0xFFFFu) == 0x1AF4u && (id >> 16) == 0x1050u) {
+                *bus_out = bus;
+                *dev_out = dev;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int vg_kick_cmd(int q, int cmd, int len) {
+    uint32_t lo = hw_dma_lo(cmd);
+    uint32_t hi = hw_dma_hi(cmd);
+    uint32_t qlo = hw_dma_lo(q);
+    (void)qlo;
+    hw_dma_w32(q, 0, lo);
+    hw_dma_w32(q, 4, hi);
+    hw_dma_w32(q, 8, (uint32_t)len);
+    hw_dma_w32(q, 12, 1u | (1u << 16));
+    hw_dma_w32(q, 16, lo + 256u);
+    hw_dma_w32(q, 20, hi);
+    hw_dma_w32(q, 24, 64u);
+    hw_dma_w32(q, 28, 2u);
+    return 0;
+}
+
+int virtio_gpu_boot(void) {
+    int bus;
+    int dev;
+    int off;
+    int cwin = -1;
+    int nwin = -1;
+    uint32_t coff = 0;
+    uint32_t noff = 0;
+    uint32_t mult = 0;
+    uint32_t cmdreg;
+    int q;
+    int cbuf;
+    int fb;
+    int w;
+    int h;
+    int pages;
+    uint32_t qlo;
+    uint32_t qhi;
+    uint32_t flo;
+    uint32_t fhi;
+    uint16_t qnote;
+    uint32_t resp;
+
+    if (g_gpu.live) {
+        return 1;
+    }
+    if (!g_gfx.width || !g_gfx.height) {
+        return 0;
+    }
+    if (!vg_find(&bus, &dev)) {
+        serial_puts("virtio-gpu miss\n");
+        return 0;
+    }
+    cmdreg = pci_read((uint8_t)bus, (uint8_t)dev, 0, 4);
+    hw_pci_write(bus, dev, 0, 4, cmdreg | 6u);
+    off = (int)(pci_read((uint8_t)bus, (uint8_t)dev, 0, 0x34) & 0xFFu);
+    while (off > 0) {
+        uint32_t cap = pci_read((uint8_t)bus, (uint8_t)dev, 0, (uint8_t)off);
+        int typ = (int)((cap >> 24) & 0xFFu);
+        int next = (int)((cap >> 8) & 0xFFu);
+        if ((cap & 0xFFu) == 9u) {
+            int bar = (int)(pci_read((uint8_t)bus, (uint8_t)dev, 0,
+                                     (uint8_t)(off + 4)) &
+                            0xFFu);
+            uint32_t cfg = pci_read((uint8_t)bus, (uint8_t)dev, 0,
+                                     (uint8_t)(off + 8));
+            int win = hw_bar_map(bus, dev, 0, bar);
+            if (typ == 1) {
+                cwin = win;
+                coff = cfg;
+            }
+            if (typ == 2) {
+                nwin = win;
+                noff = cfg;
+                mult = pci_read((uint8_t)bus, (uint8_t)dev, 0,
+                                (uint8_t)(off + 16));
+            }
+        }
+        off = next;
+    }
+    if (cwin < 0 || nwin < 0) {
+        serial_puts("virtio-gpu no cap\n");
+        return 0;
+    }
+    hw_mmio_w8(cwin, coff + 20, 0);
+    hw_mmio_w8(cwin, coff + 20, 1);
+    hw_mmio_w8(cwin, coff + 20, 3);
+    hw_mmio_w32(cwin, coff, 1);
+    hw_mmio_w32(cwin, coff + 8, 1);
+    hw_mmio_w32(cwin, coff + 12, 1);
+    hw_mmio_w8(cwin, coff + 20, 11);
+    if ((hw_mmio_r8(cwin, coff + 20) & 8u) == 0) {
+        serial_puts("virtio-gpu features\n");
+        return 0;
+    }
+    w = g_gfx.width;
+    h = g_gfx.height;
+    if (w > 1920)
+        w = 1920;
+    if (h > 1080)
+        h = 1080;
+    pages = (w * h * 4 + 4095) / 4096;
+    q = hw_dma_alloc(1);
+    cbuf = hw_dma_alloc(1);
+    fb = hw_dma_alloc(pages);
+    if (q < 0 || cbuf < 0 || fb < 0) {
+        serial_puts("virtio-gpu dma\n");
+        return 0;
+    }
+    qlo = hw_dma_lo(q);
+    qhi = hw_dma_hi(q);
+    flo = hw_dma_lo(fb);
+    fhi = hw_dma_hi(fb);
+    hw_mmio_w16(cwin, coff + 22, 0);
+    hw_mmio_w16(cwin, coff + 24, 4);
+    hw_mmio_w32(cwin, coff + 32, qlo);
+    hw_mmio_w32(cwin, coff + 36, qhi);
+    hw_mmio_w32(cwin, coff + 40, qlo + 64u);
+    hw_mmio_w32(cwin, coff + 44, qhi);
+    hw_mmio_w32(cwin, coff + 48, qlo + 2048u);
+    hw_mmio_w32(cwin, coff + 52, qhi);
+    hw_mmio_w16(cwin, coff + 28, 1);
+    qnote = (uint16_t)hw_mmio_r16(cwin, coff + 30);
+    noff = noff + (uint32_t)qnote * mult;
+    hw_mmio_w8(cwin, coff + 20, 15);
+    if (hw_gpu_arm(q, cbuf, fb, w, h, nwin, noff) != 0) {
+        return 0;
+    }
+    hw_dma_w32(cbuf, 0, 0x0101u);
+    hw_dma_w32(cbuf, 24, 1);
+    hw_dma_w32(cbuf, 28, 1);
+    hw_dma_w32(cbuf, 32, (uint32_t)w);
+    hw_dma_w32(cbuf, 36, (uint32_t)h);
+    vg_kick_cmd(q, cbuf, 40);
+    g_gpu.avail = 0;
+    if (gpu_kick(40u) != 0) {
+        serial_puts("virtio-gpu create used=");
+        serial_write_u64((uint64_t)hw_dma_r32(q, 2048));
+        serial_puts(" resp=");
+        serial_write_u64(hw_dma_r32(cbuf, 256));
+        serial_puts(" noff=");
+        serial_write_u64(g_gpu.notify_off);
+        serial_puts(" qlo=");
+        serial_write_u64(hw_mmio_r32(cwin, coff + 32));
+        serial_puts("\n");
+        return 0;
+    }
+    resp = hw_dma_r32(cbuf, 256);
+    if (resp != 0x1100u) {
+        serial_puts("virtio-gpu create resp\n");
+        g_gpu.live = 0;
+        return 0;
+    }
+    hw_dma_w32(cbuf, 256, 0);
+    hw_dma_w32(cbuf, 0, 0x0106u);
+    hw_dma_w32(cbuf, 4, 0);
+    hw_dma_w32(cbuf, 24, 1);
+    hw_dma_w32(cbuf, 28, 1);
+    hw_dma_w32(cbuf, 32, flo);
+    hw_dma_w32(cbuf, 36, fhi);
+    hw_dma_w32(cbuf, 40, (uint32_t)(w * h * 4));
+    if (gpu_kick(48u) != 0 || hw_dma_r32(cbuf, 256) != 0x1100u) {
+        serial_puts("virtio-gpu attach\n");
+        g_gpu.live = 0;
+        return 0;
+    }
+    hw_dma_w32(cbuf, 256, 0);
+    hw_dma_w32(cbuf, 0, 0x0103u);
+    hw_dma_w32(cbuf, 4, 0);
+    hw_dma_w32(cbuf, 24, 0);
+    hw_dma_w32(cbuf, 28, 0);
+    hw_dma_w32(cbuf, 32, (uint32_t)w);
+    hw_dma_w32(cbuf, 36, (uint32_t)h);
+    hw_dma_w32(cbuf, 40, 0);
+    hw_dma_w32(cbuf, 44, 1);
+    if (gpu_kick(48u) != 0 || hw_dma_r32(cbuf, 256) != 0x1100u) {
+        serial_puts("virtio-gpu scanout\n");
+        g_gpu.live = 0;
+        return 0;
+    }
+    serial_puts("virtio-gpu ready ");
+    serial_write_u64((uint64_t)w);
+    serial_puts("x");
+    serial_write_u64((uint64_t)h);
+    serial_puts("\n");
+    return 1;
 }

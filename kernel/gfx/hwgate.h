@@ -22,6 +22,9 @@ int hw_disk_write(uint32_t lba, const uint8_t *src, int nsec);
 int hw_disk_format(void);
 int hw_gpu_arm(int q_dma, int cmd_dma, int fb_dma, int w, int h,
                int notify_win, uint32_t notify_off);
+int hw_gpu_ready(void);
+void hw_gpu_flush_rect(int x, int y, int w, int h);
 void hw_gpu_flush(void);
+int virtio_gpu_boot(void);
 
 #endif

@@ -38,7 +38,9 @@
 #include "x25519.h"
 #include "rng.h"
 #include "ac97.h"
+#include "bdev.h"
 #include "hwgate.h"
+#include "install.h"
 #include "port.h"
 #include "pci.h"
 
@@ -1805,6 +1807,20 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
                                              (int)h, (int)nwin, (uint32_t)noff))
                    ? 0
                    : -1;
+    }
+    case 228:
+        return clvm_vm_push64(vm, hw_gpu_ready()) ? 0 : -1;
+    case 229:
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, bd_count()) ? 0 : -1;
+    case 230: {
+        int64_t index;
+        if (!clvm_vm_pop64(vm, &index))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, install_disk((int)index)) ? 0 : -1;
     }
     case 64: {
         int64_t a;

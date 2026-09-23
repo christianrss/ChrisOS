@@ -382,8 +382,24 @@ void gfx_present(void) {
             gfx_fast_copy_u32(dst, src, n);
         }
     }
-    g_dirty_count = 0;
 #ifdef __freestanding__
-    hw_gpu_flush();
+    if (g_dirty_count > 0) {
+        int x0 = g_dirty[0].x0;
+        int y0 = g_dirty[0].y0;
+        int x1 = g_dirty[0].x1;
+        int y1 = g_dirty[0].y1;
+        for (r = 1; r < g_dirty_count; ++r) {
+            if (g_dirty[r].x0 < x0)
+                x0 = g_dirty[r].x0;
+            if (g_dirty[r].y0 < y0)
+                y0 = g_dirty[r].y0;
+            if (g_dirty[r].x1 > x1)
+                x1 = g_dirty[r].x1;
+            if (g_dirty[r].y1 > y1)
+                y1 = g_dirty[r].y1;
+        }
+        hw_gpu_flush_rect(x0, y0, x1 - x0, y1 - y0);
+    }
 #endif
+    g_dirty_count = 0;
 }

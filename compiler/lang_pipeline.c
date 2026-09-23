@@ -1290,10 +1290,14 @@ static int lang_disk_cc(const char *src, const char *dst) {
     uint8_t *zp;
 
     n = fs_read("APPS/CC/CC.CLV", img, (int)sizeof(img));
-    if (n < 16)
+    if (n < 16) {
+        serial_puts("cc: no image\n");
         return 0;
-    if (clvm_parse(img, (size_t)n, &image) != CL_LOAD_OK)
+    }
+    if (clvm_parse(img, (size_t)n, &image) != CL_LOAD_OK) {
+        serial_puts("cc: bad image\n");
         return 0;
+    }
     if (fs_stat(dst, &sz, &ty) != 0) {
         for (i = 0; i < 16; ++i)
             seed[i] = 0;
@@ -1320,24 +1324,49 @@ static int lang_disk_cc(const char *src, const char *dst) {
     lang_set_app_arg(arg);
     pid = proc_create("cc");
     if (pid <= 0) {
+        serial_puts("cc: no proc\n");
         lang_set_app_arg(saved);
         return 0;
     }
-    bytes = proc_set_vm(pid, 1024ull * 1024ull);
+    bytes = proc_set_vm(pid, 16ull * 1024ull * 1024ull);
     if (bytes == 0) {
+        serial_puts("cc: no vm\n");
         proc_destroy(pid);
         lang_set_app_arg(saved);
         return 0;
+    }
+    {
+        uint64_t off;
+        uint64_t cover = 128ull * 4096ull;
+        if (cover > bytes)
+            cover = bytes;
+        for (off = 0; off < cover; off += 4096ull) {
+            if (proc_commit(pid, PROC_VM_VIRT + off) != 0) {
+                serial_puts("cc: commit\n");
+                proc_destroy(pid);
+                lang_set_app_arg(saved);
+                return 0;
+            }
+        }
     }
     prev = proc_current();
     proc_switch(pid);
     zp = (uint8_t *)&vm;
     for (i = 0; i < (int)sizeof(vm); ++i)
         zp[i] = 0;
-    clvm_vm_init(&vm, &image, clvm_sys_dispatch, 0);
+    {
+        static uint32_t cc_pix[4];
+        static ClvmGfxCtx cc_gfx;
+        cc_gfx.pixels = cc_pix;
+        cc_gfx.zbuf = 0;
+        cc_gfx.w = 2;
+        cc_gfx.h = 2;
+        cc_gfx.slot_id = -1;
+        clvm_vm_init(&vm, &image, clvm_sys_dispatch, &cc_gfx);
+    }
     clvm_vm_set_memory(&vm, proc_vm_ptr(pid), bytes);
     r = CLVM_STEP_SLICE;
-    for (steps = 0; steps < 8000 && r == CLVM_STEP_SLICE; ++steps) {
+    for (steps = 0; steps < 20000 && r == CLVM_STEP_SLICE; ++steps) {
         r = clvm_step(&vm, 200000u);
         if ((steps & 15) == 0)
             lang_cc_pump();
@@ -1345,17 +1374,48 @@ static int lang_disk_cc(const char *src, const char *dst) {
     proc_switch(prev);
     proc_destroy(pid);
     lang_set_app_arg(saved);
-    if (r != CLVM_STEP_HALT)
+    if (r != CLVM_STEP_HALT) {
+        serial_puts("cc: run ");
+        serial_write_u64((uint64_t)r);
+        serial_puts(" fault ");
+        serial_puts(clvm_fault_text(vm.fault));
+        serial_puts(" pc ");
+        serial_write_u64(vm.pc);
+        serial_puts(" steps ");
+        serial_write_u64((uint64_t)steps);
+        serial_puts("\n");
         return 0;
+    }
     n = fs_read(dst, file_buffer, (int)sizeof(file_buffer));
-    if (n < 16)
+    if (n < 16 || clvm_parse(file_buffer, (size_t)n, &image) != CL_LOAD_OK) {
+        serial_puts("cc: bad out ");
+        serial_write_u64((uint64_t)(n < 0 ? 0 : n));
+        serial_puts("\n");
         return 0;
-    if (clvm_parse(file_buffer, (size_t)n, &image) != CL_LOAD_OK)
-        return 0;
+    }
     serial_puts("cc: disk compiler ");
     serial_puts(dst);
     serial_puts("\n");
     return 1;
+}
+
+void lang_make_cc(void) {
+    uint32_t sz = 0;
+    uint16_t ty = 0;
+    if (fs_stat("APPS/CC/DOCC", &sz, &ty) != 0)
+        return;
+    if (lang_disk_cc("APPS/CC/STRUCT.CC", "APPS/CC/STRUCT.CLV"))
+        serial_puts("guest struct ok\n");
+    else
+        serial_puts("guest struct fail\n");
+    if (lang_disk_cc("SYS/DRV/VIRTIOGPU.CC", "SYS/DRV/VGPU.CLV"))
+        serial_puts("guest driver ok\n");
+    else
+        serial_puts("guest driver fail\n");
+    if (lang_disk_cc("APPS/CC/CC.CC", "APPS/CC/CC2.CLV"))
+        serial_puts("make cc guest ok\n");
+    else
+        serial_puts("make cc guest fail\n");
 }
 
 static int lang_join_cc(const char **paths, int npaths, const char *dst) {
