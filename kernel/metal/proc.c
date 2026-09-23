@@ -5,7 +5,7 @@
 #include "pmm.h"
 #include "serial.h"
 
-#define PROC_PAGES 128
+#define PROC_PAGES 288
 
 typedef struct ProcPage {
     uint64_t virt;

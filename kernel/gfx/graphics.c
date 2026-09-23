@@ -1,6 +1,9 @@
 #include "graphics.h"
 #include "gfx_fast.h"
 #include "heap.h"
+#ifdef __freestanding__
+#include "hwgate.h"
+#endif
 
 static uint32_t *g_backbuffer;
 GfxFramebuffer g_gfx;
@@ -380,4 +383,7 @@ void gfx_present(void) {
         }
     }
     g_dirty_count = 0;
+#ifdef __freestanding__
+    hw_gpu_flush();
+#endif
 }

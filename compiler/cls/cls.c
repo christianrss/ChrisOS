@@ -299,8 +299,6 @@ static int load_bytes(const uint8_t *file, size_t n, const char *path,
             return -1;
         }
         slot = replace_id;
-        if (L->code_buf)
-            CLS_FREE(L->code_buf);
         if (L->data_buf &&
             (L->img.data_size != img.data_size || L->img.abi_minor > img.abi_minor)) {
             CLS_FREE(L->data_buf);
@@ -325,13 +323,35 @@ static int load_bytes(const uint8_t *file, size_t n, const char *path,
         L = &g_libs[slot];
         L->data_buf = 0;
     }
-    L->code_buf = (uint8_t *)CLS_ALLOC(img.code_size ? img.code_size : 1);
-    if (!L->code_buf) {
-        set_err(err, err_cap, "cls: oom");
-        return -1;
+    {
+        uint32_t need = img.code_size ? img.code_size : 1;
+        int reuse = replace_id >= 0 && L->code_buf && L->code_cap >= need;
+        if (reuse) {
+            for (i = 0; i < img.code_size; ++i)
+                L->code_buf[i] = img.code[i];
+        } else {
+            uint8_t *fresh = (uint8_t *)CLS_ALLOC(need);
+            uint8_t *old = L->code_buf;
+            if (!fresh) {
+                set_err(err, err_cap, "cls: oom");
+                return -1;
+            }
+            for (i = 0; i < img.code_size; ++i)
+                fresh[i] = img.code[i];
+            L->code_buf = fresh;
+            L->code_cap = need;
+            if (replace_id >= 0 && old) {
+#ifdef __freestanding__
+                int pid;
+                for (pid = 1; pid < PROC_MAX; ++pid) {
+                    if (proc_alive(pid))
+                        cls_map_proc(pid);
+                }
+#endif
+                CLS_FREE(old);
+            }
+        }
     }
-    for (i = 0; i < img.code_size; ++i)
-        L->code_buf[i] = img.code[i];
     if (img.data_size) {
         int preserve = replace_id >= 0 && L->data_buf &&
                        L->img.data_size == img.data_size &&

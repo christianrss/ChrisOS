@@ -6,6 +6,25 @@
 #include "clvm_vm.h"
 
 static FILE *g_files[16];
+static char g_host_arg[256];
+
+static int ends_clv(const char *path) {
+    int n = 0;
+    while (path[n])
+        n++;
+    if (n < 4)
+        return 0;
+    path += n - 4;
+    if (path[0] != '.')
+        return 0;
+    if (path[1] != 'C' && path[1] != 'c')
+        return 0;
+    if (path[2] != 'L' && path[2] != 'l')
+        return 0;
+    if (path[3] != 'V' && path[3] != 'v')
+        return 0;
+    return 1;
+}
 
 static int guest_str(ClvmVm *vm, int64_t addr, char *out, int cap) {
     int i = 0;
@@ -45,7 +64,7 @@ static int sys(ClvmVm *vm, int32_t id, void *user) {
         }
         if (fd >= 16)
             return clvm_vm_push64(vm, -1) ? 0 : -1;
-        if (strstr(path, "OUT"))
+        if (strstr(path, "OUT") || ends_clv(path))
             g_files[fd] = fopen(path, "wb");
         else
             g_files[fd] = fopen(path, "rb");
@@ -75,6 +94,20 @@ static int sys(ClvmVm *vm, int32_t id, void *user) {
         else
             n = (int)fwrite(vm->memory + b, 1, (size_t)c, g_files[a]);
         return clvm_vm_push64(vm, n) ? 0 : -1;
+    }
+    if (id == 107) {
+        int n = 0;
+        if (!clvm_vm_pop64(vm, &a))
+            return -1;
+        if (!g_host_arg[0])
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        while (g_host_arg[n])
+            n++;
+        n++;
+        if (a < 0 || (uint64_t)a + (uint64_t)n > vm->mem_size)
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        memcpy(vm->memory + (uint64_t)a, g_host_arg, (size_t)n);
+        return clvm_vm_push64(vm, 1) ? 0 : -1;
     }
     return clvm_vm_push64(vm, 0) ? 0 : -1;
 }
@@ -108,7 +141,7 @@ static int run_image(const char *path) {
     memset(&vm, 0, sizeof(vm));
     clvm_vm_init(&vm, &image, sys, 0);
     r = CLVM_STEP_SLICE;
-    for (steps = 0; steps < 8000 && r == CLVM_STEP_SLICE; ++steps)
+    for (steps = 0; steps < 20000 && r == CLVM_STEP_SLICE; ++steps)
         r = clvm_step(&vm, 200000u);
     if (r == CLVM_STEP_FAULT) {
         fprintf(stderr, "fault %s pc=%u fpc=%u\n", clvm_fault_text(vm.fault),
@@ -124,7 +157,17 @@ static int run_image(const char *path) {
 }
 
 int main(int argc, char **argv) {
+    int i;
     if (argc < 2)
         return 1;
+    g_host_arg[0] = 0;
+    if (argc > 2) {
+        i = 0;
+        while (argv[2][i] && i + 1 < (int)sizeof(g_host_arg)) {
+            g_host_arg[i] = argv[2][i];
+            i++;
+        }
+        g_host_arg[i] = 0;
+    }
     return run_image(argv[1]);
 }

@@ -1270,6 +1270,114 @@ int lang_compile_run_jit(Editor *e) {
     return lang_run_jit(e, name);
 }
 
+static int lang_disk_cc(const char *src, const char *dst) {
+    static uint8_t img[262144];
+    static ClvmVm vm;
+    char saved[FS_PATH];
+    char arg[FS_PATH];
+    uint8_t seed[16];
+    int n;
+    int pid;
+    int prev;
+    int steps;
+    int i;
+    int k;
+    uint32_t sz = 0;
+    uint16_t ty = 0;
+    uint64_t bytes;
+    ClvmImage image;
+    ClvmStepResult r;
+    uint8_t *zp;
+
+    n = fs_read("APPS/CC/CC.CLV", img, (int)sizeof(img));
+    if (n < 16)
+        return 0;
+    if (clvm_parse(img, (size_t)n, &image) != CL_LOAD_OK)
+        return 0;
+    if (fs_stat(dst, &sz, &ty) != 0) {
+        for (i = 0; i < 16; ++i)
+            seed[i] = 0;
+        if (fs_write(dst, seed, 16) < 0)
+            return 0;
+    }
+    k = 0;
+    while (src[k] && k + 2 < (int)sizeof(arg)) {
+        arg[k] = src[k];
+        k++;
+    }
+    arg[k++] = ' ';
+    i = 0;
+    while (dst[i] && k + 1 < (int)sizeof(arg)) {
+        arg[k++] = dst[i++];
+    }
+    arg[k] = 0;
+    i = 0;
+    while (g_app_arg[i] && i + 1 < (int)sizeof(saved)) {
+        saved[i] = g_app_arg[i];
+        i++;
+    }
+    saved[i] = 0;
+    lang_set_app_arg(arg);
+    pid = proc_create("cc");
+    if (pid <= 0) {
+        lang_set_app_arg(saved);
+        return 0;
+    }
+    bytes = proc_set_vm(pid, 1024ull * 1024ull);
+    if (bytes == 0) {
+        proc_destroy(pid);
+        lang_set_app_arg(saved);
+        return 0;
+    }
+    prev = proc_current();
+    proc_switch(pid);
+    zp = (uint8_t *)&vm;
+    for (i = 0; i < (int)sizeof(vm); ++i)
+        zp[i] = 0;
+    clvm_vm_init(&vm, &image, clvm_sys_dispatch, 0);
+    clvm_vm_set_memory(&vm, proc_vm_ptr(pid), bytes);
+    r = CLVM_STEP_SLICE;
+    for (steps = 0; steps < 8000 && r == CLVM_STEP_SLICE; ++steps) {
+        r = clvm_step(&vm, 200000u);
+        if ((steps & 15) == 0)
+            lang_cc_pump();
+    }
+    proc_switch(prev);
+    proc_destroy(pid);
+    lang_set_app_arg(saved);
+    if (r != CLVM_STEP_HALT)
+        return 0;
+    n = fs_read(dst, file_buffer, (int)sizeof(file_buffer));
+    if (n < 16)
+        return 0;
+    if (clvm_parse(file_buffer, (size_t)n, &image) != CL_LOAD_OK)
+        return 0;
+    serial_puts("cc: disk compiler ");
+    serial_puts(dst);
+    serial_puts("\n");
+    return 1;
+}
+
+static int lang_join_cc(const char **paths, int npaths, const char *dst) {
+    int off = 0;
+    int i;
+    for (i = 0; i < npaths; ++i) {
+        int n;
+        if (off + 2 >= (int)sizeof(source_buffer))
+            return 0;
+        n = fs_read(paths[i], source_buffer + off,
+                    (int)sizeof(source_buffer) - off - 1);
+        if (n < 0)
+            return 0;
+        off += n;
+        source_buffer[off++] = '\n';
+        source_buffer[off] = 0;
+    }
+    if (fs_write("APPS/CC/JOIN.CC", source_buffer, off) < 0)
+        return 0;
+    return lang_disk_cc("APPS/CC/JOIN.CC", dst);
+}
+
 int lang_compile_file(const char *src_path, const char *clv_path) {
     size_t file_size = 0;
     size_t code_size = 0;
@@ -1282,6 +1390,8 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
     if (!suffix(src_path, ".CVA") && !suffix(src_path, ".CC")) {
         return 0;
     }
+    if (suffix(src_path, ".CC") && lang_disk_cc(src_path, clv_path))
+        return 1;
     n = fs_read(src_path, source_buffer, (int)sizeof(source_buffer) - 1);
     if (n < 0) {
         return 0;
@@ -1388,6 +1498,18 @@ int lang_compile_list(const char *lst_path) {
     }
     if (npaths < 1)
         return 0;
+    {
+        int only_cc = 1;
+        int pi;
+        char outn[LANG_NAME_MAX];
+        for (pi = 0; pi < npaths; ++pi) {
+            if (!suffix(paths[pi], ".CC"))
+                only_cc = 0;
+        }
+        if (only_cc && output_name(lst_path, outn) &&
+            lang_join_cc(pp, npaths, outn))
+            return 1;
+    }
     clear_last_lang();
     g_cc_hb_tick = (uint32_t)ticks;
     chrisc_set_yield(lang_cc_pump);

@@ -63,7 +63,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/metal/heap.o kernel/metal/pci.o \
 	kernel/net/virtio_net.o kernel/net/net.o kernel/net/sock.o \
 	kernel/crypto/sha256.o kernel/crypto/rng.o kernel/crypto/aes.o kernel/crypto/x25519.o \
-	kernel/gfx/ac97.o \
+	kernel/gfx/ac97.o kernel/gfx/hwgate.o \
 	kernel/gfx/graphics.o kernel/gfx/font.o kernel/gfx/input.o \
 	kernel/gfx/speaker.o kernel/gfx/gfx2d.o \
 	kernel/wm/task.o kernel/wm/ui.o kernel/wm/desktop.o kernel/wm/main.o \
@@ -682,6 +682,11 @@ disk-lib: $(DISK_IMG) host-cfs-put-file
 disk-ui: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/mk_clv APPS/DESKTOP/DESKTOP.LST
 	$(HOST_BIN)/mk_clv APPS/TASKBAR/TASKBAR.LST
+	$(HOST_BIN)/mk_clv SYS/DRV/VIRTIOGPU.LST
+	$(HOST_BIN)/mk_clv SYS/DRV/HWDISC.LST
+	$(HOST_BIN)/mk_clv SYS/DRV/FORMAT.LST
+	$(HOST_BIN)/mk_clv SYS/DRV/MKSTICK.LST
+	$(HOST_BIN)/mk_clv SYS/ARCH/RISCV.LST
 	$(HOST_BIN)/mk_clv APPS/SHELL/SHELL.LST
 	$(HOST_BIN)/mk_clv APPS/EXPLORER/EXPLORER.LST
 	$(HOST_BIN)/mk_clv APPS/EDITOR/EDITOR.LST
@@ -701,6 +706,21 @@ disk-ui: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CC APPS/DESKTOP/DESKTOP.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.LST APPS/DESKTOP/DESKTOP.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CLV APPS/DESKTOP/DESKTOP.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/VIRTIOGPU.CC SYS/DRV/VIRTIOGPU.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/VIRTIOGPU.LST SYS/DRV/VIRTIOGPU.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/VIRTIOGPU.CLV SYS/DRV/VIRTIOGPU.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/HWDISC.CC SYS/DRV/HWDISC.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/HWDISC.LST SYS/DRV/HWDISC.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/HWDISC.CLV SYS/DRV/HWDISC.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/FORMAT.CC SYS/DRV/FORMAT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/FORMAT.LST SYS/DRV/FORMAT.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/FORMAT.CLV SYS/DRV/FORMAT.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CC SYS/DRV/MKSTICK.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.LST SYS/DRV/MKSTICK.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CLV SYS/DRV/MKSTICK.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CC SYS/ARCH/RISCV.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.LST SYS/ARCH/RISCV.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CLV SYS/ARCH/RISCV.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CC APPS/TASKBAR/TASKBAR.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.LST APPS/TASKBAR/TASKBAR.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CLV APPS/TASKBAR/TASKBAR.CLV
@@ -752,6 +772,21 @@ disk-apps: disk-ui
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CC APPS/DESKTOP/DESKTOP.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.LST APPS/DESKTOP/DESKTOP.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CLV APPS/DESKTOP/DESKTOP.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/VIRTIOGPU.CC SYS/DRV/VIRTIOGPU.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/VIRTIOGPU.LST SYS/DRV/VIRTIOGPU.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/VIRTIOGPU.CLV SYS/DRV/VIRTIOGPU.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/HWDISC.CC SYS/DRV/HWDISC.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/HWDISC.LST SYS/DRV/HWDISC.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/HWDISC.CLV SYS/DRV/HWDISC.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/FORMAT.CC SYS/DRV/FORMAT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/FORMAT.LST SYS/DRV/FORMAT.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/FORMAT.CLV SYS/DRV/FORMAT.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CC SYS/DRV/MKSTICK.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.LST SYS/DRV/MKSTICK.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/MKSTICK.CLV SYS/DRV/MKSTICK.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CC SYS/ARCH/RISCV.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.LST SYS/ARCH/RISCV.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/ARCH/RISCV.CLV SYS/ARCH/RISCV.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/Makefile APPS/DESKTOP/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CC APPS/TASKBAR/TASKBAR.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.LST APPS/TASKBAR/TASKBAR.LST
@@ -1072,6 +1107,7 @@ run: $(ISO) disk-ui run-stop
 		-usb -device usb-tablet \
 		-drive file=$(DISK_IMG),format=raw,if=ide,index=0 \
 		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
+		-device virtio-gpu-pci \
 		-device virtio-net-pci,netdev=n0 \
 		-device AC97 \
 		-netdev user,id=n0,hostfwd=udp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_XFER_PORT)-:9016 \

@@ -51,6 +51,24 @@ int g_nc;
 int g_pending;
 int g_boot;
 int g_mainpc;
+int g_lnames;
+int g_laddr;
+int g_lwid;
+int g_larr;
+int g_nloc;
+int g_locbase;
+int g_nparam;
+int g_scale;
+int g_arr;
+int g_bytes;
+int g_sz;
+int g_sbuf;
+int g_poff;
+int g_saddr;
+int g_strinit;
+int g_outpath;
+int g_arg;
+int g_ty;
 
 int op() {
   storeb(g_out + 16 + g_pc, g_op);
@@ -206,24 +224,78 @@ int rdname() {
   return 1;
 }
 
+int hexdig() {
+  g_ret = 0;
+  if (g_c >= 48) {
+    if (g_c <= 57) {
+      g_b = g_c - 48;
+      g_ret = 1;
+    }
+  }
+  if (g_c >= 97) {
+    if (g_c <= 102) {
+      g_b = g_c - 87;
+      g_ret = 1;
+    }
+  }
+  if (g_c >= 65) {
+    if (g_c <= 70) {
+      g_b = g_c - 55;
+      g_ret = 1;
+    }
+  }
+  return g_ret;
+}
+
 int rdnum() {
   sws();
   g_num = 0;
-  while (1) {
+  g_stop = 0;
+  while (g_stop == 0) {
     if (g_i >= g_len) {
-      return 0;
+      g_stop = 1;
     }
-    g_c = loadb(g_src + g_i);
-    if (g_c < 48) {
-      return 1;
+    if (g_stop == 0) {
+      g_c = loadb(g_src + g_i);
+      if (g_c < 48) {
+        g_stop = 1;
+      }
+      if (g_c > 57) {
+        g_stop = 1;
+      }
     }
-    if (g_c > 57) {
-      return 1;
+    if (g_stop == 0) {
+      g_num = g_num * 10;
+      g_b = g_c - 48;
+      g_num = g_num + g_b;
+      g_i = g_i + 1;
     }
-    g_num = g_num * 10;
-    g_b = g_c - 48;
-    g_num = g_num + g_b;
-    g_i = g_i + 1;
+  }
+  if (g_num == 0) {
+    if (g_i < g_len) {
+      g_c = loadb(g_src + g_i);
+      if (g_c == 120) {
+        g_i = g_i + 1;
+        g_stop = 0;
+        while (g_stop == 0) {
+          if (g_i >= g_len) {
+            g_stop = 1;
+          }
+          if (g_stop == 0) {
+            g_c = loadb(g_src + g_i);
+            hexdig();
+            if (g_ret == 0) {
+              g_stop = 1;
+            }
+          }
+          if (g_stop == 0) {
+            g_num = g_num * 16;
+            g_num = g_num + g_b;
+            g_i = g_i + 1;
+          }
+        }
+      }
+    }
   }
   return 1;
 }
@@ -489,6 +561,467 @@ int is_malloc() {
   return 1;
 }
 
+int is_void() {
+  if (g_nlen != 4) {
+    return 0;
+  }
+  if (loadb(g_name) != 118) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 111) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 105) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 100) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_char() {
+  if (g_nlen != 4) {
+    return 0;
+  }
+  if (loadb(g_name) != 99) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 104) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 97) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 114) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_else() {
+  if (g_nlen != 4) {
+    return 0;
+  }
+  if (loadb(g_name) != 101) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 108) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 101) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_dispw() {
+  if (g_nlen != 6) {
+    return 0;
+  }
+  if (loadb(g_name) != 100) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 105) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 119) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_disph() {
+  if (g_nlen != 6) {
+    return 0;
+  }
+  if (loadb(g_name) != 100) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 105) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 104) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_view() {
+  if (g_nlen != 8) {
+    return 0;
+  }
+  if (loadb(g_name) != 118) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 105) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 101) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 119) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 111) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 114) {
+    return 0;
+  }
+  if (loadb(g_name + 7) != 116) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_surf() {
+  if (g_nlen != 10) {
+    return 0;
+  }
+  if (loadb(g_name) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 117) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 114) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 102) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 108) {
+    return 0;
+  }
+  if (loadb(g_name + 7) != 97) {
+    return 0;
+  }
+  if (loadb(g_name + 8) != 99) {
+    return 0;
+  }
+  if (loadb(g_name + 9) != 101) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_mx() {
+  if (g_nlen != 7) {
+    return 0;
+  }
+  if (loadb(g_name) != 109) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 111) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 117) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 101) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 120) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_my() {
+  if (g_nlen != 7) {
+    return 0;
+  }
+  if (loadb(g_name) != 109) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 111) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 117) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 101) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 121) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_mb() {
+  if (g_nlen != 9) {
+    return 0;
+  }
+  if (loadb(g_name) != 109) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 111) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 117) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 101) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 98) {
+    return 0;
+  }
+  if (loadb(g_name + 7) != 116) {
+    return 0;
+  }
+  if (loadb(g_name + 8) != 110) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_fill() {
+  if (g_nlen != 7) {
+    return 0;
+  }
+  if (loadb(g_name) != 102) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 105) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 108) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 108) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 114) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 103) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 98) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_text() {
+  if (g_nlen != 4) {
+    return 0;
+  }
+  if (loadb(g_name) != 116) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 101) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 120) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 116) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_spawn() {
+  if (g_nlen != 9) {
+    return 0;
+  }
+  if (loadb(g_name) != 97) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 115) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 97) {
+    return 0;
+  }
+  if (loadb(g_name + 7) != 119) {
+    return 0;
+  }
+  if (loadb(g_name + 8) != 110) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_arg() {
+  if (g_nlen != 7) {
+    return 0;
+  }
+  if (loadb(g_name) != 97) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 112) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 95) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 97) {
+    return 0;
+  }
+  if (loadb(g_name + 5) != 114) {
+    return 0;
+  }
+  if (loadb(g_name + 6) != 103) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_wait() {
+  if (g_nlen != 4) {
+    return 0;
+  }
+  if (loadb(g_name) != 119) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 97) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 105) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 116) {
+    return 0;
+  }
+  return 1;
+}
+
+int is_ticks() {
+  if (g_nlen != 5) {
+    return 0;
+  }
+  if (loadb(g_name) != 116) {
+    return 0;
+  }
+  if (loadb(g_name + 1) != 105) {
+    return 0;
+  }
+  if (loadb(g_name + 2) != 99) {
+    return 0;
+  }
+  if (loadb(g_name + 3) != 107) {
+    return 0;
+  }
+  if (loadb(g_name + 4) != 115) {
+    return 0;
+  }
+  return 1;
+}
+
+int bi_desk() {
+  if (g_bi != 0) {
+    return 0;
+  }
+  if (is_dispw() == 1) {
+    g_bi = 103;
+  }
+  if (is_disph() == 1) {
+    g_bi = 104;
+  }
+  if (is_view() == 1) {
+    g_bi = 39;
+  }
+  if (is_surf() == 1) {
+    g_bi = 88;
+  }
+  if (is_mx() == 1) {
+    g_bi = 80;
+  }
+  if (is_my() == 1) {
+    g_bi = 81;
+  }
+  if (is_mb() == 1) {
+    g_bi = 82;
+  }
+  if (is_fill() == 1) {
+    g_bi = 85;
+  }
+  if (is_text() == 1) {
+    g_bi = 86;
+  }
+  if (is_spawn() == 1) {
+    g_bi = 96;
+  }
+  if (is_arg() == 1) {
+    g_bi = 107;
+  }
+  if (is_wait() == 1) {
+    g_bi = 12;
+  }
+  if (is_ticks() == 1) {
+    g_bi = 11;
+  }
+  return 0;
+}
+
 int cmp() {
   g_k = 0;
   while (g_k < 16) {
@@ -604,6 +1137,147 @@ int patchcalls() {
   return 0;
 }
 
+int addloc() {
+  g_base = g_lnames + g_nloc * 16;
+  g_k = 0;
+  while (g_k < 16) {
+    g_b = loadb(g_name + g_k);
+    storeb(g_base + g_k, g_b);
+    g_k = g_k + 1;
+  }
+  g_at = g_laddr + g_nloc * 4;
+  g_num = g_locbase;
+  st32();
+  storeb(g_lwid + g_nloc, g_scale);
+  storeb(g_larr + g_nloc, g_arr);
+  g_nloc = g_nloc + 1;
+  g_locbase = g_locbase + g_sz;
+  g_k = g_locbase & 3;
+  if (g_k != 0) {
+    g_b = 4 - g_k;
+    g_locbase = g_locbase + g_b;
+  }
+  return 0;
+}
+
+int findloc() {
+  g_j = 0;
+  while (g_j < g_nloc) {
+    g_base = g_lnames + g_j * 16;
+    if (cmp() == 1) {
+      g_at = g_laddr + g_j * 4;
+      ld32();
+      g_addr = g_ret;
+      g_scale = loadb(g_lwid + g_j);
+      g_arr = loadb(g_larr + g_j);
+      g_ret = g_j;
+      return g_ret;
+    }
+    g_j = g_j + 1;
+  }
+  g_ret = 0 - 1;
+  return g_ret;
+}
+
+int rdstr() {
+  g_i = g_i + 1;
+  g_saddr = 32768 + g_poff;
+  while (1) {
+    if (g_i >= g_len) {
+      return 0;
+    }
+    g_c = loadb(g_src + g_i);
+    if (g_c == 34) {
+      g_i = g_i + 1;
+      storeb(g_sbuf + g_poff, 0);
+      g_poff = g_poff + 1;
+      g_num = g_saddr;
+      epush();
+      return 1;
+    }
+    if (g_c == 92) {
+      g_i = g_i + 1;
+      if (g_i < g_len) {
+        g_c = loadb(g_src + g_i);
+      }
+    }
+    storeb(g_sbuf + g_poff, g_c);
+    g_poff = g_poff + 1;
+    g_i = g_i + 1;
+  }
+  return 0;
+}
+
+int load_index() {
+  g_i = g_i + 1;
+  g_push = g_addr;
+  stfix();
+  g_push = g_scale;
+  stfix();
+  g_push = g_bytes;
+  stfix();
+  expr();
+  popfix();
+  g_bytes = g_pop;
+  popfix();
+  g_scale = g_pop;
+  popfix();
+  g_addr = g_pop;
+  if (g_scale != 1) {
+    g_num = g_scale;
+    epush();
+    g_op = 4;
+    op();
+  }
+  g_num = g_addr;
+  epush();
+  g_op = 2;
+  op();
+  sws();
+  if (g_c == 93) {
+    g_i = g_i + 1;
+  }
+  if (g_bytes == 1) {
+    g_op = 13;
+    if (g_scale == 1) {
+      g_op = 26;
+    }
+    op();
+  }
+  return 0;
+}
+
+int decl_local() {
+  g_scale = 4;
+  g_arr = 0;
+  g_sz = 4;
+  if (g_bytes == 1) {
+    g_scale = 1;
+    g_sz = 1;
+  }
+  rdname();
+  sws();
+  if (g_c == 91) {
+    g_arr = 1;
+    g_i = g_i + 1;
+    rdnum();
+    g_sz = g_num;
+    if (g_bytes == 0) {
+      g_sz = g_num * 4;
+    }
+    sws();
+    if (g_c == 93) {
+      g_i = g_i + 1;
+    }
+  }
+  addloc();
+  sws();
+  if (g_c == 59) {
+    g_i = g_i + 1;
+  }
+  return 0;
+}
+
 int prim() {
   sws();
   if (g_c == 40) {
@@ -613,6 +1287,10 @@ int prim() {
     if (g_c == 41) {
       g_i = g_i + 1;
     }
+    return 0;
+  }
+  if (g_c == 34) {
+    rdstr();
     return 0;
   }
   if (g_c >= 48) {
@@ -628,10 +1306,25 @@ int prim() {
     call();
     return 0;
   }
-  findg();
-  g_slot = g_ret;
-  g_addr = g_slot * 4;
-  g_addr = g_addr + 256;
+  findloc();
+  if (g_ret < 0) {
+    findg();
+    g_slot = g_ret;
+    g_addr = g_slot * 4;
+    g_addr = g_addr + 256;
+    g_scale = 4;
+    g_arr = 0;
+  }
+  if (g_c == 91) {
+    g_bytes = 1;
+    load_index();
+    return 0;
+  }
+  if (g_arr == 1) {
+    g_num = g_addr;
+    epush();
+    return 0;
+  }
   g_num = g_addr;
   epush();
   g_op = 13;
@@ -663,6 +1356,7 @@ int call() {
   if (is_malloc() == 1) {
     g_bi = 56;
   }
+  bi_desk();
   g_fnpc = 0 - 1;
   g_pending = 0 - 1;
   if (g_bi == 0) {
@@ -685,7 +1379,11 @@ int call() {
     g_stop = 1;
   }
   while (g_stop == 0) {
+    g_push = 0;
+    stfix();
     expr();
+    popfix();
+    g_stop = g_pop;
     g_argc = g_argc + 1;
     sws();
     if (g_c == 44) {
@@ -723,6 +1421,21 @@ int call() {
     g_op = 32;
     op();
   }
+  if (g_bi == 12) {
+    g_leave = 0;
+  }
+  if (g_bi == 39) {
+    g_leave = 0;
+  }
+  if (g_bi == 85) {
+    g_leave = 0;
+  }
+  if (g_bi == 86) {
+    g_leave = 0;
+  }
+  if (g_bi == 88) {
+    g_leave = 0;
+  }
   if (g_bi == 0) {
     g_op = 36;
     op();
@@ -757,6 +1470,9 @@ int mul() {
         g_more = 1;
       }
     }
+    if (g_c == 37) {
+      g_more = 1;
+    }
     if (g_more == 0) {
       return 0;
     }
@@ -779,6 +1495,12 @@ int mul() {
         g_op = 58;
         op();
       }
+    }
+    if (g_c == 37) {
+      g_i = g_i + 1;
+      prim();
+      g_op = 20;
+      op();
     }
   }
   return 0;
@@ -903,6 +1625,36 @@ int do_if() {
   blk();
   popfix();
   g_site = g_pop;
+  sws();
+  g_push = g_i;
+  stfix();
+  rdname();
+  if (is_else() == 1) {
+    popfix();
+    g_op = 33;
+    op();
+    g_num = 0;
+    eu();
+    g_push = g_pc - 4;
+    stfix();
+    g_rel = g_pc - g_site;
+    g_rel = g_rel - 5;
+    g_num = g_rel;
+    g_at = g_out + 16 + g_site;
+    g_at = g_at + 1;
+    st32();
+    blk();
+    popfix();
+    g_addr = g_pop;
+    g_rel = g_pc - g_addr;
+    g_rel = g_rel - 4;
+    g_num = g_rel;
+    g_at = g_out + 16 + g_addr;
+    st32();
+    return 0;
+  }
+  popfix();
+  g_i = g_pop;
   g_rel = g_pc - g_site;
   g_rel = g_rel - 5;
   g_num = g_rel;
@@ -951,6 +1703,16 @@ int stmt() {
   g_mark = g_i;
   sws();
   rdname();
+  if (is_int() == 1) {
+    g_bytes = 0;
+    decl_local();
+    return 0;
+  }
+  if (is_char() == 1) {
+    g_bytes = 1;
+    decl_local();
+    return 0;
+  }
   if (is_if() == 1) {
     sws();
     g_i = g_i + 1;
@@ -977,12 +1739,55 @@ int stmt() {
     return 0;
   }
   sws();
+  if (g_c == 91) {
+    findloc();
+    g_slot = g_ret;
+    if (g_slot < 0) {
+      findg();
+      g_addr = g_ret * 4;
+      g_addr = g_addr + 256;
+      g_scale = 4;
+      g_arr = 0;
+    }
+    g_bytes = 0;
+    load_index();
+    sws();
+    if (g_c == 61) {
+      if (loadb(g_src + g_i + 1) != 61) {
+        g_i = g_i + 1;
+        g_push = g_scale;
+        stfix();
+        expr();
+        popfix();
+        g_scale = g_pop;
+        g_op = 16;
+        op();
+        g_op = 14;
+        if (g_scale == 1) {
+          g_op = 27;
+        }
+        op();
+        sws();
+        if (g_c == 59) {
+          g_i = g_i + 1;
+        }
+        return 0;
+      }
+    }
+    return 0;
+  }
   if (g_c == 61) {
     if (loadb(g_src + g_i + 1) != 61) {
-      findg();
+      findloc();
       g_slot = g_ret;
-      g_save = g_slot * 4;
-      g_save = g_save + 256;
+      if (g_slot < 0) {
+        findg();
+        g_save = g_ret * 4;
+        g_save = g_save + 256;
+      }
+      if (g_slot >= 0) {
+        g_save = g_addr;
+      }
       g_i = g_i + 1;
       expr();
       g_num = g_save;
@@ -1038,6 +1843,30 @@ int blk() {
   return 0;
 }
 
+int emitstrs() {
+  if (g_poff == 0) {
+    return 0;
+  }
+  g_strinit = g_pc;
+  g_k = 0;
+  while (g_k < g_poff) {
+    g_num = loadb(g_sbuf + g_k);
+    epush();
+    g_num = 32768 + g_k;
+    epush();
+    g_op = 27;
+    op();
+    g_k = g_k + 1;
+  }
+  g_op = 33;
+  op();
+  g_rel = g_mainpc - g_pc;
+  g_rel = g_rel - 4;
+  g_num = g_rel;
+  eu();
+  return 1;
+}
+
 int toplevel() {
   g_op = 33;
   op();
@@ -1047,9 +1876,14 @@ int toplevel() {
   while (1) {
     sws();
     if (g_c == 0) {
+      g_ok = emitstrs();
       patchcalls();
       g_rel = g_mainpc - g_boot;
       g_rel = g_rel - 4;
+      if (g_ok == 1) {
+        g_rel = g_strinit - g_boot;
+        g_rel = g_rel - 4;
+      }
       g_num = g_rel;
       g_at = g_out + 16 + g_boot;
       st32();
@@ -1058,12 +1892,19 @@ int toplevel() {
     }
     g_mark = g_i;
     rdname();
-    if (is_int() == 0) {
+    g_ty = 0;
+    if (is_int() == 1) {
+      g_ty = 1;
+    }
+    if (is_void() == 1) {
+      g_ty = 1;
+    }
+    if (g_ty == 0) {
       if (g_i == g_mark) {
         g_i = g_i + 1;
       }
     }
-    if (is_int() == 1) {
+    if (g_ty == 1) {
       rdname();
       sws();
       g_kind = 0;
@@ -1079,10 +1920,56 @@ int toplevel() {
         if (g_main == 1) {
           g_mainpc = g_pc;
         }
+        g_nloc = 0;
+        g_nparam = 0;
+        g_locbase = g_nf - 1;
+        g_locbase = g_locbase * 256;
+        g_locbase = g_locbase + 8192;
         g_i = g_i + 1;
         sws();
+        g_stop = 0;
+        while (g_stop == 0) {
+          if (g_c == 41) {
+            g_stop = 1;
+          }
+          if (g_c == 0) {
+            g_stop = 1;
+          }
+          if (g_stop == 0) {
+            rdname();
+            g_bytes = 0;
+            if (is_char() == 1) {
+              g_bytes = 1;
+            }
+            g_scale = 4;
+            g_arr = 0;
+            g_sz = 4;
+            if (g_bytes == 1) {
+              g_scale = 1;
+              g_sz = 1;
+            }
+            rdname();
+            addloc();
+            g_nparam = g_nparam + 1;
+            sws();
+            if (g_c == 44) {
+              g_i = g_i + 1;
+              sws();
+            }
+          }
+        }
         if (g_c == 41) {
           g_i = g_i + 1;
+        }
+        g_k = g_nparam - 1;
+        while (g_k >= 0) {
+          g_at = g_laddr + g_k * 4;
+          ld32();
+          g_num = g_ret;
+          epush();
+          g_op = 14;
+          op();
+          g_k = g_k - 1;
         }
         blk();
         g_op = 12;
@@ -1118,7 +2005,7 @@ int wr() {
   storeb(g_out + 2, 86);
   storeb(g_out + 3, 77);
   storeb(g_out + 4, 1);
-  storeb(g_out + 5, 0);
+  storeb(g_out + 5, 1);
   storeb(g_out + 6, g_entry & 255);
   g_b = g_entry >> 8;
   storeb(g_out + 7, g_b & 255);
@@ -1148,27 +2035,10 @@ int wr() {
   storeb(g_out + 14, g_b & 255);
   g_b = g_h >> 24;
   storeb(g_out + 15, g_b & 255);
-  g_k = 0;
-  while (g_k < 16) {
-    storeb(g_path + g_k, 0);
-    g_k = g_k + 1;
+  if (loadb(g_outpath) == 0) {
+    fill_out();
   }
-  storeb(g_path, 65);
-  storeb(g_path + 1, 80);
-  storeb(g_path + 2, 80);
-  storeb(g_path + 3, 83);
-  storeb(g_path + 4, 47);
-  storeb(g_path + 5, 67);
-  storeb(g_path + 6, 67);
-  storeb(g_path + 7, 47);
-  storeb(g_path + 8, 79);
-  storeb(g_path + 9, 85);
-  storeb(g_path + 10, 84);
-  storeb(g_path + 11, 46);
-  storeb(g_path + 12, 67);
-  storeb(g_path + 13, 76);
-  storeb(g_path + 14, 86);
-  g_fd = fopen(g_path);
+  g_fd = fopen(g_outpath);
   if (g_fd < 0) {
     return 0;
   }
@@ -1200,16 +2070,99 @@ int fill_in() {
   return 0;
 }
 
+int fill_out() {
+  g_k = 0;
+  while (g_k < 32) {
+    storeb(g_outpath + g_k, 0);
+    g_k = g_k + 1;
+  }
+  storeb(g_outpath, 65);
+  storeb(g_outpath + 1, 80);
+  storeb(g_outpath + 2, 80);
+  storeb(g_outpath + 3, 83);
+  storeb(g_outpath + 4, 47);
+  storeb(g_outpath + 5, 67);
+  storeb(g_outpath + 6, 67);
+  storeb(g_outpath + 7, 47);
+  storeb(g_outpath + 8, 79);
+  storeb(g_outpath + 9, 85);
+  storeb(g_outpath + 10, 84);
+  storeb(g_outpath + 11, 46);
+  storeb(g_outpath + 12, 67);
+  storeb(g_outpath + 13, 76);
+  storeb(g_outpath + 14, 86);
+  return 0;
+}
+
+int take_arg() {
+  g_ok = app_arg(g_arg);
+  if (g_ok < 1) {
+    return 0;
+  }
+  g_k = 0;
+  g_j = 0;
+  g_stop = 0;
+  while (g_stop == 0) {
+    g_c = loadb(g_arg + g_k);
+    if (g_c == 0) {
+      g_stop = 1;
+    }
+    if (g_c == 32) {
+      g_stop = 1;
+    }
+    if (g_c == 44) {
+      g_stop = 1;
+    }
+    if (g_stop == 0) {
+      storeb(g_path + g_j, g_c);
+      g_j = g_j + 1;
+      g_k = g_k + 1;
+    }
+  }
+  storeb(g_path + g_j, 0);
+  if (g_c != 32) {
+    if (g_c != 44) {
+      return 0;
+    }
+  }
+  g_k = g_k + 1;
+  g_j = 0;
+  g_stop = 0;
+  while (g_stop == 0) {
+    g_c = loadb(g_arg + g_k);
+    if (g_c == 0) {
+      g_stop = 1;
+    }
+    if (g_stop == 0) {
+      storeb(g_outpath + g_j, g_c);
+      g_j = g_j + 1;
+      g_k = g_k + 1;
+    }
+  }
+  storeb(g_outpath + g_j, 0);
+  if (g_j < 1) {
+    return 0;
+  }
+  return 1;
+}
+
 int main() {
-  g_src = malloc(262144);
-  g_out = malloc(262144);
+  g_src = malloc(131072);
+  g_out = malloc(131072);
   g_name = malloc(32);
   g_names = malloc(4096);
   g_fnames = malloc(4096);
   g_fpc = malloc(1024);
   g_fix = malloc(1024);
   g_cfx = malloc(8192);
-  g_path = malloc(32);
+  g_path = malloc(128);
+  g_outpath = malloc(128);
+  g_arg = malloc(256);
+  g_lnames = malloc(1024);
+  g_laddr = malloc(256);
+  g_lwid = malloc(64);
+  g_larr = malloc(64);
+  g_sbuf = malloc(8192);
   g_nc = 0;
   g_pc = 0;
   g_i = 0;
@@ -1218,14 +2171,24 @@ int main() {
   g_fixsp = 0;
   g_entry = 0;
   g_len = 0;
-  fill_in();
+  g_poff = 0;
+  g_nloc = 0;
+  g_k = 0;
+  while (g_k < 32) {
+    storeb(g_outpath + g_k, 0);
+    g_k = g_k + 1;
+  }
+  if (take_arg() == 0) {
+    fill_in();
+    fill_out();
+  }
   g_fd = fopen(g_path);
   g_ok = 0;
   if (g_fd < 0) {
     g_ok = 1;
   }
   if (g_ok == 0) {
-    g_len = fread(g_fd, g_src, 200000);
+    g_len = fread(g_fd, g_src, 120000);
     fclose(g_fd);
   }
   if (g_len < 0) {

@@ -38,6 +38,7 @@
 #include "x25519.h"
 #include "rng.h"
 #include "ac97.h"
+#include "hwgate.h"
 #include "port.h"
 #include "pci.h"
 
@@ -524,13 +525,37 @@ static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
     if (g_fds[fd].streaming)
         return clvm_vm_push(vm, -1) ? 0 : -1;
     end = g_fds[fd].pos + (uint32_t)n;
-    if (end > g_fds[fd].cap)
-        return clvm_vm_push(vm, -1) ? 0 : -1;
+    if (end > g_fds[fd].cap) {
+        uint32_t ncap = g_fds[fd].cap;
+        uint8_t *nb;
+        uint32_t i;
+        if (ncap < 4096u)
+            ncap = 4096u;
+        while (ncap < end) {
+            if (ncap >= 1024u * 1024u)
+                return clvm_vm_push(vm, -1) ? 0 : -1;
+            ncap *= 2u;
+        }
+        nb = (uint8_t *)kmalloc(ncap);
+        if (!nb)
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        for (i = 0; i < g_fds[fd].size && g_fds[fd].buf; ++i)
+            nb[i] = g_fds[fd].buf[i];
+        if (g_fds[fd].buf)
+            kfree(g_fds[fd].buf);
+        g_fds[fd].buf = nb;
+        g_fds[fd].cap = ncap;
+    }
     if (n && !vm_copy_in(vm, addr, n, g_fds[fd].buf + g_fds[fd].pos))
         return clvm_vm_push(vm, -1) ? 0 : -1;
-    g_fds[fd].pos += (uint32_t)n;
-    if (g_fds[fd].pos > g_fds[fd].size)
-        g_fds[fd].size = g_fds[fd].pos;
+    {
+        uint32_t start = g_fds[fd].pos;
+        g_fds[fd].pos += (uint32_t)n;
+        if (start == 0)
+            g_fds[fd].size = g_fds[fd].pos;
+        else if (g_fds[fd].pos > g_fds[fd].size)
+            g_fds[fd].size = g_fds[fd].pos;
+    }
     g_fds[fd].dirty = 1;
     return clvm_vm_push(vm, n) ? 0 : -1;
 }
@@ -1599,6 +1624,185 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, pci_read((uint8_t)bus, (uint8_t)dev, (uint8_t)fn,
                                            (uint8_t)off))
+                   ? 0
+                   : -1;
+    }
+    case 210: {
+        int64_t bus, dev, fn, off, val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
+            !clvm_vm_pop64(vm, &fn) || !clvm_vm_pop64(vm, &dev) ||
+            !clvm_vm_pop64(vm, &bus))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_pci_write((int)bus, (int)dev, (int)fn,
+                                               (int)off, (uint32_t)val))
+                   ? 0
+                   : -1;
+    }
+    case 211: {
+        int64_t bus, dev, fn, bar;
+        if (!clvm_vm_pop64(vm, &bar) || !clvm_vm_pop64(vm, &fn) ||
+            !clvm_vm_pop64(vm, &dev) || !clvm_vm_pop64(vm, &bus))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_bar_map((int)bus, (int)dev, (int)fn,
+                                             (int)bar))
+                   ? 0
+                   : -1;
+    }
+    case 212: {
+        int64_t win, off;
+        if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &win))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_mmio_r32((int)win, (uint32_t)off)) ? 0 : -1;
+    }
+    case 213: {
+        int64_t win, off, val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
+            !clvm_vm_pop64(vm, &win))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_mmio_w32((int)win, (uint32_t)off,
+                                              (uint32_t)val))
+                   ? 0
+                   : -1;
+    }
+    case 214: {
+        int64_t win, off;
+        if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &win))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_mmio_r8((int)win, (uint32_t)off)) ? 0 : -1;
+    }
+    case 215: {
+        int64_t win, off, val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
+            !clvm_vm_pop64(vm, &win))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_mmio_w8((int)win, (uint32_t)off,
+                                             (uint32_t)val))
+                   ? 0
+                   : -1;
+    }
+    case 216: {
+        int64_t win, off;
+        if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &win))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_mmio_r16((int)win, (uint32_t)off)) ? 0 : -1;
+    }
+    case 217: {
+        int64_t win, off, val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
+            !clvm_vm_pop64(vm, &win))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_mmio_w16((int)win, (uint32_t)off,
+                                              (uint32_t)val))
+                   ? 0
+                   : -1;
+    }
+    case 218: {
+        int64_t pages;
+        if (!clvm_vm_pop64(vm, &pages))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_dma_alloc((int)pages)) ? 0 : -1;
+    }
+    case 219: {
+        int64_t id;
+        if (!clvm_vm_pop64(vm, &id))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_dma_lo((int)id)) ? 0 : -1;
+    }
+    case 220: {
+        int64_t id;
+        if (!clvm_vm_pop64(vm, &id))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_dma_hi((int)id)) ? 0 : -1;
+    }
+    case 221: {
+        int64_t id, off, val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
+            !clvm_vm_pop64(vm, &id))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_dma_w32((int)id, (uint32_t)off,
+                                             (uint32_t)val))
+                   ? 0
+                   : -1;
+    }
+    case 222: {
+        int64_t id, off;
+        if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &id))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_dma_r32((int)id, (uint32_t)off)) ? 0 : -1;
+    }
+    case 223:
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_disk_sectors()) ? 0 : -1;
+    case 224: {
+        int64_t lba, ptr, nsec;
+        uint8_t tmp[4096];
+        if (!clvm_vm_pop64(vm, &nsec) || !clvm_vm_pop64(vm, &ptr) ||
+            !clvm_vm_pop64(vm, &lba))
+            return -1;
+        if (!drv_allowed(vm) || nsec < 1 || nsec > 8)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        if (hw_disk_read((uint32_t)lba, tmp, (int)nsec) != 0)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        if (!guest_write(vm, (uint64_t)ptr, tmp, (int)nsec * 512))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 225: {
+        int64_t lba, ptr, nsec;
+        uint8_t tmp[4096];
+        if (!clvm_vm_pop64(vm, &nsec) || !clvm_vm_pop64(vm, &ptr) ||
+            !clvm_vm_pop64(vm, &lba))
+            return -1;
+        if (!drv_allowed(vm) || nsec < 1 || nsec > 8)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        if (!guest_read(vm, (uint64_t)ptr, tmp, (int)nsec * 512))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_disk_write((uint32_t)lba, tmp, (int)nsec))
+                   ? 0
+                   : -1;
+    }
+    case 226:
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_disk_format()) ? 0 : -1;
+    case 227: {
+        int64_t q, cmd, fb, w, h, nwin, noff;
+        if (!clvm_vm_pop64(vm, &noff) || !clvm_vm_pop64(vm, &nwin) ||
+            !clvm_vm_pop64(vm, &h) || !clvm_vm_pop64(vm, &w) ||
+            !clvm_vm_pop64(vm, &fb) || !clvm_vm_pop64(vm, &cmd) ||
+            !clvm_vm_pop64(vm, &q))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, hw_gpu_arm((int)q, (int)cmd, (int)fb, (int)w,
+                                             (int)h, (int)nwin, (uint32_t)noff))
                    ? 0
                    : -1;
     }

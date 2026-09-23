@@ -57,6 +57,7 @@ typedef struct ClsLoaded {
     int lib_id;
     ClsImage img;
     uint8_t *code_buf;
+    uint32_t code_cap;
     uint8_t *data_buf;
     uint32_t tramp[CLS_MAX_EXPORTS];
     uint32_t type_base;

@@ -148,3 +148,21 @@ int storage_ready(void) {
 Cfs *storage_cfs(void) {
     return g_ready ? &g_cfs : 0;
 }
+
+BlockDevice *storage_disk(void) {
+    return g_ready ? &g_disk : 0;
+}
+
+int storage_reformat(void) {
+    int rc;
+
+    if (!g_ready) {
+        return -1;
+    }
+    rc = cfs_format(&g_disk);
+    if (rc != CFS_OK) {
+        return rc;
+    }
+    rc = cfs_mount(&g_cfs, &g_disk);
+    return rc == CFS_OK ? 0 : rc;
+}
