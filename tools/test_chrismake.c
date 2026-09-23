@@ -73,6 +73,20 @@ int main(void) {
             return 1;
         }
     }
+    {
+        char err[160];
+        g_ran[0] = 0;
+        err[0] = 0;
+        if (!chrismake_run("all:\n", "Auto.CLV", rec_cb, 0, err,
+                           (int)sizeof(err))) {
+            fprintf(stderr, "test_chrismake: implicit failed %s\n", err);
+            return 1;
+        }
+        if (strcmp(g_ran, "cc -c Auto.LST") != 0) {
+            fprintf(stderr, "test_chrismake: implicit ran '%s'\n", g_ran);
+            return 1;
+        }
+    }
     printf("test_chrismake: ok\n");
     return 0;
 }

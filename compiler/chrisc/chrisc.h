@@ -36,6 +36,8 @@ typedef struct ChrisResult {
 } ChrisResult;
 
 typedef int (*ChriscReadFn)(void *user, const char *path, char *out, int cap);
+typedef void (*ChriscProgressFn)(void *user, int index, int total,
+                                const char *path);
 
 int chrisc_compile(const char *source, size_t source_size,
                    uint8_t *code, size_t code_cap, ChrisResult *result);
@@ -45,4 +47,8 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
 int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
                          void *user, uint8_t *code, size_t code_cap,
                          ChrisResult *result);
+int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
+                            void *user, uint8_t *code, size_t code_cap,
+                            ChrisResult *result, ChriscProgressFn progress,
+                            void *progress_user);
 #endif

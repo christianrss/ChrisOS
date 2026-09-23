@@ -36,7 +36,7 @@
 #define CFS_DIRENT_SIZE        80u
 #define CFS_NAME_MAX           64u
 #define CFS_DIRENTS_PER_SECTOR (STOR_SECTOR_SIZE / CFS_DIRENT_SIZE)
-#define CFS_CACHE_LINES        16u
+#define CFS_CACHE_LINES        64u
 
 #if CFS_INODE_SIZE * CFS_INODE_COUNT != CFS_INODE_SECTORS * STOR_SECTOR_SIZE
 #error "inode table geometry is inconsistent"

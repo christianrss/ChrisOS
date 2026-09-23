@@ -5,7 +5,7 @@ import signal
 import subprocess
 import time
 
-ROOT = "/mnt/e/Aulas/ChrisOS"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 LOG = "/tmp/chrisos_doom_serial.log"
 os.chdir(ROOT)
 
@@ -65,20 +65,16 @@ print(f"SERIAL_BYTES={len(text.encode('latin1', errors='replace'))}")
 for ln in lines[-120:]:
     print(ln)
 
-ok = (
-    "jit: native ready" in text
-    or "run: started jit" in text
-    or "run: jit ready" in text
+fatal = (
+    "jit: native emit failed",
+    "jit: alloc failed",
+    "run: FAULT",
+    "run: doom fault",
+    "PANIC",
 )
-past_hang = "jit: alloc map done" in text or "jit: nat clear done" in text
-if ok:
+ok = "jit: native ready" in text or "run: started jit" in text
+if ok and not any(marker in text for marker in fatal):
     print("OK: doom jit ready")
-    raise SystemExit(0)
-if past_hang and ("jit: emit pc=" in text or "jit: native compiling" in text):
-    print("OK: past hang; compile progressing on TCG")
-    raise SystemExit(0)
-if "boot: SYS/SMOKE.DOOM" in text and "jit: alloc begin" in text:
-    print("OK: entered alloc (contig path live)")
     raise SystemExit(0)
 print("FAIL: doom jit smoke")
 raise SystemExit(1)

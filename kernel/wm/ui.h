@@ -31,6 +31,7 @@ bool ui_window_ex(Task *task, uint32_t body_color, const char *title,
                   int fill_body);
 void ui_draw_taskbar(void);
 TaskbarAction ui_take_taskbar_action(void);
+void ui_undraw_cursor(void);
 void ui_draw_cursor(void);
 
 #endif

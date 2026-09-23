@@ -450,6 +450,18 @@ static int chrisc_fs_read(void *user, const char *path, char *out, int cap) {
     return n;
 }
 
+static void chrisc_serial_progress(void *user, int index, int total,
+                                   const char *path) {
+    (void)user;
+    serial_puts("cc: [");
+    serial_write_u64((uint64_t)(uint32_t)(index + 1));
+    serial_puts("/");
+    serial_write_u64((uint64_t)(uint32_t)total);
+    serial_puts("] ");
+    serial_puts(path ? path : "?");
+    serial_puts("\n");
+}
+
 static void diag_status(Editor *e, int line, int col, const char *message) {
     int n = 0;
     e->status[0] = 0;
@@ -565,14 +577,6 @@ static void lang_attach_slot_ram(int i, const ClvmImage *image) {
             copy = want;
         for (n = 0; n < copy; ++n)
             p[n] = slots[i].vm.memory[n];
-    }
-    /* Doom-sized heaps: ensure ctor-list globals start clear. */
-    if (want >= (16ull * 1024ull * 1024ull) && want > 271276u) {
-        uint64_t zi;
-        for (zi = 270540u; zi < 270540u + 8u; zi++)
-            p[zi] = 0;
-        for (zi = 271268u; zi < 271268u + 8u; zi++)
-            p[zi] = 0;
     }
     slots[i].heap_ram = p;
     slots[i].heap_ram_sz = want;
@@ -1096,9 +1100,13 @@ int lang_compile_many(const char **paths, int npaths) {
         return 0;
     if (!output_name(paths[0], outn))
         return 0;
-    if (!chrisc_compile_files(paths, npaths, chrisc_fs_read, 0, code_buffer,
-                              sizeof(code_buffer), &g_chris_result)) {
+    if (!chrisc_compile_files_ex(paths, npaths, chrisc_fs_read, 0, code_buffer,
+                                 sizeof(code_buffer), &g_chris_result,
+                                 chrisc_serial_progress, 0)) {
         set_err_diag(&g_chris_result.diag);
+        serial_puts("cc: ");
+        serial_puts(g_last_err[0] ? g_last_err : "compile failed");
+        serial_puts("\n");
         return 0;
     }
     return emit_game_clv(outn);
@@ -1152,9 +1160,13 @@ int lang_compile_list(const char *lst_path) {
     if (npaths < 1)
         return 0;
     clear_last_lang();
-    if (!chrisc_compile_files(pp, npaths, chrisc_fs_read, 0, code_buffer,
-                              sizeof(code_buffer), &g_chris_result)) {
+    if (!chrisc_compile_files_ex(pp, npaths, chrisc_fs_read, 0, code_buffer,
+                                 sizeof(code_buffer), &g_chris_result,
+                                 chrisc_serial_progress, 0)) {
         set_err_diag(&g_chris_result.diag);
+        serial_puts("cc: ");
+        serial_puts(g_last_err[0] ? g_last_err : "compile failed");
+        serial_puts("\n");
         return 0;
     }
     {
@@ -1327,70 +1339,7 @@ void lang_tick(uint32_t now) {
                         serial_write_u64(
                             (uint64_t)slots[i].vm.stack[slots[i].vm.sp - 1u]);
                     }
-                    if (slots[i].vm.memory && slots[i].vm.mem_size > 271276u) {
-                        uint64_t g540 = 0, g268 = 0, n0 = 0, n8 = 0, n12 = 0, msz;
-                        int bi;
-                        msz = slots[i].vm.mem_size;
-                        for (bi = 0; bi < 8; bi++) {
-                            g540 |= (uint64_t)slots[i].vm.memory[270540u + (uint32_t)bi]
-                                    << (8 * bi);
-                            g268 |= (uint64_t)slots[i].vm.memory[271268u + (uint32_t)bi]
-                                    << (8 * bi);
-                        }
-                        if (g540 && g540 + 20u < msz) {
-                            for (bi = 0; bi < 8; bi++) {
-                                n0 |= (uint64_t)slots[i].vm.memory[(uint32_t)g540 + (uint32_t)bi]
-                                      << (8 * bi);
-                                n12 |= (uint64_t)slots[i].vm.memory[(uint32_t)g540 + 12u + (uint32_t)bi]
-                                       << (8 * bi);
-                            }
-                            for (bi = 0; bi < 4; bi++)
-                                n8 |= (uint64_t)slots[i].vm.memory[(uint32_t)g540 + 8u + (uint32_t)bi]
-                                      << (8 * bi);
-                        }
-                        serial_puts(" msz=");
-                        serial_write_u64(msz);
-                        serial_puts(" g540=");
-                        serial_write_u64(g540);
-                        serial_puts(" g268=");
-                        serial_write_u64(g268);
-                        serial_puts(" n0=");
-                        serial_write_u64(n0);
-                        serial_puts(" n8=");
-                        serial_write_u64(n8);
-                        serial_puts(" n12=");
-                        serial_write_u64(n12);
-                    }
                     serial_puts("\n");
-                    /* Doom ctor-list walk: a corrupt `next` pointer ends up OOB.
-                     * Clear the cursor and resume so init can finish. */
-                    if (slots[i].use_jit &&
-                        slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull) &&
-                        slots[i].vm.pc >= 131142u && slots[i].vm.pc <= 131210u &&
-                        slots[i].vm.fault == CLVM_FAULT_BAD_ADDRESS &&
-                        slots[i].vm.memory &&
-                        slots[i].vm.mem_size > 271276u) {
-                        uint64_t head = 0;
-                        int bi;
-                        for (bi = 0; bi < 8; bi++)
-                            head |= (uint64_t)slots[i].vm.memory[270540u + (uint32_t)bi]
-                                    << (8 * bi);
-                        serial_puts("run: repair ctor list cursor\n");
-                        /* Drop the whole list — remaining nodes have corrupt next. */
-                        for (bi = 0; bi < 8; bi++) {
-                            slots[i].vm.memory[270540u + (uint32_t)bi] = 0;
-                            slots[i].vm.memory[271268u + (uint32_t)bi] = 0;
-                        }
-                        if (head && head + 20u < slots[i].vm.mem_size) {
-                            for (bi = 0; bi < 8; bi++)
-                                slots[i].vm.memory[(uint32_t)head + 12u + (uint32_t)bi] = 0;
-                        }
-                        slots[i].vm.state = CLVM_READY;
-                        slots[i].vm.fault = CLVM_FAULT_NONE;
-                        slots[i].vm.pc = 131210u; /* exit walk */
-                        slots[i].vm.sp = 0;
-                        continue;
-                    }
                     /* Doom-sized: never drop to interpreter (too slow / state
                      * already partial). Kill on unexpected fault. */
                     if (slots[i].use_jit &&

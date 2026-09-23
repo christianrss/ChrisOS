@@ -29,6 +29,7 @@ void main() {
       text(16, 150, "Active: US", 0x0000FF80);
     }
     text(16, 178, "Saved to SYS/KB.CFG", 0x008090A0);
+    text(16, win_h() - 28, "layout persists across reboot", 0x00607080);
     if (win_click(16, 100, 160, 28)) {
       kb_layout(0);
       g_layout = 0;

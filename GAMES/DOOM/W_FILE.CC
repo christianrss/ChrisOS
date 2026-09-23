@@ -25,9 +25,14 @@ struct chris_wad *W_OpenFile(char *path) {
     w->mapped = 0;
     w->length = len > 0 ? len : 0;
     if (w->length == 0) {
-        /* fsize can fail on ./paths; fall back to known WAD size via read. */
-        printf("W_OpenFile warn fsize=%d\n", len);
+        printf("W_OpenFile invalid size=%d\n", len);
+        fclose(fd);
+        free(w);
+        return 0;
     }
+    w->fd = fd;
+    return w;
+}
 
 void W_CloseFile(struct chris_wad *wad) {
     if (!wad)

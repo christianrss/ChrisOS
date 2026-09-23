@@ -2,7 +2,7 @@
 #ifndef CHRIS_EDITOR_H
 #define CHRIS_EDITOR_H
 
-#define ED_MAX_LINES 256
+#define ED_MAX_LINES 512
 #define ED_MAX_COLS 128
 #define ED_TAB_SPACES 4
 #define ED_LEFT  1
@@ -32,6 +32,7 @@ int ed_handle(Editor *e, int key);
 void ed_get_text(const Editor *e, char *out, int out_cap);
 void ed_set_name(Editor *e, const char *name);
 int ed_load_text(Editor *e, const char *text);
+void ed_auto_scroll(Editor *e, int visible_rows, int visible_cols);
 void ed_set_status(Editor *e, const char *msg);
 int ed_is_dirty(const Editor *e);
 const char *ed_name(const Editor *e);

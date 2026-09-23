@@ -4,10 +4,15 @@
 #include "clvm_sys.h"
 #include "font.h"
 #include "graphics.h"
+#include "input.h"
 #include "lang_pipeline.h"
 #include "task.h"
+#include "ui.h"
 
 static int g_window_cascade = 1;
+
+#define APP_CHROME_H 20
+#define APP_BTN_W 22
 
 static void app_title(char *dst, const char *name) {
     int i = 0;
@@ -30,29 +35,174 @@ static void app_title(char *dst, const char *name) {
     dst[i] = 0;
 }
 
-#define APP_CHROME_H 20
+static int app_is_game(int gw, int gh) {
+    return gw > 0 && gh > 0 && gw <= CLVM_SYS_GAME_W + 32 &&
+           gh <= CLVM_SYS_GAME_H + 32;
+}
 
-static void app_draw_chrome(Task *task, int gw) {
+static int app_game_chrome(Task *task, int slot) {
+    InputMouse mouse;
     int x;
     int y;
     int w;
+    int h;
+    int close_bx;
+    int max_bx;
+    int min_bx;
+    int close_w = APP_BTN_W;
+    bool close_hover;
+    bool max_hover;
+    bool min_hover;
+    bool title_hover;
+    bool resize_hover;
     const char *title;
-    if (!task) {
-        return;
+
+    if (!task || !task->active) {
+        return 1;
     }
+
+    mouse = input_mouse_snapshot();
     x = task->frame.x;
     y = task->frame.y;
-    w = gw > 0 ? gw : task->frame.width;
-    if (w < 64) {
-        w = 64;
+    w = task->frame.width;
+    h = task->frame.body_height;
+    if (w < close_w * 3 + 8) {
+        close_w = w / 3;
+        if (close_w < 16) {
+            close_w = 16;
+        }
     }
+    close_bx = x + w - close_w;
+    max_bx = close_bx - close_w;
+    min_bx = max_bx - close_w;
+    close_hover = ui_hit_rect(mouse.x, mouse.y, close_bx, y, close_w,
+                              APP_CHROME_H);
+    max_hover = ui_hit_rect(mouse.x, mouse.y, max_bx, y, close_w, APP_CHROME_H);
+    min_hover = ui_hit_rect(mouse.x, mouse.y, min_bx, y, close_w, APP_CHROME_H);
+    title_hover = task_is_focused(task) &&
+                  ui_hit_rect(mouse.x, mouse.y, x, y, w - close_w * 3,
+                              APP_CHROME_H);
+    resize_hover = task_is_focused(task) &&
+                   task->window.mode == TASK_WINDOW_NORMAL &&
+                   ui_hit_rect(mouse.x, mouse.y, x + w - 8, y + h - 8, 8, 8);
+
+    if (!mouse.left_down) {
+        task->window.dragging = false;
+        task->window.resizing = false;
+    }
+
+    if (task->window.resizing && mouse.left_down) {
+        int nw = task->window.resize_start.width + mouse.x -
+                 task->window.resize_mouse_x;
+        int nh = task->window.resize_start.body_height + mouse.y -
+                 task->window.resize_mouse_y;
+        if (nw < 160) {
+            nw = 160;
+        }
+        if (nh < APP_CHROME_H + 80) {
+            nh = APP_CHROME_H + 80;
+        }
+        if (x + nw > g_gfx.width) {
+            nw = g_gfx.width - x;
+        }
+        if (y + nh > g_gfx.height - UI_TASKBAR_HEIGHT) {
+            nh = g_gfx.height - UI_TASKBAR_HEIGHT - y;
+        }
+        if (nh < APP_CHROME_H + 40) {
+            nh = APP_CHROME_H + 40;
+        }
+        task_resize(task->id, nw, nh);
+        w = task->frame.width;
+        h = task->frame.body_height;
+    } else if (task->window.dragging && mouse.left_down) {
+        int nx = mouse.x - task->window.drag_offset_x;
+        int ny = mouse.y - task->window.drag_offset_y;
+        if (ny < 0) {
+            ny = 0;
+        }
+        if (nx < 0) {
+            nx = 0;
+        }
+        if (nx + task->frame.width > g_gfx.width) {
+            nx = g_gfx.width - task->frame.width;
+        }
+        if (ny + task->frame.body_height > g_gfx.height - UI_TASKBAR_HEIGHT) {
+            ny = g_gfx.height - UI_TASKBAR_HEIGHT - task->frame.body_height;
+            if (ny < 0) {
+                ny = 0;
+            }
+        }
+        task_move(task->id, nx, ny);
+        x = task->frame.x;
+        y = task->frame.y;
+        w = task->frame.width;
+        h = task->frame.body_height;
+        close_bx = x + w - close_w;
+        max_bx = close_bx - close_w;
+        min_bx = max_bx - close_w;
+    } else if (resize_hover && input_left_pressed()) {
+        task->window.resizing = true;
+        task->window.resize_mouse_x = mouse.x;
+        task->window.resize_mouse_y = mouse.y;
+        task->window.resize_start = task->frame;
+        input_consume_left_press();
+    } else if (title_hover && input_left_pressed()) {
+        task->window.dragging = true;
+        task->window.drag_offset_x = mouse.x - x;
+        task->window.drag_offset_y = mouse.y - y;
+        input_consume_left_press();
+    }
+
     gfx_fill_rect(x, y, w, APP_CHROME_H, 0x00306090u);
-    gfx_fill_rect(x + w - 22, y, 22, APP_CHROME_H, 0x00C02828u);
     title = task_title(task);
-    gfx_draw_text(font_row, font_arial_width, font_arial_height, title, x + 6,
-                  y + 3, 0x00FFFFFFu);
-    gfx_draw_text(font_row, font_arial_width, font_arial_height, "X",
-                  x + w - 15, y + 3, 0x00FFFFFFu);
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, title,
+                          x + 6, y + 3, 0x00FFFFFFu, x, y, w - close_w * 3,
+                          APP_CHROME_H);
+    gfx_fill_rect(min_bx, y, close_w, APP_CHROME_H,
+                  min_hover ? 0x006080A0u : 0x00406080u);
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, "_",
+                          min_bx + 6, y + 2, 0x00FFFFFFu, min_bx, y, close_w,
+                          APP_CHROME_H);
+    gfx_fill_rect(max_bx, y, close_w, APP_CHROME_H,
+                  max_hover ? 0x006080A0u : 0x00406080u);
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
+                          task->window.mode == TASK_WINDOW_MAXIMIZED ? "R" : "M",
+                          max_bx + 6, y + 2, 0x00FFFFFFu, max_bx, y, close_w,
+                          APP_CHROME_H);
+    gfx_fill_rect(close_bx, y, close_w, APP_CHROME_H,
+                  close_hover ? 0x00FF4444u : 0x00C02828u);
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, "X",
+                          close_bx + 6, y + 2, 0x00FFFFFFu, close_bx, y, close_w,
+                          APP_CHROME_H);
+    gfx_fill_rect(x + w - 8, y + h - 8, 8, 8, 0x007090B0u);
+
+    if (close_hover && input_left_pressed()) {
+        input_consume_left_press();
+        task_close(task->id);
+        lang_slot_request_close(slot);
+        return 1;
+    }
+    if (max_hover && input_left_pressed()) {
+        if (task->window.mode == TASK_WINDOW_MAXIMIZED) {
+            task_restore(task->id);
+        } else {
+            TaskRect bounds;
+            bounds.x = 0;
+            bounds.y = 0;
+            bounds.width = g_gfx.width;
+            bounds.body_height = g_gfx.height - UI_TASKBAR_HEIGHT;
+            if (bounds.body_height < APP_CHROME_H + 80) {
+                bounds.body_height = APP_CHROME_H + 80;
+            }
+            task_maximize(task->id, bounds);
+        }
+        input_consume_left_press();
+    } else if (min_hover && input_left_pressed()) {
+        input_consume_left_press();
+        task_minimize(task->id);
+        return 1;
+    }
+    return 0;
 }
 
 static void app_run(Task *task, uint64_t ticks) {
@@ -60,10 +210,11 @@ static void app_run(Task *task, uint64_t ticks) {
     uint32_t *pix;
     int gw;
     int gh;
-    int bh;
-    int remain;
-    int chrome;
-    int by;
+    int game;
+    int cx;
+    int cy;
+    int cw;
+    int ch;
     (void)ticks;
     if (!task) {
         return;
@@ -79,34 +230,35 @@ static void app_run(Task *task, uint64_t ticks) {
     }
     gw = lang_slot_w(slot);
     gh = lang_slot_h(slot);
-    /* Title chrome only for classic game buffers (not win_begin UI apps). */
-    chrome = (gw <= CLVM_SYS_GAME_W + 32 && gh <= CLVM_SYS_GAME_H + 32)
-                 ? APP_CHROME_H
-                 : 0;
-    /* Keep surface width 1:1 with pixel buffer — never stretch. */
+    game = app_is_game(gw, gh);
+    if (game) {
+        if (app_game_chrome(task, slot)) {
+            return;
+        }
+        if (task->window.mode == TASK_WINDOW_MINIMIZED) {
+            return;
+        }
+        cx = task->frame.x;
+        cy = task->frame.y + APP_CHROME_H;
+        cw = task->frame.width;
+        ch = task->frame.body_height - APP_CHROME_H;
+        if (cw < 1) {
+            cw = 1;
+        }
+        if (ch < 1) {
+            ch = 1;
+        }
+        clvm_sys_blit_scaled(pix, gw, gh, cx, cy, cw, ch);
+        return;
+    }
+    /* UI apps draw their own chrome; keep the slot 1:1 with the frame. */
     if (task->frame.width != gw) {
         task->frame.width = gw;
     }
-    if (task->frame.body_height != gh + chrome) {
-        task->frame.body_height = gh + chrome;
+    if (task->frame.body_height != gh) {
+        task->frame.body_height = gh;
     }
-    if (chrome > 0) {
-        app_draw_chrome(task, gw);
-    }
-    by = task->frame.y + chrome;
-    bh = gh;
-    if (by < g_gfx.height) {
-        remain = g_gfx.height - by;
-        if (bh > remain) {
-            bh = remain;
-        }
-    } else {
-        return;
-    }
-    if (bh < 1) {
-        return;
-    }
-    clvm_sys_blit_to(pix, task->frame.x, by, gw, gh, gw, bh);
+    clvm_sys_blit_to(pix, task->frame.x, task->frame.y, gw, gh, gw, gh);
 }
 
 void app_window_open(int lang_slot, const char *title) {
@@ -118,6 +270,7 @@ void app_window_open(int lang_slot, const char *title) {
     int gw;
     int gh;
     int offset;
+    int game;
 
     app_title(named, title);
     for (i = 0; i < task_count(); i++) {
@@ -136,6 +289,7 @@ void app_window_open(int lang_slot, const char *title) {
     if (gh < 32) {
         gh = CLVM_SYS_GAME_H;
     }
+    game = app_is_game(gw, gh);
     if (gw >= g_gfx.width && gh >= g_gfx.height) {
         frame.x = 0;
         frame.y = 0;
@@ -143,20 +297,33 @@ void app_window_open(int lang_slot, const char *title) {
         frame.body_height = gh;
     } else {
         offset = g_window_cascade * 28;
-        /* Prefer the right half so Go-spawned games are not buried under Editor. */
-        frame.x = g_gfx.width - gw - 48 - (offset % 56);
+        if (game) {
+            frame.width = gw * 2;
+            frame.body_height = gh * 2 + APP_CHROME_H;
+            if (frame.width > g_gfx.width - 48) {
+                frame.width = g_gfx.width - 48;
+            }
+            if (frame.body_height > g_gfx.height - UI_TASKBAR_HEIGHT - 48) {
+                frame.body_height = g_gfx.height - UI_TASKBAR_HEIGHT - 48;
+            }
+            if (frame.width < gw) {
+                frame.width = gw;
+            }
+            if (frame.body_height < gh + APP_CHROME_H) {
+                frame.body_height = gh + APP_CHROME_H;
+            }
+        } else {
+            frame.width = gw;
+            frame.body_height = gh;
+        }
+        frame.x = g_gfx.width - frame.width - 48 - (offset % 56);
         if (frame.x < 48) {
             frame.x = 48 + offset;
         }
         frame.y = 48 + offset;
-        if (frame.y + gh + APP_CHROME_H > g_gfx.height - 48) {
-            frame.y = 48;
+        if (frame.y + frame.body_height > g_gfx.height - UI_TASKBAR_HEIGHT) {
+            frame.y = 8;
         }
-        frame.width = gw;
-        frame.body_height =
-            gh + ((gw <= CLVM_SYS_GAME_W + 32 && gh <= CLVM_SYS_GAME_H + 32)
-                      ? APP_CHROME_H
-                      : 0);
         ++g_window_cascade;
         if (g_window_cascade > 8) {
             g_window_cascade = 1;

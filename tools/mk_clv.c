@@ -7,7 +7,7 @@
 #include "cls.h"
 
 #define MK_MAX_PATHS 128
-#define MK_CODE_MAX (2u * 1024u * 1024u)
+#define MK_CODE_MAX (4u * 1024u * 1024u)
 #define MK_FILE_MAX (CLVM_HEADER_SIZE_V2 + MK_CODE_MAX)
 
 static int read_file(void *user, const char *path, char *out, int cap) {
@@ -21,6 +21,13 @@ static int read_file(void *user, const char *path, char *out, int cap) {
     fclose(f);
     out[n] = 0;
     return (int)n;
+}
+
+static void compile_progress(void *user, int index, int total,
+                             const char *path) {
+    (void)user;
+    fprintf(stderr, "mk_clv: [%d/%d] %s\n", index + 1, total,
+            path ? path : "?");
 }
 
 static int load_lst(const char *lst_path, const char **pp, char paths[][160],
@@ -188,8 +195,8 @@ int main(int argc, char **argv) {
         return 1;
     }
     memset(&res, 0, sizeof(res));
-    if (!chrisc_compile_files(pp, npaths, read_file, 0, code, MK_CODE_MAX,
-                              &res)) {
+    if (!chrisc_compile_files_ex(pp, npaths, read_file, 0, code, MK_CODE_MAX,
+                                 &res, compile_progress, 0)) {
         fprintf(stderr, "%s:%d:%d %s\n", res.diag.file, res.diag.line,
                 res.diag.column, res.diag.message);
         free(code);

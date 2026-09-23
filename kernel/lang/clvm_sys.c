@@ -14,6 +14,7 @@
 #include "heap.h"
 #include "math3d.h"
 #include "mesh.h"
+#include "pmm.h"
 #include "shade.h"
 #include "speaker.h"
 #include "storage.h"
@@ -51,6 +52,7 @@ typedef struct ClvmFile {
     int used;
     int slot;
     int dirty;
+    int streaming;
     uint32_t size;
     uint32_t pos;
     uint32_t cap;
@@ -266,18 +268,24 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
         serial_puts("fopen: missing\n");
         return clvm_vm_push(vm, -1) ? 0 : -1;
     }
-    cap = CLVM_FD_CAP;
-    if (sz > 0) {
-        cap = sz;
+    g_fds[i].streaming = sz > CLVM_FD_CAP;
+    g_fds[i].buf = 0;
+    if (g_fds[i].streaming) {
+        cap = 0;
+        n = (int)sz;
+    } else {
+        cap = sz > 0 ? sz : CLVM_FD_CAP;
         if (cap > CLVM_FD_MAX_BYTES)
             cap = CLVM_FD_MAX_BYTES;
-    }
-    g_fds[i].buf = (uint8_t *)kmalloc(cap);
-    if (!g_fds[i].buf)
-        return clvm_vm_push(vm, -1) ? 0 : -1;
-    n = fs_read(path, g_fds[i].buf, (int)cap);
-    if (n < 0) {
-        n = 0;
+        g_fds[i].buf = (uint8_t *)kmalloc(cap);
+        if (!g_fds[i].buf)
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        n = fs_read(path, g_fds[i].buf, (int)cap);
+        if (n < 0) {
+            kfree(g_fds[i].buf);
+            g_fds[i].buf = 0;
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        }
     }
     {
         int k = 0;
@@ -309,6 +317,7 @@ static void fd_free(int i) {
     g_fds[i].buf = 0;
     g_fds[i].used = 0;
     g_fds[i].dirty = 0;
+    g_fds[i].streaming = 0;
 }
 
 static int sys_fclose(int32_t fd) {
@@ -325,9 +334,22 @@ static int sys_fread(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
         return clvm_vm_push(vm, -1) ? 0 : -1;
     left = g_fds[fd].size - g_fds[fd].pos;
     take = (uint32_t)n < left ? (uint32_t)n : left;
-    if (take && !vm_copy_out(vm, addr, (int32_t)take,
-                             g_fds[fd].buf + g_fds[fd].pos))
-        return clvm_vm_push(vm, -1) ? 0 : -1;
+    if (take) {
+        if (g_fds[fd].streaming) {
+            int got;
+            if (addr < 0 ||
+                (uint64_t)(uint32_t)addr + take > vm->mem_size)
+                return clvm_vm_push(vm, -1) ? 0 : -1;
+            got = fs_read_at(g_fds[fd].path, g_fds[fd].pos,
+                             vm->memory + (uint32_t)addr, (int)take);
+            if (got < 0)
+                return clvm_vm_push(vm, -1) ? 0 : -1;
+            take = (uint32_t)got;
+        } else if (!vm_copy_out(vm, addr, (int32_t)take,
+                                g_fds[fd].buf + g_fds[fd].pos)) {
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        }
+    }
     g_fds[fd].pos += take;
     return clvm_vm_push(vm, (int32_t)take) ? 0 : -1;
 }
@@ -353,6 +375,8 @@ static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
         return clvm_vm_push(vm, n) ? 0 : -1;
     }
     if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used || n < 0)
+        return clvm_vm_push(vm, -1) ? 0 : -1;
+    if (g_fds[fd].streaming)
         return clvm_vm_push(vm, -1) ? 0 : -1;
     end = g_fds[fd].pos + (uint32_t)n;
     if (end > g_fds[fd].cap)
@@ -1127,6 +1151,8 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     }
     case 82: {
         InputMouse m = input_mouse_snapshot();
+        Task *t = task_of_ctx(ctx);
+        int top;
         int32_t btn = 0;
         if (m.left_down) {
             btn |= 1;
@@ -1136,6 +1162,18 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         }
         if (m.middle_down) {
             btn |= 4;
+        }
+        top = task_id_at(m.x, m.y);
+        if (t && top >= 0 && top != t->id) {
+            btn = 0;
+        } else if (t && gw > 0 && gh > 0 &&
+                   gw <= CLVM_SYS_GAME_W + 32 && gh <= CLVM_SYS_GAME_H + 32) {
+            int cy = t->frame.y + TASK_TITLE_HEIGHT;
+            int cb = t->frame.y + t->frame.body_height;
+            if (m.y < cy || m.y >= cb || m.x < t->frame.x ||
+                m.x >= t->frame.x + t->frame.width) {
+                btn = 0;
+            }
         }
         if (!clvm_vm_push(vm, btn)) {
             return -1;
@@ -1192,17 +1230,11 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!t) {
             return 0;
         }
-        t->frame.x = a;
-        t->frame.y = b;
-        if (c > 0) {
-            t->frame.width = c;
-        }
-        if (d > 0) {
-            t->frame.body_height = d;
-        }
-        if (t->frame.y < 0) {
-            t->frame.y = 0;
-        }
+        if (b < 0)
+            b = 0;
+        task_move(t->id, a, b);
+        if (c > 0 && d > 0)
+            task_resize(t->id, c, d);
         return 0;
     }
     case 89: {
@@ -1214,11 +1246,9 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!t) {
             return 0;
         }
-        t->frame.x = a;
-        t->frame.y = b;
-        if (t->frame.y < 0) {
-            t->frame.y = 0;
-        }
+        if (b < 0)
+            b = 0;
+        task_move(t->id, a, b);
         return 0;
     }
     case 90: {
@@ -1240,6 +1270,88 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         }
         lang_slot_request_close(slot);
         return 0;
+    }
+    case 113: {
+        Task *t;
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a) || a <= 0 || b <= 0)
+            return -1;
+        if (clvm_gfx_viewport(ctx, a, b) != 0)
+            return -1;
+        t = task_of_ctx(ctx);
+        if (t)
+            task_resize(t->id, a, b);
+        return 0;
+    }
+    case 114: {
+        Task *t = task_of_ctx(ctx);
+        if (t)
+            task_minimize(t->id);
+        return 0;
+    }
+    case 115: {
+        Task *t;
+        TaskRect bounds;
+        if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
+            !pop_i32(vm, &a) || c <= 0 || d <= 0)
+            return -1;
+        if (clvm_gfx_viewport(ctx, c, d) != 0)
+            return -1;
+        t = task_of_ctx(ctx);
+        if (t) {
+            bounds.x = a;
+            bounds.y = b < 0 ? 0 : b;
+            bounds.width = c;
+            bounds.body_height = d;
+            task_maximize(t->id, bounds);
+        }
+        return 0;
+    }
+    case 116: {
+        Task *t;
+        if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
+            !pop_i32(vm, &a) || c <= 0 || d <= 0)
+            return -1;
+        if (clvm_gfx_viewport(ctx, c, d) != 0)
+            return -1;
+        t = task_of_ctx(ctx);
+        if (t) {
+            task_restore(t->id);
+            task_move(t->id, a, b < 0 ? 0 : b);
+            task_resize(t->id, c, d);
+        }
+        return 0;
+    }
+    case 117:
+        return clvm_vm_push(vm, (int32_t)(heap_used_bytes() / 1024u)) ? 0 : -1;
+    case 118:
+        return clvm_vm_push(vm, (int32_t)(heap_free_bytes() / 1024u)) ? 0 : -1;
+    case 119:
+        return clvm_vm_push(vm, (int32_t)pmm_free_pages()) ? 0 : -1;
+    case 120:
+        return clvm_vm_push(vm, (int32_t)bench_frame_p50_ms()) ? 0 : -1;
+    case 121:
+        return clvm_vm_push(vm, (int32_t)bench_frame_p95_ms()) ? 0 : -1;
+    case 122: {
+        Cfs *fs = storage_cfs();
+        return clvm_vm_push(vm, (int32_t)cfs_cache_hits(fs)) ? 0 : -1;
+    }
+    case 123: {
+        Cfs *fs = storage_cfs();
+        return clvm_vm_push(vm, (int32_t)cfs_cache_misses(fs)) ? 0 : -1;
+    }
+    case 124:
+        return clvm_vm_push(vm, lang_active_count()) ? 0 : -1;
+    case 125: {
+        Task *t;
+        if (!pop_i32(vm, &a)) {
+            return -1;
+        }
+        t = task_iter(a);
+        if (!t) {
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        }
+        task_raise(t->id);
+        return clvm_vm_push(vm, 1) ? 0 : -1;
     }
     case 92: {
         char path[FS_PATH];
@@ -1595,6 +1707,11 @@ void clvm_sys_blit_to(const uint32_t *src, int dx, int dy, int sw, int sh,
         const uint32_t *row = src + (size_t)y * (size_t)sw;
         gfx_fast_copy_u32(dst, row, dw);
     }
+}
+
+void clvm_sys_blit_scaled(const uint32_t *src, int sw, int sh, int dx, int dy,
+                          int dw, int dh) {
+    gfx_blit_scaled(src, sw, sh, dx, dy, dw, dh);
 }
 
 void clvm_sys_frame(uint32_t now) {

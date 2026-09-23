@@ -1,9 +1,10 @@
-/* ChrisOS Editor — mini-VI
+/* ChrisOS Editor ??? mini-VI
  * Modes: Normal / Insert / Command (: and /)
  * Esc=Normal  i/a/o=Insert  :w :q :wq :w path  /pat n N
  * hjkl arrows  0 $ gg G  x dd  Open SaveAs Compile Go
  */
-char g_buf[8192];
+int g_buf;
+int g_cap;
 int g_len;
 int g_cur;
 char g_path[96];
@@ -17,6 +18,9 @@ int g_cmd_kind;
 char g_find[64];
 char g_status[80];
 char g_lnum[8];
+char g_panel[512];
+char g_run[96];
+int g_err_line;
 int g_mode;
 int g_pending;
 int g_dirty;
@@ -31,6 +35,32 @@ int g_hscroll;
 int g_tscroll;
 int g_thscroll;
 int g_want_quit;
+int g_line_starts[2048];
+int g_line_states[2048];
+int g_line_count;
+int g_line_index_dirty;
+
+void ensure_line_index();
+void buf_init() {
+  if (g_buf == 0) {
+    g_cap = 262144;
+    g_buf = malloc(g_cap);
+    if (g_buf == 0) {
+      g_cap = 65536;
+      g_buf = malloc(g_cap);
+    }
+    if (g_buf == 0) {
+      g_cap = 8192;
+      g_buf = malloc(g_cap);
+    }
+  }
+  if (g_buf != 0) {
+    storeb(g_buf, 0);
+  }
+  g_len = 0;
+  storeb(g_panel, 0);
+  g_err_line = 0;
+}
 
 void str_set(int dst, int src) {
   int i;
@@ -364,22 +394,26 @@ int kw_len_at(int at) {
 void load_file() {
   int fd;
   int n;
+  if (g_buf == 0) {
+    g_msg = 8;
+    status_set("no buffer");
+    return;
+  }
   fd = fopen(g_path);
-  g_len = 0;
-  g_cur = 0;
-  storeb(g_buf, 0);
   if (fd < 0) {
     g_msg = 8;
     status_set("open fail");
     return;
   }
-  n = fread(fd, g_buf, 8191);
+  n = fread(fd, g_buf, g_cap - 1);
   fclose(fd);
   if (n < 0) {
     n = 0;
   }
   g_len = n;
   storeb(g_buf + g_len, 0);
+  g_cur = 0;
+  g_line_index_dirty = 1;
   g_msg = 0;
   g_browse = 0;
   g_saveas = 0;
@@ -405,6 +439,62 @@ void save_file() {
   status_set("written");
 }
 
+void capture_err() {
+  int i;
+  int n;
+  int c;
+  sys_err(g_err);
+  i = 0;
+  while (loadb(g_err + i) != 0) {
+    if (i < 500) {
+      storeb(g_panel + i, loadb(g_err + i));
+    }
+    i = i + 1;
+  }
+  if (i > 500) {
+    i = 500;
+  }
+  storeb(g_panel + i, 0);
+  g_err_line = 0;
+  i = 0;
+  while (loadb(g_err + i) != 0) {
+    if (loadb(g_err + i) == 58) {
+      n = 0;
+      i = i + 1;
+      while (1) {
+        c = loadb(g_err + i);
+        if (c >= 48) {
+          if (c <= 57) {
+            n = n * 10 + (c - 48);
+            i = i + 1;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+      if (n > 0) {
+        g_err_line = n;
+      }
+    } else {
+      i = i + 1;
+    }
+  }
+}
+
+void jump_line(int ln) {
+  ensure_line_index();
+  if (ln < 1) {
+    return;
+  }
+  if (ln > g_line_count) {
+    ln = g_line_count;
+  }
+  g_cur = g_line_starts[ln - 1];
+  ensure_view();
+}
+
 void do_compile() {
   int st;
   if (is_source() == 0) {
@@ -414,12 +504,29 @@ void do_compile() {
   }
   st = sys_cc(g_path);
   if (st == 0) {
-    sys_err(g_err);
+    capture_err();
     g_msg = 4;
     status_set(g_err);
   } else {
+    storeb(g_panel, 0);
+    g_err_line = 0;
     g_msg = 5;
     status_set("compile ok");
+  }
+}
+
+void do_make() {
+  int st;
+  st = sys_make("Makefile", "all");
+  if (st == 0) {
+    capture_err();
+    g_msg = 4;
+    status_set(g_err);
+  } else {
+    storeb(g_panel, 0);
+    g_err_line = 0;
+    g_msg = 5;
+    status_set("make ok");
   }
 }
 
@@ -460,10 +567,11 @@ void do_go() {
   storeb(out + dot + 4, 0);
   st = sys_run(out);
   if (st == 0) {
-    sys_err(g_err);
+    capture_err();
     g_msg = 6;
     status_set(g_err);
   } else {
+    storeb(g_panel, 0);
     g_msg = 7;
     status_set("running");
   }
@@ -564,7 +672,7 @@ void rebuild_index() {
   int got;
   g_ntotal = 0;
   i = 0;
-  while (i < 128) {
+  while (i < 512) {
     got = readdir(g_dir, i, g_ent);
     if (got <= 0) {
       return;
@@ -582,7 +690,7 @@ int entry_at(int want) {
   int n;
   n = 0;
   i = 0;
-  while (i < 128) {
+  while (i < 512) {
     got = readdir(g_dir, i, g_ent);
     if (got <= 0) {
       return 0;
@@ -598,67 +706,125 @@ int entry_at(int want) {
   return 0;
 }
 
-int count_lines() {
+void rebuild_line_index() {
   int i;
-  int n;
-  n = 1;
+  int c;
+  int in_str;
+  int in_lc;
+  int in_blk;
+  g_line_count = 1;
+  g_line_starts[0] = 0;
+  g_line_states[0] = 0;
+  in_str = 0;
+  in_lc = 0;
+  in_blk = 0;
   i = 0;
   while (i < g_len) {
-    if (loadb(g_buf + i) == 10) {
-      n = n + 1;
+    c = loadb(g_buf + i);
+    if (c == 10) {
+      in_str = 0;
+      in_lc = 0;
+      if (g_line_count < 2048) {
+        g_line_starts[g_line_count] = i + 1;
+        g_line_states[g_line_count] = in_blk * 2;
+        g_line_count = g_line_count + 1;
+      }
+    } else {
+      if (in_lc == 0) {
+        if (in_blk) {
+          if (c == 42) {
+            if (i + 1 < g_len) {
+              if (loadb(g_buf + i + 1) == 47) {
+                in_blk = 0;
+                i = i + 1;
+              }
+            }
+          }
+        } else {
+          if (in_str) {
+            if (c == 92) {
+              if (i + 1 < g_len) {
+                i = i + 1;
+              }
+            } else {
+              if (c == 34) {
+                in_str = 0;
+              }
+            }
+          } else {
+            if (c == 34) {
+              in_str = 1;
+            } else {
+              if (c == 47) {
+                if (i + 1 < g_len) {
+                  if (loadb(g_buf + i + 1) == 47) {
+                    in_lc = 1;
+                  }
+                  if (loadb(g_buf + i + 1) == 42) {
+                    in_blk = 1;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
     i = i + 1;
   }
-  if (g_len == 0) {
-    return 1;
-  }
-  return n;
+  g_line_index_dirty = 0;
 }
 
-int line_start(int p) {
+void ensure_line_index() {
+  if (g_line_index_dirty) {
+    rebuild_line_index();
+  }
+}
+
+int line_for_pos(int p) {
+  int lo;
+  int hi;
+  int mid;
+  ensure_line_index();
   if (p < 0) {
-    return 0;
+    p = 0;
   }
   if (p > g_len) {
     p = g_len;
   }
-  while (p > 0) {
-    if (loadb(g_buf + p - 1) == 10) {
-      return p;
+  lo = 0;
+  hi = g_line_count - 1;
+  while (lo < hi) {
+    mid = (lo + hi + 1) / 2;
+    if (g_line_starts[mid] <= p) {
+      lo = mid;
+    } else {
+      hi = mid - 1;
     }
-    p = p - 1;
   }
-  return 0;
+  return lo;
+}
+
+int count_lines() {
+  ensure_line_index();
+  return g_line_count;
+}
+
+int line_start(int p) {
+  return g_line_starts[line_for_pos(p)];
 }
 
 int line_end(int p) {
-  if (p < 0) {
-    p = 0;
-  }
-  while (p < g_len) {
-    if (loadb(g_buf + p) == 10) {
-      return p;
-    }
-    p = p + 1;
+  int line;
+  line = line_for_pos(p);
+  if (line + 1 < g_line_count) {
+    return g_line_starts[line + 1] - 1;
   }
   return g_len;
 }
 
 int cur_line_num() {
-  int i;
-  int n;
-  n = 1;
-  i = 0;
-  while (i < g_cur) {
-    if (i >= g_len) {
-      return n;
-    }
-    if (loadb(g_buf + i) == 10) {
-      n = n + 1;
-    }
-    i = i + 1;
-  }
-  return n;
+  return line_for_pos(g_cur) + 1;
 }
 
 int cur_col_num() {
@@ -677,7 +843,7 @@ void clamp_cur() {
 void ensure_view() {
   int ln;
   int view;
-  view = (win_h() - 68 - 34) / 16;
+  view = (win_h() - 68 - 90) / 16;
   if (view < 1) {
     view = 1;
   }
@@ -761,7 +927,7 @@ void move_down() {
 
 void insert_at(int ch) {
   int i;
-  if (g_len >= 8190) {
+  if (g_len >= g_cap - 2) {
     return;
   }
   i = g_len;
@@ -774,6 +940,7 @@ void insert_at(int ch) {
   storeb(g_buf + g_len, 0);
   g_cur = g_cur + 1;
   g_dirty = 1;
+  g_line_index_dirty = 1;
   ensure_view();
 }
 
@@ -790,6 +957,7 @@ void delete_at() {
   g_len = g_len - 1;
   storeb(g_buf + g_len, 0);
   g_dirty = 1;
+  g_line_index_dirty = 1;
 }
 
 void delete_line() {
@@ -818,6 +986,7 @@ void delete_line() {
     g_cur = g_len;
   }
   g_dirty = 1;
+  g_line_index_dirty = 1;
   ensure_view();
 }
 
@@ -961,7 +1130,7 @@ void run_colon() {
   if (c0 == 113) {
     if (c1 == 0) {
       if (g_dirty) {
-        status_set("unsaved — :q! to quit");
+        status_set("unsaved ??? :q! to quit");
         g_mode = 0;
         return;
       }
@@ -1302,6 +1471,31 @@ void draw_gutter_num(int x, int y, int num) {
   text(x, y, g_lnum, 0x00607080);
 }
 
+void flush_run(int x, int y, int n, int color) {
+  if (n < 1) {
+    return;
+  }
+  storeb(g_run + n, 0);
+  text(x, y, g_run, color);
+}
+
+void draw_panel() {
+  int y;
+  int h;
+  h = 56;
+  y = win_h() - 18 - h;
+  fillrgb(6, y, win_w() - 28, h, 0x00182028);
+  text(8, y + 2, "cc / make / run", 0x0080A0B0);
+  if (loadb(g_panel) == 0) {
+    text(8, y + 18, "(no output)", 0x00607080);
+  } else {
+    text(8, y + 18, g_panel, 0x00FFE080);
+    if (g_err_line > 0) {
+      text(8, y + 36, "click to go to error line", 0x00A0C8E0);
+    }
+  }
+}
+
 void draw_text_view() {
   int i;
   int line;
@@ -1321,8 +1515,16 @@ void draw_text_view() {
   int kl;
   int skip;
   int is_cur;
+  int rn;
+  int run_col;
+  int run_x;
+  int hs_y;
+  hs_y = win_h() - 18 - 56 - 14;
   list_w = win_w() - 28;
-  list_h = win_h() - 68 - 34;
+  list_h = hs_y - 68;
+  if (list_h < 32) {
+    list_h = 32;
+  }
   view = list_h / 16;
   if (view < 1) {
     view = 1;
@@ -1335,58 +1537,17 @@ void draw_text_view() {
     g_tscroll = max_off;
   }
   g_tscroll = win_vscroll(win_w() - 18, 68, list_h, max_off, view, g_tscroll);
-  g_thscroll = win_hscroll(6, win_h() - 16, list_w, 80, 40, g_thscroll);
+  g_thscroll = win_hscroll(6, hs_y, list_w, 80, 40, g_thscroll);
+  fillrgb(6, 68, list_w, list_h, 0x00101828);
   gx = 8;
-  i = 0;
-  line = 0;
+  ensure_line_index();
+  line = g_tscroll;
+  i = g_line_starts[line];
   y = 68;
-  in_str = 0;
+  in_str = g_line_states[line] - (g_line_states[line] / 2) * 2;
   in_lc = 0;
-  in_blk = 0;
-  while (line < g_tscroll) {
-    if (i >= g_len) {
-      line = g_tscroll;
-    } else {
-      c = loadb(g_buf + i);
-      if (c == 10) {
-        line = line + 1;
-        in_lc = 0;
-        in_str = 0;
-      } else {
-        if (in_blk == 0) {
-          if (in_str == 0) {
-            if (c == 47) {
-              if (i + 1 < g_len) {
-                if (loadb(g_buf + i + 1) == 47) {
-                  in_lc = 1;
-                }
-                if (loadb(g_buf + i + 1) == 42) {
-                  in_blk = 1;
-                }
-              }
-            }
-            if (c == 34) {
-              in_str = 1;
-            }
-          } else {
-            if (c == 34) {
-              in_str = 0;
-            }
-          }
-        } else {
-          if (c == 42) {
-            if (i + 1 < g_len) {
-              if (loadb(g_buf + i + 1) == 47) {
-                in_blk = 0;
-              }
-            }
-          }
-        }
-      }
-      i = i + 1;
-    }
-  }
-  while (y + 16 < win_h() - 34) {
+  in_blk = g_line_states[line] / 2;
+  while (y + 16 <= 68 + list_h) {
     if (line > g_tscroll + view) {
       y = win_h();
     } else {
@@ -1394,6 +1555,9 @@ void draw_text_view() {
       px = gx + 36;
       col = 0;
       skip = 0;
+      rn = 0;
+      run_col = 0;
+      run_x = px;
       if (i >= g_len) {
         if (g_cur == g_len) {
           if (line == cur_line_num() - 1) {
@@ -1405,6 +1569,8 @@ void draw_text_view() {
         while (i < g_len) {
           c = loadb(g_buf + i);
           if (c == 10) {
+            flush_run(run_x, y, rn, run_col);
+            rn = 0;
             is_cur = 0;
             if (g_cur == i) {
               is_cur = 1;
@@ -1472,12 +1638,29 @@ void draw_text_view() {
           if (col >= g_thscroll) {
             if (px + 10 < win_w() - 24) {
               if (is_cur) {
+                flush_run(run_x, y, rn, run_col);
+                rn = 0;
                 fillrgb(px, y, 10, 14, 0x00C0D0E0);
                 glyph(px, y, c, 0x00101828);
+                px = px + 10;
+                run_x = px;
               } else {
-                glyph(px, y, c, color);
+                if (rn == 0) {
+                  run_col = color;
+                  run_x = px;
+                }
+                if (color != run_col) {
+                  flush_run(run_x, y, rn, run_col);
+                  rn = 0;
+                  run_col = color;
+                  run_x = px;
+                }
+                if (rn < 90) {
+                  storeb(g_run + rn, c);
+                  rn = rn + 1;
+                }
+                px = px + 10;
               }
-              px = px + 10;
             }
           }
           if (skip > 0) {
@@ -1485,15 +1668,30 @@ void draw_text_view() {
               i = i + 1;
               skip = skip - 1;
               c = loadb(g_buf + i);
+              is_cur = 0;
+              if (g_cur == i) {
+                is_cur = 1;
+              }
               if (col >= g_thscroll) {
                 if (px + 10 < win_w() - 24) {
-                  if (g_cur == i) {
+                  if (is_cur) {
+                    flush_run(run_x, y, rn, run_col);
+                    rn = 0;
                     fillrgb(px, y, 10, 14, 0x00C0D0E0);
                     glyph(px, y, c, 0x00101828);
+                    px = px + 10;
+                    run_x = px;
                   } else {
-                    glyph(px, y, c, 0x0060C8E0);
+                    if (rn == 0) {
+                      run_col = 0x0060C8E0;
+                      run_x = px;
+                    }
+                    if (rn < 90) {
+                      storeb(g_run + rn, c);
+                      rn = rn + 1;
+                    }
+                    px = px + 10;
                   }
-                  px = px + 10;
                 }
               }
               col = col + 1;
@@ -1502,6 +1700,7 @@ void draw_text_view() {
           i = i + 1;
           col = col + 1;
         }
+        flush_run(run_x, y, rn, run_col);
         if (g_cur == g_len) {
           if (line == cur_line_num() - 1) {
             fillrgb(px, y, 8, 14, 0x00C0D0E0);
@@ -1514,6 +1713,7 @@ void draw_text_view() {
       }
     }
   }
+  draw_panel();
 }
 
 void draw_status() {
@@ -1564,6 +1764,7 @@ void main() {
   int list_w;
   char arg[96];
   win_origin(80, 40);
+  buf_init();
   path_set("SRC/HELLO.TXT");
   dir_set("SRC");
   if (app_arg(arg)) {
@@ -1589,7 +1790,7 @@ void main() {
   g_tscroll = 0;
   g_thscroll = 0;
   while (1) {
-    live = win_begin(720, 440, "Editor");
+    live = win_begin_keep(720, 440, "Editor");
     if (live == 0) {
       return;
     }
@@ -1621,6 +1822,11 @@ void main() {
     if (win_click(256, 24, 40, 18)) {
       if (g_browse == 0) {
         do_go();
+      }
+    }
+    if (win_click(304, 24, 48, 18)) {
+      if (g_browse == 0) {
+        do_make();
       }
     }
     if (g_browse) {
@@ -1668,7 +1874,22 @@ void main() {
       }
       g_prev = mb;
     } else {
-      g_prev = mouse_btn();
+      mb = mouse_btn();
+      if (mb) {
+        if (g_prev == 0) {
+          if (win_mouse_in()) {
+            my = mouse_y() - win_oy();
+            if (my >= win_h() - 74) {
+              if (my < win_h() - 18) {
+                if (g_err_line > 0) {
+                  jump_line(g_err_line);
+                }
+              }
+            }
+          }
+        }
+      }
+      g_prev = mb;
       k = ev_key();
       while (k) {
         handle_key(k);
@@ -1680,6 +1901,7 @@ void main() {
         ch = ev_text();
       }
     }
+    fillrgb(0, 20, win_w(), 48, 0x00101828);
     fillrgb(8, 24, 48, 18, 0x00406080);
     text(14, 27, "Open", 0x00FFFFFF);
     fillrgb(60, 24, 48, 18, 0x00406080);
@@ -1694,8 +1916,10 @@ void main() {
     text(186, 27, "Compile", 0x00FFFFFF);
     fillrgb(256, 24, 40, 18, 0x00406080);
     text(264, 27, "Go", 0x00FFFFFF);
+    fillrgb(304, 24, 48, 18, 0x00406080);
+    text(310, 27, "Make", 0x00FFFFFF);
     copy_show(g_path, 0);
-    text(310, 27, g_show, 0x00A0C8E0);
+    text(360, 27, g_show, 0x00A0C8E0);
     if (g_browse) {
       if (loadb(g_dir) == 0) {
         text(8, 48, "/", 0x00FFE080);
@@ -1704,7 +1928,7 @@ void main() {
         text(8, 48, g_show, 0x00FFE080);
       }
       if (g_saveas) {
-        text(8, 68, "Save As — enter folder, open file or :w name", 0x00E0C080);
+        text(8, 68, "Save As ??? enter folder, open file or :w name", 0x00E0C080);
       } else {
         text(8, 68, "Open file", 0x0080A0B0);
       }
@@ -1731,6 +1955,7 @@ void main() {
         }
       }
     } else {
+      fillrgb(0, 48, win_w(), 20, 0x00101828);
       text(8, 48, "Esc Normal  i insert  :w :q  /find  hjkl  dd x gg G", 0x00607080);
       draw_text_view();
     }

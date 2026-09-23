@@ -16,6 +16,7 @@ void fs_init(void);
 int fs_backend(void);
 int fs_write(const char *path, const void *data, int n);
 int fs_read(const char *path, void *out, int out_cap);
+int fs_read_at(const char *path, uint32_t offset, void *out, int out_cap);
 int fs_mkdir(const char *path);
 int fs_rmdir(const char *path);
 int fs_unlink(const char *path);

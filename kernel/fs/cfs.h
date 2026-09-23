@@ -64,6 +64,8 @@ typedef struct Cfs {
     CfsCacheLine cache[CFS_CACHE_LINES];
     uint8_t sector[STOR_SECTOR_SIZE];
     uint32_t clock;
+    uint64_t cache_hits;
+    uint64_t cache_misses;
     uint8_t mounted;
     Jnl jnl;
     uint8_t jnl_active;
@@ -82,6 +84,8 @@ int cfs_rmdir(Cfs *fs, const char *path);
 int cfs_unlink(Cfs *fs, const char *path);
 int cfs_rename(Cfs *fs, const char *old_path, const char *new_path);
 int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity);
+int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
+                uint32_t capacity);
 int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size);
 int cfs_truncate(Cfs *fs, const char *path, uint32_t size);
 int cfs_list(Cfs *fs, CfsListFn fn, void *ctx);
@@ -96,5 +100,7 @@ int jnl_commit(Jnl *j);
 int jnl_replay(Cfs *fs, uint32_t *replayed);
 int cfs_perm(Cfs *fs, const char *path, uint32_t bit);
 int cfs_chmod(Cfs *fs, const char *path, uint32_t mode);
+uint64_t cfs_cache_hits(const Cfs *fs);
+uint64_t cfs_cache_misses(const Cfs *fs);
 
 #endif

@@ -7,7 +7,7 @@
 #define GFX_MAX_WIDTH  1920
 #define GFX_MAX_HEIGHT 1080
 
-#define CHRIS_DESKTOP_COLOR 0x00B5E8FFu
+#define CHRIS_DESKTOP_COLOR 0x0014283Cu
 #define CHRIS_TASKBAR_COLOR 0x0000FF00u
 #define CHRIS_SHELL_COLOR   0x00000080u
 #define CHRIS_BALL_COLOR    0x00808000u
@@ -34,6 +34,8 @@ uint32_t gfx_rgb(uint8_t red, uint8_t green, uint8_t blue);
 void gfx_clear(uint32_t color);
 void gfx_put_pixel(int x, int y, uint32_t color);
 void gfx_fill_rect(int x, int y, int width, int height, uint32_t color);
+void gfx_blit_scaled(const uint32_t *src, int sw, int sh,
+                     int dx, int dy, int dw, int dh);
 void gfx_fill_circle(int cx, int cy, int radius, uint32_t color);
 void gfx_draw_glyph(GfxFontRowFn font, int glyph_width, int glyph_height,
                     unsigned int character, int x, int y, uint32_t color);

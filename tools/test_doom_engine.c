@@ -3,6 +3,14 @@
 #include <string.h>
 #include "chrisc.h"
 
+static int progress_count;
+
+static void progress(void *user, int index, int total, const char *path) {
+    (void)user;
+    if (index == progress_count && total > 0 && path && path[0])
+        progress_count++;
+}
+
 static int read_file(void *user, const char *path, char *out, int cap) {
     FILE *f;
     size_t n;
@@ -57,9 +65,16 @@ int main(void) {
         return 1;
     }
     memset(&r, 0, sizeof(r));
-    if (!chrisc_compile_files(ps, n, read_file, 0, code, 8u * 1024u * 1024u, &r)) {
+    progress_count = 0;
+    if (!chrisc_compile_files_ex(ps, n, read_file, 0, code,
+                                 8u * 1024u * 1024u, &r, progress, 0)) {
         fprintf(stderr, "test_doom_engine: fail %s:%d:%d %s (%d files)\n",
                 r.diag.file, r.diag.line, r.diag.column, r.diag.message, n);
+        free(code);
+        return 1;
+    }
+    if (progress_count != n) {
+        fprintf(stderr, "test_doom_engine: progress %d/%d\n", progress_count, n);
         free(code);
         return 1;
     }

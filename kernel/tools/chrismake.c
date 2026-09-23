@@ -495,7 +495,10 @@ static int build_target(MkFile *m, const char *name, int depth, char *err,
             rec[0] = 'c';
             rec[1] = 'c';
             rec[2] = ' ';
-            mk_copy(rec + 3, MK_LINE - 3, src);
+            rec[3] = '-';
+            rec[4] = 'c';
+            rec[5] = ' ';
+            mk_copy(rec + 6, MK_LINE - 6, src);
             return run_expanded(m, rec, name, src, err, err_cap);
         }
         return 1;
@@ -522,7 +525,10 @@ static int build_target(MkFile *m, const char *name, int depth, char *err,
             rec[0] = 'c';
             rec[1] = 'c';
             rec[2] = ' ';
-            mk_copy(rec + 3, MK_LINE - 3, lt_exp);
+            rec[3] = '-';
+            rec[4] = 'c';
+            rec[5] = ' ';
+            mk_copy(rec + 6, MK_LINE - 6, lt_exp);
             if (!run_expanded(m, rec, name, lt_exp, err, err_cap)) {
                 m->visiting[ri] = 0;
                 return 0;

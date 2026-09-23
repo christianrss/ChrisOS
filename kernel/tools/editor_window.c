@@ -191,30 +191,7 @@ static int map_input_event(const InputEvent *event) {
 }
 
 static void editor_auto_scroll(Editor *e, int visible_rows, int visible_cols) {
-    if (visible_rows < 1) {
-        visible_rows = 1;
-    }
-    if (visible_cols < 1) {
-        visible_cols = 1;
-    }
-    if (e->row < e->scroll_row) {
-        e->scroll_row = e->row;
-    }
-    if (e->row >= e->scroll_row + visible_rows) {
-        e->scroll_row = e->row - visible_rows + 1;
-    }
-    if (e->scroll_row < 0) {
-        e->scroll_row = 0;
-    }
-    if (e->col < e->scroll_col) {
-        e->scroll_col = e->col;
-    }
-    if (e->col >= e->scroll_col + visible_cols) {
-        e->scroll_col = e->col - visible_cols + 1;
-    }
-    if (e->scroll_col < 0) {
-        e->scroll_col = 0;
-    }
+    ed_auto_scroll(e, visible_rows, visible_cols);
 }
 
 static void editor_draw_status(const Task *task, const Editor *e) {

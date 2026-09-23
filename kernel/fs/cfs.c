@@ -134,6 +134,8 @@ static int parse_path(const char *path, PathParts *p) {
 static void cache_reset(Cfs *fs) {
     uint32_t i;
     fs->clock = 0u;
+    fs->cache_hits = 0u;
+    fs->cache_misses = 0u;
     for (i = 0; i < CFS_CACHE_LINES; i++) {
         fs->cache[i].valid = 0u;
         fs->cache[i].lba = 0u;
@@ -173,6 +175,7 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
         }
     }
     if (best) {
+        fs->cache_hits++;
         for (i = 0; i < CFS_CACHE_LINES; i++) {
             line = &fs->cache[i];
             if (line != best && line->valid && line->lba == lba) {
@@ -183,6 +186,7 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
         bytes_copy(out, best->data, 512u);
         return CFS_OK;
     }
+    fs->cache_misses++;
     cache_drop_lba(fs, lba);
     line = cache_victim(fs);
     if (bd_read(fs->dev, lba, 1u, line->data) != BD_OK)
@@ -192,6 +196,14 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
     line->age = ++fs->clock;
     bytes_copy(out, line->data, 512u);
     return CFS_OK;
+}
+
+uint64_t cfs_cache_hits(const Cfs *fs) {
+    return fs ? fs->cache_hits : 0u;
+}
+
+uint64_t cfs_cache_misses(const Cfs *fs) {
+    return fs ? fs->cache_misses : 0u;
 }
 
 static int cache_write_raw(Cfs *fs, uint32_t lba, const uint8_t in[512]) {
@@ -1162,9 +1174,10 @@ int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type) {
     return CFS_OK;
 }
 
-int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
+int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
+                uint32_t capacity) {
     PathParts p;
-    uint32_t id, done = 0u, amount, block;
+    uint32_t id, done = 0u, amount, block, sector_off;
     uint8_t *dst = out;
     CfsInode inode;
     int rc;
@@ -1181,20 +1194,33 @@ int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
     rc = cfs_perm_need(&inode, CFS_PERM_READ);
     if (rc != CFS_OK) return rc;
     if (inode.size > CFS_MAX_FILE_SIZE) return CFS_ECORRUPT;
-    amount = inode.size < capacity ? inode.size : capacity;
-    for (block = 0; done < amount; block++) {
+    if (offset >= inode.size)
+        return 0;
+    amount = inode.size - offset;
+    if (amount > capacity)
+        amount = capacity;
+    block = offset / STOR_SECTOR_SIZE;
+    sector_off = offset % STOR_SECTOR_SIZE;
+    while (done < amount) {
         uint32_t take = amount - done;
         uint32_t lba;
-        if (take > STOR_SECTOR_SIZE) take = STOR_SECTOR_SIZE;
+        uint32_t available = STOR_SECTOR_SIZE - sector_off;
+        if (take > available) take = available;
         rc = file_lba(fs, &inode, block, &lba, 0);
         if (rc != CFS_OK) return rc;
         if (!data_lba_valid(lba)) return CFS_ECORRUPT;
         rc = cache_read(fs, lba, fs->sector);
         if (rc != CFS_OK) return rc;
-        bytes_copy(dst + done, fs->sector, take);
+        bytes_copy(dst + done, fs->sector + sector_off, take);
         done += take;
+        block++;
+        sector_off = 0u;
     }
     return (int)done;
+}
+
+int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
+    return cfs_read_at(fs, path, 0u, out, capacity);
 }
 
 int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size) {

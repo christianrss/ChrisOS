@@ -258,13 +258,16 @@ static void cc_fail(const char *fallback) {
     sh_emit(e && e[0] ? e : fallback);
 }
 
-static void cc_ok_run(void) {
+static void cc_ok(int run_after) {
     const char *clv = lang_last_clv();
     if (!clv || !clv[0]) {
         sh_emit("compiled");
         return;
     }
     sh_emit_prefixed("compiled ", clv);
+    if (!run_after) {
+        return;
+    }
     ed_init(&g_sh_ed);
     ed_set_name(&g_sh_ed, clv);
     if (!lang_run(&g_sh_ed, clv)) {
@@ -280,6 +283,7 @@ static void cmd_cc(const char *arg) {
     int n = 0;
     int i = 0;
     int j;
+    int run_after = 1;
     while (arg[i] && n < 32) {
         j = 0;
         while (arg[i] == ' ')
@@ -289,6 +293,11 @@ static void cmd_cc(const char *arg) {
         while (arg[i] && arg[i] != ' ' && j < FS_PATH - 1)
             raw[n][j++] = arg[i++];
         raw[n][j] = 0;
+        if (n == 0 && raw[n][0] == '-' && raw[n][1] == 'c' &&
+            raw[n][2] == 0) {
+            run_after = 0;
+            continue;
+        }
         join_cwd(raw[n], path[n], FS_PATH);
         pp[n] = path[n];
         n++;
@@ -303,7 +312,7 @@ static void cmd_cc(const char *arg) {
             cc_fail("cc lst fail");
             return;
         }
-        cc_ok_run();
+        cc_ok(run_after);
         return;
     }
     if (n == 1) {
@@ -319,14 +328,14 @@ static void cmd_cc(const char *arg) {
             sh_emit(g_sh_ed.status);
             return;
         }
-        cc_ok_run();
+        cc_ok(run_after);
         return;
     }
     if (!lang_compile_many(pp, n)) {
         cc_fail("cc fail");
         return;
     }
-    cc_ok_run();
+    cc_ok(run_after);
 }
 
 static void cmd_run(const char *arg) {

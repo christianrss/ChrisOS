@@ -13,9 +13,51 @@
 /* stubs for freestanding symbols pulled by jit_compile.c */
 void serial_puts(const char *s) { fputs(s, stdout); }
 void serial_write_u64(uint64_t v) { printf("%llu", (unsigned long long)v); }
+void serial_write_hex(uint64_t v) { printf("%llx", (unsigned long long)v); }
+
+static FILE *g_wad;
+static int g_opened_wad;
+
+static const char *guest_string(ClvmVm *vm, int32_t addr) {
+    if (addr < 0 || (uint64_t)(uint32_t)addr >= vm->mem_size)
+        return NULL;
+    return (const char *)vm->memory + (uint32_t)addr;
+}
 
 static int sys_stub(ClvmVm *vm, int32_t id, void *user) {
     (void)user;
+    if (id == 50) {
+        int32_t addr;
+        const char *path;
+        if (!clvm_vm_pop(vm, &addr))
+            return -1;
+        path = guest_string(vm, addr);
+        if (!path)
+            return -1;
+        g_wad = fopen(path, "rb");
+        g_opened_wad = g_wad != NULL;
+        return clvm_vm_push(vm, g_wad ? 3 : -1) ? 0 : -1;
+    }
+    if (id == 51) {
+        int32_t fd;
+        if (!clvm_vm_pop(vm, &fd))
+            return -1;
+        if (g_wad) {
+            fclose(g_wad);
+            g_wad = NULL;
+        }
+        return clvm_vm_push(vm, 0) ? 0 : -1;
+    }
+    if (id == 52) {
+        int32_t fd, addr, n;
+        size_t got;
+        if (!clvm_vm_pop(vm, &n) || !clvm_vm_pop(vm, &addr) ||
+            !clvm_vm_pop(vm, &fd) || !g_wad || n < 0 || addr < 0 ||
+            (uint64_t)(uint32_t)addr + (uint32_t)n > vm->mem_size)
+            return -1;
+        got = fread(vm->memory + (uint32_t)addr, 1, (size_t)n, g_wad);
+        return clvm_vm_push(vm, (int32_t)got) ? 0 : -1;
+    }
     if (id == 53) { /* fwrite -> treat as ok / print */
         int32_t fd, addr, n;
         if (!clvm_vm_pop(vm, &n) || !clvm_vm_pop(vm, &addr) || !clvm_vm_pop(vm, &fd))
@@ -28,14 +70,55 @@ static int sys_stub(ClvmVm *vm, int32_t id, void *user) {
         }
         return clvm_vm_push(vm, n) ? 0 : -1;
     }
-    if (id == 56) { /* malloc */
-        int32_t sz;
-        uint64_t p;
-        if (!clvm_vm_pop(vm, &sz))
+    if (id == 54) {
+        int32_t addr;
+        const char *path;
+        FILE *f;
+        long size;
+        if (!clvm_vm_pop(vm, &addr))
             return -1;
-        if (!clvm_guest_malloc(vm, (uint64_t)(uint32_t)sz, &p))
-            return clvm_vm_push(vm, 0) ? 0 : -1;
-        return clvm_vm_push(vm, (int32_t)p) ? 0 : -1;
+        path = guest_string(vm, addr);
+        f = path ? fopen(path, "rb") : NULL;
+        if (!f)
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        fseek(f, 0, SEEK_END);
+        size = ftell(f);
+        fclose(f);
+        return clvm_vm_push(vm, (int32_t)size) ? 0 : -1;
+    }
+    if (id == 55) {
+        int32_t addr;
+        const char *path;
+        FILE *f;
+        if (!clvm_vm_pop(vm, &addr))
+            return -1;
+        path = guest_string(vm, addr);
+        f = path ? fopen(path, "rb") : NULL;
+        if (f)
+            fclose(f);
+        return clvm_vm_push(vm, f ? 1 : 0) ? 0 : -1;
+    }
+    if (id == 56) { /* malloc */
+        int64_t sz;
+        uint64_t p;
+        if (!clvm_vm_pop64(vm, &sz))
+            return -1;
+        if (!clvm_guest_malloc(vm, (uint64_t)sz, &p))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, (int64_t)p) ? 0 : -1;
+    }
+    if (id == 57) {
+        int64_t ptr;
+        if (!clvm_vm_pop64(vm, &ptr))
+            return -1;
+        return 0;
+    }
+    if (id == 65) {
+        int32_t fd, offset;
+        if (!clvm_vm_pop(vm, &offset) || !clvm_vm_pop(vm, &fd) || !g_wad)
+            return -1;
+        return clvm_vm_push(vm, fseek(g_wad, offset, SEEK_SET) == 0 ? 1 : 0)
+                   ? 0 : -1;
     }
     /* default: pop nothing specific — many syscalls; just succeed with 0 */
     return clvm_vm_push(vm, 0) ? 0 : -1;
@@ -121,10 +204,19 @@ int main(void) {
     printf("running jit steps, pc=%u sp=%u\n", vm.pc, vm.sp);
     for (i = 0; i < 20; i++) {
         r = fn(&vm, 50000u, i);
-        printf("step %u -> %d state=%d fault=%d pc=%u sp=%u\n",
-               i, (int)r, (int)vm.state, (int)vm.fault, vm.pc, vm.sp);
+        printf("step %u -> %d state=%d fault=%d pc=%u fpc=%u sp=%u csp=%u\n",
+               i, (int)r, (int)vm.state, (int)vm.fault, vm.pc, vm.fault_pc,
+               vm.sp, vm.csp);
+        if (r == CLVM_STEP_FAULT && vm.sp > 0) {
+            printf("fault stack top=%lld\n",
+                   (long long)vm.stack[vm.sp - 1u]);
+        }
         if (r == CLVM_STEP_FAULT || r == CLVM_STEP_HALT)
             break;
+        if (g_opened_wad) {
+            printf("doom JIT reached WAD I/O\n");
+            return 0;
+        }
     }
-    return (vm.state == CLVM_FAULTED) ? 10 : 0;
+    return (vm.state == CLVM_FAULTED || !g_opened_wad) ? 10 : 0;
 }

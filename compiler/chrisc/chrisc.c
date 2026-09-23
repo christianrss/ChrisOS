@@ -297,7 +297,18 @@ static const Builtin builtins[] = {
     {"app_spawn_arg", 106, 2, 1, 0}, {"app_arg", 107, 1, 1, 0},
     {"lib_load", 108, 1, 1, 0}, {"lib_reload", 109, 1, 1, 0},
     {"isdir", 110, 1, 1, 0},
-    {"kb_layout", 111, 1, 1, 0}, {"kb_get", 112, 0, 1, 0}
+    {"kb_layout", 111, 1, 1, 0}, {"kb_get", 112, 0, 1, 0},
+    {"surf_resize", 113, 2, 0, 0}, {"surf_minimize", 114, 0, 0, 0},
+    {"surf_maximize", 115, 4, 0, 0}, {"surf_restore", 116, 4, 0, 0},
+    {"sys_heap_used_kb", 117, 0, 1, 0},
+    {"sys_heap_free_kb", 118, 0, 1, 0},
+    {"sys_pmm_free_pages", 119, 0, 1, 0},
+    {"sys_frame_p50", 120, 0, 1, 0},
+    {"sys_frame_p95", 121, 0, 1, 0},
+    {"sys_cfs_hits", 122, 0, 1, 0},
+    {"sys_cfs_misses", 123, 0, 1, 0},
+    {"sys_active_apps", 124, 0, 1, 0},
+    {"app_raise", 125, 1, 1, 0}
 };
 
 static int alpha(int c) {
@@ -8260,9 +8271,10 @@ int chrisc_compile(const char *source, size_t source_size, uint8_t *code,
                              result);
 }
 
-int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
-                         void *user, uint8_t *code, size_t code_cap,
-                         ChrisResult *result) {
+int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
+                            void *user, uint8_t *code, size_t code_cap,
+                            ChrisResult *result, ChriscProgressFn progress,
+                            void *progress_user) {
     Compiler *c = &g_chrisc;
     int i;
     if (!paths || npaths < 1 || !code || !result) {
@@ -8273,6 +8285,8 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
         if (!read) {
             return 0;
         }
+        if (progress)
+            progress(progress_user, 0, 1, paths[0]);
         n = read(user, paths[0], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
             return 0;
@@ -8329,6 +8343,8 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
         if (!read) {
             return 0;
         }
+        if (progress)
+            progress(progress_user, i, npaths, paths[i]);
         n = read(user, paths[i], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
             return fail(c, 1, 1, "cannot read source file");
@@ -8366,4 +8382,11 @@ int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
         }
     }
     return chrisc_emit(c, result);
+}
+
+int chrisc_compile_files(const char **paths, int npaths, ChriscReadFn read,
+                         void *user, uint8_t *code, size_t code_cap,
+                         ChrisResult *result) {
+    return chrisc_compile_files_ex(paths, npaths, read, user, code, code_cap,
+                                   result, 0, 0);
 }

@@ -267,6 +267,26 @@ static void test_join_bs_line_full(void) {
     expect_int("join bs overflow nlines", e.nlines, 2);
 }
 
+static void test_load_long_and_scroll(void) {
+    static Editor e;
+    static char blob[400 * 4 + 8];
+    int i;
+    int n = 0;
+    for (i = 0; i < 400; i++) {
+        blob[n++] = 'a';
+        if (i + 1 < 400) {
+            blob[n++] = '\n';
+        }
+    }
+    blob[n] = 0;
+    expect_int("load 400", ed_load_text(&e, blob), 1);
+    expect_int("load 400 nlines", e.nlines, 400);
+    expect_int("load 400 row", e.row, 399);
+    ed_auto_scroll(&e, 20, 40);
+    expect_int("scroll after long load", e.scroll_row > 0, 1);
+    expect_int("scroll near end", e.scroll_row, 399 - 20 + 1);
+}
+
 int main(void) {
     test_init_clears_scroll_and_strings();
     test_insert_and_get();
@@ -283,6 +303,7 @@ int main(void) {
     test_load_overflow_line();
     test_load_too_many_lines();
     test_join_bs_line_full();
+    test_load_long_and_scroll();
     if (g_fails) {
         fprintf(stderr, "%d host editor tests failed\n", g_fails);
         return 1;

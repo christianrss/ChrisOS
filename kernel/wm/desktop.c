@@ -10,25 +10,46 @@
 #include "task.h"
 #include "ui.h"
 
+static void boot_diag(const char *what, const char *path) {
+    const char *err = lang_last_error();
+    serial_puts("boot: ");
+    serial_puts(what);
+    serial_puts(" ");
+    serial_puts(path ? path : "?");
+    serial_puts("\n");
+    if (err && err[0]) {
+        serial_puts("boot: ");
+        serial_puts(err);
+        serial_puts("\n");
+    }
+}
+
 static int boot_one(const char *clv, const char *lst) {
-    if (lang_run_path(clv)) {
-        return 1;
+    char probe[1];
+
+    if (clv && fs_read(clv, probe, 1) >= 0) {
+        if (lang_run_path(clv)) {
+            serial_puts("boot: run ");
+            serial_puts(clv);
+            serial_puts("\n");
+            return 1;
+        }
+        boot_diag("clv unusable, recompile", clv);
     }
     serial_puts("boot: compile ");
-    serial_puts(lst);
+    serial_puts(lst ? lst : "?");
     serial_puts("\n");
     if (!lang_compile_list(lst)) {
-        serial_puts("boot: compile failed ");
-        serial_puts(lst);
-        serial_puts("\n");
+        boot_diag("compile failed", lst);
         return 0;
     }
     if (!lang_run_path(clv)) {
-        serial_puts("boot: run failed ");
-        serial_puts(clv);
-        serial_puts("\n");
+        boot_diag("run failed", clv);
         return 0;
     }
+    serial_puts("boot: run ");
+    serial_puts(clv);
+    serial_puts("\n");
     return 1;
 }
 
@@ -72,7 +93,8 @@ void desktop_frame(uint64_t ticks) {
     focus = task_focused_id();
     focused = task_get(focus);
     slot = -1;
-    if (focused && focused->type == TASK_APP) {
+    if (focused && focused->type == TASK_APP &&
+        !focused->window.dragging && !focused->window.resizing) {
         slot = focused->state.app.lang_slot;
     }
     while (input_next_event(&event)) {
@@ -86,6 +108,7 @@ void desktop_frame(uint64_t ticks) {
         }
     }
 
+    ui_undraw_cursor();
     gfx_clear(CHRIS_DESKTOP_COLOR);
     task_run_all(ticks);
     ui_draw_cursor();

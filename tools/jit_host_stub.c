@@ -5,9 +5,11 @@
 #include "jit.h"
 
 /* Stubs for kernel serial / GC pulled in by jit_compile.c */
+#ifndef JIT_HOST_EXTERNAL_SERIAL
 void serial_puts(const char *text) { (void)text; }
 void serial_write_u64(uint64_t value) { (void)value; }
 void serial_write_hex(uint64_t value) { (void)value; }
+#endif
 void gc_poll(void) {}
 
 int jit_emit(JitBuf *buf, const uint8_t *bytes, uint32_t n) {

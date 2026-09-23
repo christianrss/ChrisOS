@@ -5,7 +5,7 @@ import signal
 import subprocess
 import time
 
-ROOT = "/mnt/e/Aulas/ChrisOS"
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 LOG = "/tmp/chrisos_doom_long.log"
 os.chdir(ROOT)
 
@@ -49,3 +49,20 @@ keys = (
 for ln in text.splitlines():
     if any(k in ln for k in keys):
         print(ln)
+
+fatal = (
+    "run: FAULT",
+    "run: doom fault",
+    "jit: native emit failed",
+    "jit: alloc failed",
+    "PANIC",
+)
+ready = (
+    "W_OpenFile GAMES/DOOM/DOOM1.WAD" in text
+    and ("doom: create done" in text or "run: started jit" in text)
+)
+if ready and not any(marker in text for marker in fatal):
+    print("OK: Doom initialized and remained fault-free")
+    raise SystemExit(0)
+print("FAIL: Doom did not reach a stable initialized state")
+raise SystemExit(1)

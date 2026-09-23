@@ -17,6 +17,12 @@ typedef struct {
 } TaskRect;
 
 typedef enum {
+    TASK_WINDOW_NORMAL = 0,
+    TASK_WINDOW_MINIMIZED,
+    TASK_WINDOW_MAXIMIZED
+} TaskWindowMode;
+
+typedef enum {
     TASK_NONE = 0,
     TASK_SHELL,
     TASK_BALL,
@@ -30,6 +36,12 @@ typedef struct {
     bool dragging;
     int drag_offset_x;
     int drag_offset_y;
+    bool resizing;
+    int resize_mouse_x;
+    int resize_mouse_y;
+    TaskRect resize_start;
+    TaskWindowMode mode;
+    TaskRect restore;
 } WindowState;
 
 typedef struct {
@@ -97,6 +109,13 @@ Task *task_get(int task_id);
 Task *task_find(TaskType type);
 void task_close(int task_id);
 void task_raise(int task_id);
+void task_move(int task_id, int x, int y);
+void task_resize(int task_id, int width, int body_height);
+void task_minimize(int task_id);
+void task_maximize(int task_id, TaskRect bounds);
+void task_restore(int task_id);
+TaskWindowMode task_window_mode(const Task *task);
+int task_id_at(int x, int y);
 int task_focus_at(int x, int y);
 int task_focused_id(void);
 bool task_is_focused(const Task *task);

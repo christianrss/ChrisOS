@@ -21,7 +21,7 @@ static int compile_lst(const char *lst_path) {
     static char lst[8192];
     static char paths[32][128];
     const char *pp[32];
-    uint8_t code[65535];
+    static uint8_t code[524288];
     ChrisResult res;
     FILE *f;
     size_t n;
@@ -89,9 +89,9 @@ int main(void) {
         "APPS/DESKTOP/DESKTOP.LST", "APPS/TASKBAR/TASKBAR.LST",
         "APPS/SHELL/SHELL.LST",     "APPS/EXPLORER/EXPLORER.LST",
         "APPS/EDITOR/EDITOR.LST",   "APPS/TASKMGR/TASKMGR.LST",
-        "APPS/BALL/BALL.LST"};
+        "APPS/BALL/BALL.LST",       "APPS/PREFS/PREFS.LST"};
     int i;
-    for (i = 0; i < 7; ++i) {
+    for (i = 0; i < 8; ++i) {
         if (!compile_lst(lists[i])) {
             return 1;
         }

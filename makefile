@@ -381,6 +381,20 @@ host-editor-test: host/test_editor64.c kernel/tools/editor.c kernel/tools/editor
 		host/test_editor64.c kernel/tools/editor.c
 	$(HOST_BIN)/test_editor64
 
+host-graphics-present-test: tools/test_graphics_present.c kernel/gfx/graphics.c \
+		kernel/gfx/graphics.h kernel/gfx/gfx_fast.c kernel/gfx/gfx_fast.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/gfx -Ikernel/metal -msse2 \
+		-o $(HOST_BIN)/test_graphics_present tools/test_graphics_present.c \
+		kernel/gfx/graphics.c kernel/gfx/gfx_fast.c
+	$(HOST_BIN)/test_graphics_present
+
+host-task-window-test: tools/test_task_window.c kernel/wm/task.c kernel/wm/task.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/gfx -Ikernel/wm \
+		-o $(HOST_BIN)/test_task_window tools/test_task_window.c kernel/wm/task.c
+	$(HOST_BIN)/test_task_window
+
 host-cfs-migrate-v2v3: tools/cfs_migrate_v2v3.c kernel/fs/cfs.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/fs \
@@ -531,6 +545,41 @@ test_doom_engine: tools/test_doom_engine.c compiler/chrisc/chrisc.c \
 		-o $(HOST_BIN)/test_doom_engine
 	$(HOST_BIN)/test_doom_engine
 
+doom-engine-clv: host-mk-clv
+	$(HOST_BIN)/mk_clv GAMES/DOOM/ENGINE.LST
+
+host-doom-jit-entry-test: doom-engine-clv tools/test_doom_jit_entry.c tools/jit_host_stub.c \
+		compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
+		compiler/jit/jit_runtime.c compiler/clvm/clvm_format.c \
+		compiler/clvm/clvm_vm.c kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c \
+		kernel/gfx/zbuf.c GAMES/DOOM/ENGINE.CLV
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DJIT_HOST_EXTERNAL_SERIAL \
+		-Icompiler/jit -Icompiler/clvm -Icompiler -Ikernel/gfx -Ikernel/metal \
+		-msse2 tools/jit_host_stub.c compiler/jit/jit_emit.c \
+		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
+		compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c kernel/gfx/zbuf.c \
+		tools/test_doom_jit_entry.c -o $(HOST_BIN)/test_doom_jit_entry
+	$(HOST_BIN)/test_doom_jit_entry
+
+host-cfs-check-doom: tools/cfs_check_doom.c kernel/fs/cfs.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/fs -o $(HOST_BIN)/cfs_check_doom \
+		tools/cfs_check_doom.c kernel/fs/cfs.c
+	$(HOST_BIN)/cfs_check_doom $(DISK_IMG)
+
+doom-qemu-jit-smoke: $(ISO) disk host-cfs-check-doom
+	python3 tools/doom_qemu_jit_smoke.py
+
+doom-qemu-long-smoke: $(ISO) disk host-cfs-check-doom
+	python3 tools/doom_qemu_long_smoke.py
+
+host-doom-gates: test_doom_compile test_doom_engine host-doom-jit-entry-test
+
+host-stability-gates: host-editor-test host-graphics-present-test \
+	host-task-window-test host-doom-gates
+
 disk-exit42: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/EXIT42.S SRC/EXIT42.S
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/EXIT42.C SRC/EXIT42.C
@@ -573,7 +622,7 @@ disk-lib: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/HELLO.TXT SRC/HELLO.TXT
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/PHYS.CC GAMES/PHYS.CC
 
-disk-apps: $(DISK_IMG) host-cfs-put-file host-mk-clv
+disk-ui: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/mk_clv APPS/DESKTOP/DESKTOP.LST
 	$(HOST_BIN)/mk_clv APPS/TASKBAR/TASKBAR.LST
 	$(HOST_BIN)/mk_clv APPS/SHELL/SHELL.LST
@@ -582,9 +631,44 @@ disk-apps: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/mk_clv APPS/TASKMGR/TASKMGR.LST
 	$(HOST_BIN)/mk_clv APPS/BALL/BALL.LST
 	$(HOST_BIN)/mk_clv APPS/PREFS/PREFS.LST
+	$(HOST_BIN)/mk_clv LIB/WIN.LST --cls LIB/WIN
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.H LIB/WIN.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.CC LIB/WIN.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.LST LIB/WIN.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.CLS LIB/WIN.CLS
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/UI.H LIB/UI.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/UI.CC LIB/UI.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/APP.H LIB/APP.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/APP.CC LIB/APP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CATALOG APPS/CATALOG
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CC APPS/DESKTOP/DESKTOP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.LST APPS/DESKTOP/DESKTOP.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/DESKTOP/DESKTOP.CLV APPS/DESKTOP/DESKTOP.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CC APPS/TASKBAR/TASKBAR.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.LST APPS/TASKBAR/TASKBAR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKBAR/TASKBAR.CLV APPS/TASKBAR/TASKBAR.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.CC APPS/SHELL/SHELL.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.LST APPS/SHELL/SHELL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/SHELL/SHELL.CLV APPS/SHELL/SHELL.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.CC APPS/EXPLORER/EXPLORER.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.LST APPS/EXPLORER/EXPLORER.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EXPLORER/EXPLORER.CLV APPS/EXPLORER/EXPLORER.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.CC APPS/EDITOR/EDITOR.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.LST APPS/EDITOR/EDITOR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/EDITOR/EDITOR.CLV APPS/EDITOR/EDITOR.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.CC APPS/TASKMGR/TASKMGR.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.LST APPS/TASKMGR/TASKMGR.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/TASKMGR/TASKMGR.CLV APPS/TASKMGR/TASKMGR.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.CC APPS/BALL/BALL.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.LST APPS/BALL/BALL.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/BALL/BALL.CLV APPS/BALL/BALL.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.CC APPS/PREFS/PREFS.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.LST APPS/PREFS/PREFS.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.CLV APPS/PREFS/PREFS.CLV
+
+disk-apps: disk-ui
 	$(HOST_BIN)/mk_clv GAMES/DOOM/DOOM.LST
 	$(HOST_BIN)/mk_clv GAMES/DOOM/ENGINE.LST
-	$(HOST_BIN)/mk_clv LIB/WIN.LST --cls LIB/WIN
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.CLV GAMES/DOOM/DOOM.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/ENGINE.CLV GAMES/DOOM/ENGINE.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/DOOM/DOOM.LST GAMES/DOOM/DOOM.LST
@@ -696,7 +780,7 @@ host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mes
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
 	host-jit-test host-jit-vm-test host-jit-native-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
-	host-kcc-test test_native_link host-gfx3d test_chrismake
+	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates
 
 host-chrisasm-test: tools/test_chrisasm.c compiler/chrisasm/chrisasm.c \
 		compiler/chrisld/chriso.c
@@ -919,7 +1003,7 @@ $(ISO): $(KERNEL) $(ISO_ROOT)/boot/limine/limine.conf \
 		--protective-msdos-label $(ISO_ROOT) -o $@
 	$(LIMINE_DIR)/limine bios-install $@
 
-run: $(ISO) run-stop
+run: $(ISO) disk-ui run-stop
 	@test -f $(DISK_IMG) || $(MAKE) disk.img
 	@sleep 1
 	$(QEMU) -M pc -m $(QEMU_MEM) -smp 4 -boot order=dc \

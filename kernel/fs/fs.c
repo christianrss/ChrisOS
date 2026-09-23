@@ -286,6 +286,34 @@ int fs_read(const char *path, void *out, int out_cap) {
     return ram_read(path, (unsigned char *)out, out_cap);
 }
 
+int fs_read_at(const char *path, uint32_t offset, void *out, int out_cap) {
+    Cfs *fs;
+    int id;
+    int i;
+    int n;
+    if (out_cap < 0 || (!out && out_cap > 0))
+        return CFS_EINVAL;
+    if (g_backend == FS_BACKEND_CFS) {
+        fs = storage_cfs();
+        if (!fs)
+            return CFS_ENOTMOUNTED;
+        return cfs_read_at(fs, path, offset, out, (uint32_t)out_cap);
+    }
+    id = ram_find(path);
+    if (id < 0)
+        return CFS_ENOENT;
+    if (offset >= (uint32_t)g_ram_files[id].size)
+        return 0;
+    n = g_ram_files[id].size - (int)offset;
+    if (n > out_cap)
+        n = out_cap;
+    for (i = 0; i < n; ++i) {
+        ((unsigned char *)out)[i] =
+            g_ram_arena[g_ram_files[id].offset + (int)offset + i];
+    }
+    return n;
+}
+
 int fs_mkdir(const char *path) {
     Cfs *fs;
     if (g_backend != FS_BACKEND_CFS) {

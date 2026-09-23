@@ -2,6 +2,7 @@
 #define WIN_H
 void win_origin(int x, int y);
 int win_begin(int w, int h, int title);
+int win_begin_keep(int w, int h, int title);
 void win_end();
 int win_click(int x, int y, int w, int h);
 int win_mouse_in();
