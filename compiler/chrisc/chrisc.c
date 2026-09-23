@@ -308,7 +308,8 @@ static const Builtin builtins[] = {
     {"sys_cfs_hits", 122, 0, 1, 0},
     {"sys_cfs_misses", 123, 0, 1, 0},
     {"sys_active_apps", 124, 0, 1, 0},
-    {"app_raise", 125, 1, 1, 0}
+    {"app_raise", 125, 1, 1, 0},
+    {"textruns", 126, 2, 0, 0}
 };
 
 static int alpha(int c) {
@@ -8070,15 +8071,17 @@ static int chrisc_emit(Compiler *c, ChrisResult *result) {
             return 0;
         }
         end_op = c->funcs[i].is_main ? CL_OP_HALT : CL_OP_RET;
-        if (c->pc == 0 || c->out[c->pc - 1] != end_op) {
-            if (!c->funcs[i].is_main && c->funcs[i].ret == 0) {
-                if (!push(c, 0, body)) {
-                    return 0;
-                }
-            }
-            if (!byte(c, end_op, body)) {
+        /* Always emit a fall-through epilogue. A trailing `if { return; }`
+         * leaves RET as the last opcode even though the false path jumps
+         * past it into the next function (editor V: handle_normal_char
+         * fell into handle_text and recursed until csp=64). */
+        if (!c->funcs[i].is_main && c->funcs[i].ret == 0) {
+            if (!push(c, 0, body)) {
                 return 0;
             }
+        }
+        if (!byte(c, end_op, body)) {
+            return 0;
         }
         if (c->funcs[i].is_main) {
             main_i = i;

@@ -30,6 +30,7 @@ static uint32_t g_psite[JIT_MAX_PATCH];
 static uint32_t g_ptgt[JIT_MAX_PATCH];
 static uint32_t g_npatch;
 static uint32_t g_fault_ba;
+static uint32_t g_call_ovf;
 
 static int insn_len(const uint8_t *code, uint32_t pc, uint32_t size) {
     uint8_t op;
@@ -218,16 +219,24 @@ static int emit_jcc_pc(JitBuf *j, int is_jz, uint32_t target_pc) {
 
 static int emit_helper(JitBuf *j, uint32_t pc, uint32_t after_helper) {
     /* rbx holds the ClvmVm*; SysV says callees preserve it, but our
-     * freestanding helpers/syscalls have historically clobbered it. */
+     * freestanding helpers/syscalls have historically clobbered it.
+     * After the function prologue RSP is 16-aligned; one push would leave
+     * it 8-mod-16 and the helper's SSE (fillrgb/text) would #GP(0). */
     static const uint8_t push_rbx[] = { 0x53 };
     static const uint8_t pop_rbx[] = { 0x5B };
+    static const uint8_t sub8[] = { 0x48, 0x83, 0xEC, 0x08 };
+    static const uint8_t add8[] = { 0x48, 0x83, 0xC4, 0x08 };
     if (emit_set_pc(j, pc) != 0)
         return -1;
     if (jit_emit(j, push_rbx, 1) != 0)
         return -1;
+    if (jit_emit(j, sub8, 4) != 0)
+        return -1;
     if (jit_emit_mov_r64_r64(j, REG_ARG0, REG_VM) != 0)
         return -1;
     if (jit_emit_call_r64(j, (uint64_t)(uintptr_t)jit_rt_exec_at_pc) != 0)
+        return -1;
+    if (jit_emit(j, add8, 4) != 0)
         return -1;
     if (jit_emit(j, pop_rbx, 1) != 0)
         return -1;
@@ -388,9 +397,11 @@ static int emit_insn(JitBuf *j, const uint8_t *code, uint32_t pc, uint32_t size,
     case CL_OP_SAFEPOINT: {
         uint8_t ld[] = { 0x48, 0x8B, 0x83 };
         uint8_t test[] = { 0x48, 0x85, 0xC0 };
-        uint8_t jz[] = { 0x74, 0x0F }; /* skip push rbx + pushd + mov + call + pops */
+        uint8_t jz[] = { 0x74, 0x17 }; /* skip aligned call stub (23 bytes) */
         uint8_t push_rbx[] = { 0x53 };
         uint8_t pushd[] = { 0x57, 0x56, 0x51, 0x52 };
+        uint8_t sub8[] = { 0x48, 0x83, 0xEC, 0x08 };
+        uint8_t add8[] = { 0x48, 0x83, 0xC4, 0x08 };
         uint8_t mov[] = { 0x48, 0x89, 0xDF };
         uint8_t call[] = { 0xFF, 0xD0 };
         uint8_t popd[] = { 0x5A, 0x59, 0x5E, 0x5F };
@@ -407,8 +418,10 @@ static int emit_insn(JitBuf *j, const uint8_t *code, uint32_t pc, uint32_t size,
         if (jit_emit(j, ld, 3) != 0 || jit_emit_u32(j, JIT_OFF_ONSP) != 0 ||
             jit_emit(j, test, 3) != 0 || jit_emit(j, jz, 2) != 0 ||
             jit_emit(j, push_rbx, 1) != 0 ||
-            jit_emit(j, pushd, 4) != 0 || jit_emit(j, mov, 3) != 0 ||
-            jit_emit(j, call, 2) != 0 || jit_emit(j, popd, 4) != 0 ||
+            jit_emit(j, pushd, 4) != 0 || jit_emit(j, sub8, 4) != 0 ||
+            jit_emit(j, mov, 3) != 0 ||
+            jit_emit(j, call, 2) != 0 || jit_emit(j, add8, 4) != 0 ||
+            jit_emit(j, popd, 4) != 0 ||
             jit_emit(j, pop_rbx, 1) != 0)
             return -1;
         if (jit_emit(j, set, 2) != 0 ||
@@ -698,7 +711,7 @@ static int emit_insn(JitBuf *j, const uint8_t *code, uint32_t pc, uint32_t size,
                           : (uint32_t)rd_i32(code, pc + 1u));
         if (jit_emit(j, ld, 3) != 0 || jit_emit_u32(j, JIT_OFF_CSP) != 0 ||
             jit_emit(j, cmp, 2) != 0 || jit_emit_u32(j, CLVM_CALL_MAX) != 0 ||
-            emit_jge_to(j, fault) != 0 ||
+            emit_jge_to(j, g_call_ovf) != 0 ||
             jit_emit_mov_r32_imm(j, 0, (int32_t)next) != 0 ||
             jit_emit(j, st, 3) != 0 || jit_emit_u32(j, JIT_OFF_CALLS) != 0 ||
             jit_emit(j, inc, 2) != 0 || jit_emit(j, sv, 3) != 0 ||
@@ -726,7 +739,7 @@ static int emit_insn(JitBuf *j, const uint8_t *code, uint32_t pc, uint32_t size,
             return -1;
         if (jit_emit(j, ld, 3) != 0 || jit_emit_u32(j, JIT_OFF_CSP) != 0 ||
             jit_emit(j, cmp, 2) != 0 || jit_emit_u32(j, CLVM_CALL_MAX) != 0 ||
-            emit_jge_to(j, fault) != 0 ||
+            emit_jge_to(j, g_call_ovf) != 0 ||
             jit_emit_mov_r32_imm(j, 0, (int32_t)next) != 0 ||
             jit_emit(j, st, 3) != 0 || jit_emit_u32(j, JIT_OFF_CALLS) != 0 ||
             jit_emit(j, inc, 2) != 0 || jit_emit(j, sv, 3) != 0 ||
@@ -810,6 +823,18 @@ int jit_compile_image(const ClvmImage *image, JitBuf *buf, JitFn *fn_out) {
     if (image == NULL || buf == NULL || fn_out == NULL)
         return -1;
     if (buf->w == NULL || buf->x == NULL) {
+        uint64_t need;
+        uint32_t pages;
+        /* Native expansion is tens of bytes per opcode, not 24 MiB for UI. */
+        need = (uint64_t)image->code_size * 64ull + 262144ull;
+        pages = (uint32_t)((need + 4095ull) / 4096ull);
+        if (pages < 64u) {
+            pages = 64u;
+        }
+        if (pages > JIT_PAGES) {
+            pages = JIT_PAGES;
+        }
+        buf->pages = pages;
         if (jit_alloc(buf) != 0) {
             serial_puts("jit: alloc failed\n");
             return -1;
@@ -818,8 +843,14 @@ int jit_compile_image(const ClvmImage *image, JitBuf *buf, JitFn *fn_out) {
     buf->used = 0;
     g_npatch = 0;
     serial_puts("jit: nat clear...\n");
-    for (i = 0; i < JIT_MAX_PCS; ++i)
-        g_nat[i] = 0;
+    {
+        uint32_t nclear = image->code_size;
+        if (nclear > JIT_MAX_PCS) {
+            nclear = JIT_MAX_PCS;
+        }
+        for (i = 0; i < nclear; ++i)
+            g_nat[i] = 0;
+    }
     serial_puts("jit: nat clear done\n");
 
     if (!image_can_jit(image)) {
@@ -846,6 +877,11 @@ int jit_compile_image(const ClvmImage *image, JitBuf *buf, JitFn *fn_out) {
 
         fault = buf->used;
         if (emit_set_fault(buf, CLVM_FAULT_STACK_UNDERFLOW) != 0 ||
+            emit_set_state(buf, CLVM_FAULTED) != 0 ||
+            emit_ret_value(buf, CLVM_STEP_FAULT) != 0)
+            goto fail;
+        g_call_ovf = buf->used;
+        if (emit_set_fault(buf, CLVM_FAULT_CALL_OVERFLOW) != 0 ||
             emit_set_state(buf, CLVM_FAULTED) != 0 ||
             emit_ret_value(buf, CLVM_STEP_FAULT) != 0)
             goto fail;

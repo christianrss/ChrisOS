@@ -574,6 +574,9 @@ static void slot_glyph(uint32_t *pix, int gw, int gh, int x, int y,
     fh = font_arial_height;
     for (row = 0; row < fh; ++row) {
         uint32_t bits = font_row(ch, row);
+        if (bits == 0) {
+            continue;
+        }
         for (col = 0; col < fw; ++col) {
             uint32_t mask = 1u << (unsigned int)(fw - col - 1);
             if ((bits & mask) != 0) {
@@ -583,27 +586,60 @@ static void slot_glyph(uint32_t *pix, int gw, int gh, int x, int y,
     }
 }
 
-static void slot_text(uint32_t *pix, int gw, int gh, int x, int y, const char *s,
-                      uint32_t rgb) {
+static void slot_text_n(uint32_t *pix, int gw, int gh, int x, int y,
+                        const uint8_t *s, int n, uint32_t rgb) {
     int pen;
     int adv;
     int row_y;
-    if (!s) {
+    int i;
+    if (!s || n <= 0) {
         return;
     }
     pen = x;
     row_y = y;
     adv = gfx_text_advance(font_arial_width);
-    while (*s) {
-        unsigned char ch = (unsigned char)*s++;
+    for (i = 0; i < n; i++) {
+        unsigned char ch = s[i];
         if (ch == '\n') {
             pen = x;
             row_y += font_arial_height;
             continue;
         }
+        if (ch == 0) {
+            break;
+        }
         slot_glyph(pix, gw, gh, pen, row_y, ch, rgb);
         pen += adv;
     }
+}
+
+static int guest_len(ClvmVm *vm, int32_t addr, int cap) {
+    uint64_t a;
+    int n;
+    if (!vm || !vm->memory || addr < 0 || cap < 1) {
+        return 0;
+    }
+    a = (uint64_t)(uint32_t)addr;
+    if (a >= vm->mem_size) {
+        return -1;
+    }
+    n = 0;
+    while (n < cap && a + (uint64_t)n < vm->mem_size) {
+        if (vm->memory[a + (uint64_t)n] == 0) {
+            return n;
+        }
+        n++;
+    }
+    return n;
+}
+
+static int32_t guest_i32(ClvmVm *vm, int32_t addr) {
+    const uint8_t *p;
+    if (!vm_bytes(vm, addr, 4, &p)) {
+        return 0;
+    }
+    return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+                     ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24));
 }
 
 typedef struct {
@@ -786,6 +822,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 12:
         if (!pop_i32(vm, &a) || a < 0)
             return -1;
+        lang_slot_publish(lang_slot_of(ctx));
         clvm_vm_wait(vm, now32() + (uint32_t)a);
         return 0;
     case 13:
@@ -1202,15 +1239,22 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         slot_fillrgb(pix, gw, gh, a, b, c, d, (uint32_t)e);
         return 0;
     case 86: {
-        char msg[2048];
+        const uint8_t *src8;
+        int slen;
         if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
             !pop_i32(vm, &a)) {
             return -1;
         }
-        if (!guest_cstr(vm, (uint64_t)(uint32_t)c, msg, (int)sizeof(msg))) {
+        slen = guest_len(vm, c, 2048);
+        if (slen < 0) {
             return -1;
         }
-        slot_text(pix, gw, gh, a, b, msg, (uint32_t)d);
+        if (slen > 0) {
+            if (!vm_bytes(vm, c, slen, &src8)) {
+                return -1;
+            }
+            slot_text_n(pix, gw, gh, a, b, src8, slen, (uint32_t)d);
+        }
         return 0;
     }
     case 87:
@@ -1352,6 +1396,48 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         }
         task_raise(t->id);
         return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 126: {
+        int32_t rec;
+        int32_t nrec;
+        int32_t i;
+        int32_t rx;
+        int32_t ry;
+        int32_t rgb;
+        int32_t rlen;
+        int32_t rstr;
+        const uint8_t *src8;
+        if (!pop_i32(vm, &b) || !pop_i32(vm, &a)) {
+            return -1;
+        }
+        if (b < 0) {
+            return -1;
+        }
+        if (b > 256) {
+            b = 256;
+        }
+        rec = a;
+        nrec = b;
+        for (i = 0; i < nrec; i++) {
+            rx = guest_i32(vm, rec);
+            ry = guest_i32(vm, rec + 4);
+            rgb = guest_i32(vm, rec + 8);
+            rlen = guest_i32(vm, rec + 12);
+            rstr = guest_i32(vm, rec + 16);
+            if (rlen < 0) {
+                rlen = 0;
+            }
+            if (rlen > 256) {
+                rlen = 256;
+            }
+            if (rlen > 0 && rstr >= 0) {
+                if (vm_bytes(vm, rstr, rlen, &src8)) {
+                    slot_text_n(pix, gw, gh, rx, ry, src8, rlen, (uint32_t)rgb);
+                }
+            }
+            rec += 20;
+        }
+        return 0;
     }
     case 92: {
         char path[FS_PATH];

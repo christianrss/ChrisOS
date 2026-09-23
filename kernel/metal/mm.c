@@ -67,7 +67,7 @@ static uint64_t *ensure_table(uint64_t *parent, unsigned index) {
     return table_from_phys(entry);
 }
 
-void map_4k(uint64_t virt, uint64_t phys, uint64_t flags) {
+static void map_4k_ex(uint64_t virt, uint64_t phys, uint64_t flags, int shootdown) {
     uint64_t *pml4;
     uint64_t *pdpt;
     uint64_t *pd;
@@ -85,7 +85,23 @@ void map_4k(uint64_t virt, uint64_t phys, uint64_t flags) {
     pd = ensure_table(pdpt, pdpt_index(virt));
     pt = ensure_table(pd, pd_index(virt));
     pt[pt_index(virt)] = (phys & MM_ADDR_MASK) | (flags | MM_PRESENT);
-    __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
+    if (shootdown) {
+        __asm__ volatile ("invlpg (%0)" : : "r"(virt) : "memory");
+    }
+}
+
+void map_4k(uint64_t virt, uint64_t phys, uint64_t flags) {
+    map_4k_ex(virt, phys, flags, 1);
+}
+
+void map_4k_nosync(uint64_t virt, uint64_t phys, uint64_t flags) {
+    map_4k_ex(virt, phys, flags, 0);
+}
+
+void mm_flush_tlb(void) {
+    uint64_t cr3;
+    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
 }
 
 void *mm_lapic_virt(void) {

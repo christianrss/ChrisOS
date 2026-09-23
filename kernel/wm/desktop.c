@@ -56,6 +56,7 @@ static int boot_one(const char *clv, const char *lst) {
 void desktop_init(void) {
     task_system_init();
     input_init(g_gfx.width, g_gfx.height);
+    gfx_clear(CHRIS_DESKTOP_COLOR);
 }
 
 void desktop_boot_apps(void) {
@@ -109,7 +110,6 @@ void desktop_frame(uint64_t ticks) {
     }
 
     ui_undraw_cursor();
-    gfx_clear(CHRIS_DESKTOP_COLOR);
     task_run_all(ticks);
     ui_draw_cursor();
 }

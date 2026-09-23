@@ -276,6 +276,19 @@ test_chrisc_apps: tools/test_chrisc_apps.c compiler/chrisc/chrisc.c compiler/clv
 		-o $(HOST_BIN)/test_chrisc_apps
 	$(HOST_BIN)/test_chrisc_apps
 
+test_editor_vi: tools/test_editor_vi.c tools/jit_host_stub.c compiler/jit/jit_emit.c \
+		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
+		compiler/chrisc/chrisc.c compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
+		compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/jit -Icompiler/chrisc \
+		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/metal \
+		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
+		compiler/jit/jit_runtime.c tools/test_editor_vi.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_editor_vi
+	$(HOST_BIN)/test_editor_vi
+
 test_chrisc_string: tools/test_chrisc_string.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
 	mkdir -p $(HOST_BIN)
@@ -394,6 +407,12 @@ host-task-window-test: tools/test_task_window.c kernel/wm/task.c kernel/wm/task.
 	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/gfx -Ikernel/wm \
 		-o $(HOST_BIN)/test_task_window tools/test_task_window.c kernel/wm/task.c
 	$(HOST_BIN)/test_task_window
+
+host-slot-front-test: tools/test_slot_front.c kernel/gfx/gfx_fast.c kernel/gfx/gfx_fast.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/gfx -msse2 \
+		-o $(HOST_BIN)/test_slot_front tools/test_slot_front.c kernel/gfx/gfx_fast.c
+	$(HOST_BIN)/test_slot_front
 
 host-cfs-migrate-v2v3: tools/cfs_migrate_v2v3.c kernel/fs/cfs.c
 	mkdir -p $(HOST_BIN)
@@ -578,7 +597,7 @@ doom-qemu-long-smoke: $(ISO) disk host-cfs-check-doom
 host-doom-gates: test_doom_compile test_doom_engine host-doom-jit-entry-test
 
 host-stability-gates: host-editor-test host-graphics-present-test \
-	host-task-window-test host-doom-gates
+	host-task-window-test host-slot-front-test host-doom-gates test_editor_vi
 
 disk-exit42: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/EXIT42.S SRC/EXIT42.S
@@ -775,7 +794,7 @@ test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
 		-o $(HOST_BIN)/test_native_link
 	$(HOST_BIN)/test_native_link
 
-host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_editor_vi test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \

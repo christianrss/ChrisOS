@@ -11,6 +11,7 @@
 #include "graphics.h"
 #include "math3d.h"
 #include "tex.h"
+#include "gfx_fast.h"
 #include "clvm_sys.h"
 #include "app_window.h"
 #include "storage.h"
@@ -23,6 +24,7 @@
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
 #include "serial.h"
+#include "pit.h"
 
 #define LANG_SOURCE_MAX 4194304
 #define LANG_CODE_MAX (4u * 1024u * 1024u)
@@ -65,6 +67,9 @@ typedef struct LangSlot {
     int ev_text_n;
     int ev_text_r;
     int dying;
+    uint32_t *front_pixels;
+    int front_w;
+    int front_h;
 } LangSlot;
 
 static LangSlot slots[LANG_VM_SLOTS];
@@ -502,6 +507,9 @@ void lang_init(ClvmSysFn sys, void *user) {
         slots[i].use_jit = 0;
         slots[i].jit_fn = NULL;
         slots[i].jit.phys = 0;
+        slots[i].jit.pages = 0;
+        slots[i].jit.w = NULL;
+        slots[i].jit.x = NULL;
         slots[i].heap_ram = 0;
         slots[i].heap_ram_sz = 0;
         slots[i].debug_on = 0;
@@ -511,6 +519,10 @@ void lang_init(ClvmSysFn sys, void *user) {
         slots[i].map_n = 0;
         slots[i].step_line = 0;
         slots[i].last_line = 0;
+        slots[i].dying = 0;
+        slots[i].front_pixels = 0;
+        slots[i].front_w = 0;
+        slots[i].front_h = 0;
         slots[i].gfx.pixels = slots[i].pixels;
         slots[i].gfx.zbuf = 0;
         slots[i].gfx.w = CLVM_SYS_GAME_W;
@@ -657,6 +669,12 @@ static void lang_slot_release_gfx(int i) {
         id = slots[i].gfx_slot_id;
     if (id >= 0)
         gfx_slot_free(id);
+    if (slots[i].front_pixels) {
+        kfree(slots[i].front_pixels);
+        slots[i].front_pixels = 0;
+        slots[i].front_w = 0;
+        slots[i].front_h = 0;
+    }
     slots[i].gfx_slot_id = -1;
     slots[i].gfx.pixels = slots[i].pixels;
     slots[i].gfx.zbuf = 0;
@@ -913,13 +931,11 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
         jit_free(&slots[i].jit);
     }
     /*
-     * Doom-sized images need native JIT (interpreter is too slow). Prefer
-     * JIT unless the caller asked for the debugger.
+     * UI CLVs (Editor/Shell) need JIT; Doom-sized games already did.
+     * Debugger keeps the interpreter.
      */
-    if (!use_jit && (image.flags & CLVM_FLAG_GAME) != 0 &&
-        image.mem_hint >= (16u * 1024u * 1024u)) {
+    if (!g_want_debug) {
         use_jit = 1;
-        serial_puts("run: doom-sized image -> jit\n");
     }
     if (use_jit && !g_want_debug) {
         serial_puts("run: jit compile...\n");
@@ -1263,6 +1279,10 @@ void lang_tick(uint32_t now) {
         if (slots[i].used) {
             ClvmStepResult r;
             int b;
+            int game;
+            int slices;
+            int max_slices;
+            uint32_t budget;
             if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
                 continue;
             clvm_vm_wake(&slots[i].vm, now);
@@ -1278,13 +1298,8 @@ void lang_tick(uint32_t now) {
                 if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
                     continue;
             }
-            if (slots[i].use_jit && slots[i].jit_fn != NULL && !slots[i].debug_on) {
-                uint32_t budget = LANG_VM_BUDGET;
-                if (slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull))
-                    budget = LANG_VM_BUDGET_GAME;
-                jit_set_sys_context(&slots[i].vm, &slots[i].gfx);
-                r = slots[i].jit_fn(&slots[i].vm, budget, now);
-            } else if (slots[i].debug_on && slots[i].step_line) {
+            game = slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull);
+            if (slots[i].debug_on && slots[i].step_line) {
                 int k;
                 uint16_t start = slots[i].last_line;
                 r = CLVM_STEP_SLICE;
@@ -1303,10 +1318,33 @@ void lang_tick(uint32_t now) {
                 slots[i].step_one = 0;
                 slots[i].paused = 1;
             } else {
-                uint32_t budget = LANG_VM_BUDGET;
-                if (slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull))
+                if (game) {
                     budget = LANG_VM_BUDGET_GAME;
-                r = clvm_step(&slots[i].vm, budget);
+                    max_slices = 1;
+                } else {
+                    budget = LANG_VM_BUDGET_UI;
+                    max_slices = 8;
+                }
+                r = CLVM_STEP_SLICE;
+                for (slices = 0; slices < max_slices; slices++) {
+                    if (slots[i].use_jit && slots[i].jit_fn != NULL &&
+                        !slots[i].debug_on) {
+                        jit_set_sys_context(&slots[i].vm, &slots[i].gfx);
+                        r = slots[i].jit_fn(&slots[i].vm, budget, now);
+                    } else {
+                        r = clvm_step(&slots[i].vm, budget);
+                    }
+                    if (r != CLVM_STEP_SLICE) {
+                        break;
+                    }
+                    if (game) {
+                        break;
+                    }
+                    if ((uint32_t)ticks - now >= 8u) {
+                        break;
+                    }
+                    clvm_vm_wake(&slots[i].vm, now);
+                }
             }
     if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT || slots[i].dying) {
                 if (r == CLVM_STEP_FAULT) {
@@ -1314,6 +1352,9 @@ void lang_tick(uint32_t now) {
                     serial_write_u64((uint64_t)(uint32_t)i);
                     serial_puts(" pc=");
                     serial_write_u64((uint64_t)slots[i].vm.pc);
+                    serial_puts(" line=");
+                    serial_write_u64((uint64_t)lang_line_at(&slots[i],
+                                                            slots[i].vm.pc));
                     serial_puts(" sp=");
                     serial_write_u64((uint64_t)slots[i].vm.sp);
                     serial_puts(" fault=");
@@ -1410,7 +1451,41 @@ uint32_t *lang_slot_pixels(int slot) {
     if (slot < 0 || slot >= LANG_VM_SLOTS) {
         return 0;
     }
+    if (slots[slot].front_pixels && slots[slot].front_w == slots[slot].gfx.w &&
+        slots[slot].front_h == slots[slot].gfx.h) {
+        return slots[slot].front_pixels;
+    }
     return slots[slot].gfx.pixels;
+}
+
+void lang_slot_publish(int slot) {
+    int n;
+    uint32_t *src;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return;
+    }
+    src = slots[slot].gfx.pixels;
+    if (!src || slots[slot].gfx.w < 1 || slots[slot].gfx.h < 1) {
+        return;
+    }
+    n = slots[slot].gfx.w * slots[slot].gfx.h;
+    if (!slots[slot].front_pixels || slots[slot].front_w != slots[slot].gfx.w ||
+        slots[slot].front_h != slots[slot].gfx.h) {
+        if (slots[slot].front_pixels) {
+            kfree(slots[slot].front_pixels);
+            slots[slot].front_pixels = 0;
+        }
+        slots[slot].front_pixels =
+            (uint32_t *)kmalloc((uint64_t)n * sizeof(uint32_t));
+        if (!slots[slot].front_pixels) {
+            slots[slot].front_w = 0;
+            slots[slot].front_h = 0;
+            return;
+        }
+        slots[slot].front_w = slots[slot].gfx.w;
+        slots[slot].front_h = slots[slot].gfx.h;
+    }
+    gfx_fast_copy_u32(slots[slot].front_pixels, src, n);
 }
 
 int lang_slot_w(int slot) {

@@ -7,6 +7,7 @@
 
 #define LANG_VM_SLOTS 16
 #define LANG_VM_BUDGET 64000u
+#define LANG_VM_BUDGET_UI 4000000u
 #define LANG_VM_BUDGET_GAME 20000000u
 #define LANG_SPLASH_SLOT 0
 
@@ -29,6 +30,7 @@ int lang_kill(int slot);
 int lang_slot_used(int slot);
 const char *lang_slot_name(int slot);
 uint32_t *lang_slot_pixels(int slot);
+void lang_slot_publish(int slot);
 int lang_slot_w(int slot);
 int lang_slot_h(int slot);
 int lang_slot_fullscreen(int slot);

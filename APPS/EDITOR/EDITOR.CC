@@ -1,7 +1,7 @@
 /* ChrisOS Editor ??? mini-VI
- * Modes: Normal / Insert / Command (: and /)
- * Esc=Normal  i/a/o=Insert  :w :q :wq :w path  /pat n N
- * hjkl arrows  0 $ gg G  x dd  Open SaveAs Compile Go
+ * Modes: Normal / Insert / Command / Visual / Visual-line
+ * Esc=Normal  i/a/o=Insert  v/V visual  yy p P  dd x
+ * :w :e :n :q :wq :cc :make  /pat n N  hjkl 0 $ gg G
  */
 int g_buf;
 int g_cap;
@@ -39,6 +39,26 @@ int g_line_starts[2048];
 int g_line_states[2048];
 int g_line_count;
 int g_line_index_dirty;
+int g_kw_len;
+int g_tr[400];
+char g_trstr[1600];
+int g_trn;
+int g_trs;
+int g_view_gen;
+int g_seen_ok;
+int g_seen_len;
+int g_seen_cur;
+int g_seen_ts;
+int g_seen_th;
+int g_seen_w;
+int g_seen_h;
+int g_seen_mode;
+int g_seen_gen;
+int g_sel_anchor;
+int g_yank;
+int g_yank_len;
+int g_yank_cap;
+int g_yank_linewise;
 
 void ensure_line_index();
 void buf_init() {
@@ -57,8 +77,9 @@ void buf_init() {
   if (g_buf != 0) {
     storeb(g_buf, 0);
   }
-  g_len = 0;
-  storeb(g_panel, 0);
+    g_len = 0;
+    g_seen_ok = 0;
+    storeb(g_panel, 0);
   g_err_line = 0;
 }
 
@@ -87,6 +108,7 @@ int name_len(int s) {
 
 void status_set(int s) {
   str_set(g_status, s);
+  g_view_gen = g_view_gen + 1;
 }
 
 void path_set(int p) {
@@ -944,11 +966,280 @@ void insert_at(int ch) {
   ensure_view();
 }
 
+void ensure_yank() {
+  if (g_yank == 0) {
+    g_yank_cap = 65536;
+    g_yank = malloc(g_yank_cap);
+    if (g_yank == 0) {
+      g_yank_cap = 8192;
+      g_yank = malloc(g_yank_cap);
+    }
+  }
+}
+
+int vis_lo() {
+  int a;
+  int b;
+  a = g_sel_anchor;
+  b = g_cur;
+  if (g_mode == 4) {
+    if (a > b) {
+      a = b;
+    }
+    return line_start(a);
+  }
+  if (a < b) {
+    return a;
+  }
+  return b;
+}
+
+int vis_hi() {
+  int a;
+  int b;
+  a = g_sel_anchor;
+  b = g_cur;
+  if (g_mode == 4) {
+    if (a > b) {
+      b = a;
+      a = g_cur;
+    }
+    b = line_end(b);
+    if (b < g_len) {
+      b = b + 1;
+    }
+    return b;
+  }
+  if (a < b) {
+    return b + 1;
+  }
+  if (a > b) {
+    return a + 1;
+  }
+  return a + 1;
+}
+
+void yank_range(int lo, int hi) {
+  int n;
+  int i;
+  ensure_yank();
+  if (g_yank == 0) {
+    status_set("no yank");
+    g_yank_len = 0;
+    return;
+  }
+  if (lo < 0) {
+    lo = 0;
+  }
+  if (hi > g_len) {
+    hi = g_len;
+  }
+  if (hi < lo) {
+    hi = lo;
+  }
+  n = hi - lo;
+  if (n > g_yank_cap) {
+    n = g_yank_cap;
+  }
+  i = 0;
+  while (i < n) {
+    storeb(g_yank + i, loadb(g_buf + lo + i));
+    i = i + 1;
+  }
+  g_yank_len = n;
+}
+
+void delete_range(int lo, int hi) {
+  int n;
+  int i;
+  if (lo < 0) {
+    lo = 0;
+  }
+  if (hi > g_len) {
+    hi = g_len;
+  }
+  if (hi <= lo) {
+    return;
+  }
+  n = hi - lo;
+  i = lo;
+  while (i + n <= g_len) {
+    storeb(g_buf + i, loadb(g_buf + i + n));
+    i = i + 1;
+  }
+  g_len = g_len - n;
+  if (g_len < 0) {
+    g_len = 0;
+  }
+  storeb(g_buf + g_len, 0);
+  g_cur = lo;
+  if (g_cur > g_len) {
+    g_cur = g_len;
+  }
+  g_dirty = 1;
+  g_line_index_dirty = 1;
+  ensure_view();
+}
+
+void insert_block(int at, int src, int n) {
+  int i;
+  if (n < 1) {
+    return;
+  }
+  if (at < 0) {
+    at = 0;
+  }
+  if (at > g_len) {
+    at = g_len;
+  }
+  if (g_len + n >= g_cap - 1) {
+    n = g_cap - 1 - g_len;
+  }
+  if (n < 1) {
+    return;
+  }
+  i = g_len;
+  while (i > at) {
+    i = i - 1;
+    storeb(g_buf + i + n, loadb(g_buf + i));
+  }
+  i = 0;
+  while (i < n) {
+    storeb(g_buf + at + i, loadb(src + i));
+    i = i + 1;
+  }
+  g_len = g_len + n;
+  storeb(g_buf + g_len, 0);
+  g_dirty = 1;
+  g_line_index_dirty = 1;
+}
+
+void yank_line() {
+  int s;
+  int e;
+  s = line_start(g_cur);
+  e = line_end(g_cur);
+  if (e < g_len) {
+    e = e + 1;
+  }
+  yank_range(s, e);
+  g_yank_linewise = 1;
+  status_set("yanked line");
+}
+
+void yank_sel() {
+  int lo;
+  int hi;
+  lo = vis_lo();
+  hi = vis_hi();
+  yank_range(lo, hi);
+  if (g_mode == 4) {
+    g_yank_linewise = 1;
+  } else {
+    g_yank_linewise = 0;
+  }
+  status_set("yanked");
+}
+
+void delete_sel() {
+  int lo;
+  int hi;
+  lo = vis_lo();
+  hi = vis_hi();
+  yank_range(lo, hi);
+  if (g_mode == 4) {
+    g_yank_linewise = 1;
+  } else {
+    g_yank_linewise = 0;
+  }
+  g_mode = 0;
+  delete_range(lo, hi);
+  status_set("deleted");
+}
+
+void put_yank(int before) {
+  int at;
+  if (g_yank_len < 1) {
+    status_set("empty yank");
+    return;
+  }
+  if (g_yank == 0) {
+    status_set("empty yank");
+    return;
+  }
+  if (g_yank_linewise) {
+    if (before) {
+      at = line_start(g_cur);
+    } else {
+      at = line_end(g_cur);
+      if (at < g_len) {
+        at = at + 1;
+      }
+    }
+    insert_block(at, g_yank, g_yank_len);
+    g_cur = at;
+    ensure_view();
+    status_set("put");
+    return;
+  }
+  at = g_cur;
+  if (before == 0) {
+    if (at < g_len) {
+      if (loadb(g_buf + at) != 10) {
+        at = at + 1;
+      }
+    }
+  }
+  insert_block(at, g_yank, g_yank_len);
+  g_cur = at + g_yank_len;
+  ensure_view();
+  status_set("put");
+}
+
+void leave_visual() {
+  g_mode = 0;
+  g_view_gen = g_view_gen + 1;
+  status_set("");
+}
+
+void enter_visual(int linewise) {
+  g_sel_anchor = g_cur;
+  if (linewise) {
+    g_mode = 4;
+    status_set("-- VISUAL LINE --");
+  } else {
+    g_mode = 3;
+    status_set("-- VISUAL --");
+  }
+  g_view_gen = g_view_gen + 1;
+}
+
+void new_buffer() {
+  if (g_buf != 0) {
+    storeb(g_buf, 0);
+  }
+  g_len = 0;
+  g_cur = 0;
+  g_dirty = 0;
+  g_line_index_dirty = 1;
+  g_browse = 0;
+  g_saveas = 0;
+  g_tscroll = 0;
+  g_thscroll = 0;
+  g_err_line = 0;
+  storeb(g_panel, 0);
+  g_mode = 0;
+  g_seen_ok = 0;
+  status_set("new");
+}
+
 void delete_at() {
   int i;
   if (g_cur >= g_len) {
     return;
   }
+  yank_range(g_cur, g_cur + 1);
+  g_yank_linewise = 0;
   i = g_cur;
   while (i < g_len) {
     storeb(g_buf + i, loadb(g_buf + i + 1));
@@ -970,6 +1261,8 @@ void delete_line() {
   if (e < g_len) {
     e = e + 1;
   }
+  yank_range(s, e);
+  g_yank_linewise = 1;
   n = e - s;
   i = s;
   while (i + n <= g_len) {
@@ -1167,6 +1460,11 @@ void run_colon() {
     }
   }
   if (c0 == 101) {
+    if (c1 == 0) {
+      browse_open();
+      g_mode = 0;
+      return;
+    }
     if (c1 == 32) {
       i = 2;
       while (loadb(g_cmd + i) == 32) {
@@ -1177,6 +1475,44 @@ void run_colon() {
         load_file();
         g_mode = 0;
         return;
+      }
+    }
+  }
+  if (c0 == 110) {
+    if (c1 == 0) {
+      path_set("UNTITLED");
+      new_buffer();
+      g_mode = 0;
+      return;
+    }
+    if (c1 == 32) {
+      i = 2;
+      while (loadb(g_cmd + i) == 32) {
+        i = i + 1;
+      }
+      if (loadb(g_cmd + i) != 0) {
+        path_set(g_cmd + i);
+        new_buffer();
+        g_mode = 0;
+        return;
+      }
+    }
+  }
+  if (c0 == 99) {
+    if (c1 == 99) {
+      do_compile();
+      g_mode = 0;
+      return;
+    }
+  }
+  if (c0 == 109) {
+    if (loadb(g_cmd + 1) == 97) {
+      if (loadb(g_cmd + 2) == 107) {
+        if (loadb(g_cmd + 3) == 101) {
+          do_make();
+          g_mode = 0;
+          return;
+        }
       }
     }
   }
@@ -1202,7 +1538,93 @@ void start_cmdline(int kind) {
   g_pending = 0;
 }
 
+void handle_visual_char(int ch) {
+  if (ch == 104) {
+    move_left();
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 108) {
+    move_right();
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 107) {
+    move_up();
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 106) {
+    move_down();
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 48) {
+    g_cur = line_start(g_cur);
+    ensure_view();
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 36) {
+    g_cur = line_end(g_cur);
+    ensure_view();
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 121) {
+    yank_sel();
+    leave_visual();
+    return;
+  }
+  if (ch == 100) {
+    delete_sel();
+    return;
+  }
+  if (ch == 120) {
+    delete_sel();
+    return;
+  }
+  if (ch == 118) {
+    if (g_mode == 3) {
+      leave_visual();
+      return;
+    }
+    g_mode = 3;
+    status_set("-- VISUAL --");
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 86) {
+    if (g_mode == 4) {
+      leave_visual();
+      return;
+    }
+    g_mode = 4;
+    status_set("-- VISUAL LINE --");
+    g_view_gen = g_view_gen + 1;
+    return;
+  }
+  if (ch == 112) {
+    delete_sel();
+    put_yank(1);
+    return;
+  }
+  if (ch == 80) {
+    delete_sel();
+    put_yank(1);
+    return;
+  }
+}
+
 void handle_normal_char(int ch) {
+  if (g_mode == 3) {
+    handle_visual_char(ch);
+    return;
+  }
+  if (g_mode == 4) {
+    handle_visual_char(ch);
+    return;
+  }
   if (g_pending == 100) {
     g_pending = 0;
     if (ch == 100) {
@@ -1217,6 +1639,33 @@ void handle_normal_char(int ch) {
       g_cur = 0;
       ensure_view();
     }
+    return;
+  }
+  if (g_pending == 121) {
+    g_pending = 0;
+    if (ch == 121) {
+      yank_line();
+    }
+    return;
+  }
+  if (ch == 118) {
+    enter_visual(0);
+    return;
+  }
+  if (ch == 86) {
+    enter_visual(1);
+    return;
+  }
+  if (ch == 121) {
+    g_pending = 121;
+    return;
+  }
+  if (ch == 112) {
+    put_yank(0);
+    return;
+  }
+  if (ch == 80) {
+    put_yank(1);
     return;
   }
   if (ch == 105) {
@@ -1315,6 +1764,14 @@ void handle_key(int k) {
     if (g_mode == 2) {
       g_mode = 0;
       status_set("");
+      return;
+    }
+    if (g_mode == 3) {
+      leave_visual();
+      return;
+    }
+    if (g_mode == 4) {
+      leave_visual();
       return;
     }
     return;
@@ -1440,7 +1897,7 @@ void handle_text(int ch) {
 
 int syn_color(int at, int in_str, int in_line_cmt, int in_blk) {
   int c;
-  int kl;
+  g_kw_len = 0;
   if (in_line_cmt) {
     return 0x00608070;
   }
@@ -1459,8 +1916,8 @@ int syn_color(int at, int in_str, int in_line_cmt, int in_blk) {
       return 0x00E0E060;
     }
   }
-  kl = kw_len_at(at);
-  if (kl > 0) {
+  g_kw_len = kw_len_at(at);
+  if (g_kw_len > 0) {
     return 0x0060C8E0;
   }
   return 0x00E8F0FF;
@@ -1471,12 +1928,42 @@ void draw_gutter_num(int x, int y, int num) {
   text(x, y, g_lnum, 0x00607080);
 }
 
+void flush_line_runs() {
+  if (g_trn > 0) {
+    textruns(g_tr, g_trn);
+  }
+  g_trn = 0;
+  g_trs = 0;
+}
+
 void flush_run(int x, int y, int n, int color) {
+  int i;
+  int base;
+  int p;
   if (n < 1) {
     return;
   }
-  storeb(g_run + n, 0);
-  text(x, y, g_run, color);
+  if (g_trn >= 80) {
+    flush_line_runs();
+  }
+  if (g_trs + n + 1 >= 1600) {
+    flush_line_runs();
+  }
+  i = 0;
+  while (i < n) {
+    storeb(g_trstr + g_trs + i, loadb(g_run + i));
+    i = i + 1;
+  }
+  storeb(g_trstr + g_trs + n, 0);
+  base = g_trn * 5;
+  g_tr[base] = x;
+  g_tr[base + 1] = y;
+  g_tr[base + 2] = color;
+  g_tr[base + 3] = n;
+  p = g_trstr;
+  g_tr[base + 4] = p + g_trs;
+  g_trs = g_trs + n + 1;
+  g_trn = g_trn + 1;
 }
 
 void draw_panel() {
@@ -1519,7 +2006,20 @@ void draw_text_view() {
   int run_col;
   int run_x;
   int hs_y;
+  int slo;
+  int shi;
+  int is_sel;
   hs_y = win_h() - 18 - 56 - 14;
+  slo = 0;
+  shi = 0;
+  if (g_mode == 3) {
+    slo = vis_lo();
+    shi = vis_hi();
+  }
+  if (g_mode == 4) {
+    slo = vis_lo();
+    shi = vis_hi();
+  }
   list_w = win_w() - 28;
   list_h = hs_y - 68;
   if (list_h < 32) {
@@ -1541,6 +2041,8 @@ void draw_text_view() {
   fillrgb(6, 68, list_w, list_h, 0x00101828);
   gx = 8;
   ensure_line_index();
+  g_trn = 0;
+  g_trs = 0;
   line = g_tscroll;
   i = g_line_starts[line];
   y = 68;
@@ -1570,6 +2072,7 @@ void draw_text_view() {
           c = loadb(g_buf + i);
           if (c == 10) {
             flush_run(run_x, y, rn, run_col);
+            flush_line_runs();
             rn = 0;
             is_cur = 0;
             if (g_cur == i) {
@@ -1585,14 +2088,7 @@ void draw_text_view() {
             break;
           }
           color = syn_color(i, in_str, in_lc, in_blk);
-          kl = 0;
-          if (in_str == 0) {
-            if (in_lc == 0) {
-              if (in_blk == 0) {
-                kl = kw_len_at(i);
-              }
-            }
-          }
+          kl = g_kw_len;
           if (in_blk == 0) {
             if (in_str == 0) {
               if (c == 47) {
@@ -1635,6 +2131,12 @@ void draw_text_view() {
           if (g_cur == i) {
             is_cur = 1;
           }
+          is_sel = 0;
+          if (i >= slo) {
+            if (i < shi) {
+              is_sel = 1;
+            }
+          }
           if (col >= g_thscroll) {
             if (px + 10 < win_w() - 24) {
               if (is_cur) {
@@ -1645,21 +2147,30 @@ void draw_text_view() {
                 px = px + 10;
                 run_x = px;
               } else {
-                if (rn == 0) {
-                  run_col = color;
-                  run_x = px;
-                }
-                if (color != run_col) {
+                if (is_sel) {
                   flush_run(run_x, y, rn, run_col);
                   rn = 0;
-                  run_col = color;
+                  fillrgb(px, y, 10, 14, 0x00385070);
+                  glyph(px, y, c, color);
+                  px = px + 10;
                   run_x = px;
+                } else {
+                  if (rn == 0) {
+                    run_col = color;
+                    run_x = px;
+                  }
+                  if (color != run_col) {
+                    flush_run(run_x, y, rn, run_col);
+                    rn = 0;
+                    run_col = color;
+                    run_x = px;
+                  }
+                  if (rn < 90) {
+                    storeb(g_run + rn, c);
+                    rn = rn + 1;
+                  }
+                  px = px + 10;
                 }
-                if (rn < 90) {
-                  storeb(g_run + rn, c);
-                  rn = rn + 1;
-                }
-                px = px + 10;
               }
             }
           }
@@ -1672,6 +2183,12 @@ void draw_text_view() {
               if (g_cur == i) {
                 is_cur = 1;
               }
+              is_sel = 0;
+              if (i >= slo) {
+                if (i < shi) {
+                  is_sel = 1;
+                }
+              }
               if (col >= g_thscroll) {
                 if (px + 10 < win_w() - 24) {
                   if (is_cur) {
@@ -1682,15 +2199,24 @@ void draw_text_view() {
                     px = px + 10;
                     run_x = px;
                   } else {
-                    if (rn == 0) {
-                      run_col = 0x0060C8E0;
+                    if (is_sel) {
+                      flush_run(run_x, y, rn, run_col);
+                      rn = 0;
+                      fillrgb(px, y, 10, 14, 0x00385070);
+                      glyph(px, y, c, 0x0060C8E0);
+                      px = px + 10;
                       run_x = px;
+                    } else {
+                      if (rn == 0) {
+                        run_col = 0x0060C8E0;
+                        run_x = px;
+                      }
+                      if (rn < 90) {
+                        storeb(g_run + rn, c);
+                        rn = rn + 1;
+                      }
+                      px = px + 10;
                     }
-                    if (rn < 90) {
-                      storeb(g_run + rn, c);
-                      rn = rn + 1;
-                    }
-                    px = px + 10;
                   }
                 }
               }
@@ -1701,6 +2227,7 @@ void draw_text_view() {
           col = col + 1;
         }
         flush_run(run_x, y, rn, run_col);
+        flush_line_runs();
         if (g_cur == g_len) {
           if (line == cur_line_num() - 1) {
             fillrgb(px, y, 8, 14, 0x00C0D0E0);
@@ -1713,7 +2240,60 @@ void draw_text_view() {
       }
     }
   }
+  flush_line_runs();
   draw_panel();
+}
+
+void paint_caret(int pos, int on) {
+  int line;
+  int col;
+  int x;
+  int y;
+  int c;
+  int list_h;
+  int hs_y;
+  int color;
+  hs_y = win_h() - 18 - 56 - 14;
+  list_h = hs_y - 68;
+  if (list_h < 32) {
+    list_h = 32;
+  }
+  ensure_line_index();
+  line = line_for_pos(pos);
+  if (line < g_tscroll) {
+    return;
+  }
+  y = 68 + (line - g_tscroll) * 16;
+  if (y + 16 > 68 + list_h) {
+    return;
+  }
+  col = pos - g_line_starts[line];
+  x = 8 + 36 + (col - g_thscroll) * 10;
+  if (x < 44) {
+    return;
+  }
+  if (x + 10 >= win_w() - 24) {
+    return;
+  }
+  c = 32;
+  if (pos < g_len) {
+    c = loadb(g_buf + pos);
+    if (c == 10) {
+      c = 32;
+    }
+  }
+  if (on) {
+    fillrgb(x, y, 10, 14, 0x00C0D0E0);
+    if (c != 32) {
+      glyph(x, y, c, 0x00101828);
+    }
+  } else {
+    fillrgb(x, y, 10, 14, 0x00101828);
+    if (c != 32) {
+      color = syn_color(pos, 0, 0, g_line_states[line] / 2);
+      glyph(x, y, c, color);
+    }
+  }
 }
 
 void draw_status() {
@@ -1734,7 +2314,15 @@ void draw_status() {
   if (g_mode == 1) {
     text(6, y + 1, "-- INSERT --", 0x0000FF80);
   } else {
-    text(6, y + 1, "NORMAL", 0x00A0C8E0);
+    if (g_mode == 3) {
+      text(6, y + 1, "-- VISUAL --", 0x00FFC040);
+    } else {
+      if (g_mode == 4) {
+        text(6, y + 1, "-- VISUAL LINE --", 0x00FFC040);
+      } else {
+        text(6, y + 1, "NORMAL", 0x00A0C8E0);
+      }
+    }
   }
   if (g_dirty) {
     text(90, y + 1, "[+]", 0x00FFE080);
@@ -1762,6 +2350,7 @@ void main() {
   int max_off;
   int list_h;
   int list_w;
+  int skip_draw;
   char arg[96];
   win_origin(80, 40);
   buf_init();
@@ -1790,6 +2379,7 @@ void main() {
   g_tscroll = 0;
   g_thscroll = 0;
   while (1) {
+    skip_draw = 0;
     live = win_begin_keep(720, 440, "Editor");
     if (live == 0) {
       return;
@@ -1956,8 +2546,48 @@ void main() {
       }
     } else {
       fillrgb(0, 48, win_w(), 20, 0x00101828);
-      text(8, 48, "Esc Normal  i insert  :w :q  /find  hjkl  dd x gg G", 0x00607080);
-      draw_text_view();
+      text(8, 48, "Esc  i  v V  yy p P  dd x  :w :e :n :cc  hjkl", 0x00607080);
+      skip_draw = 0;
+      if (g_line_index_dirty == 0) {
+        if (g_seen_ok) {
+          if (g_len == g_seen_len) {
+            if (g_tscroll == g_seen_ts) {
+              if (g_thscroll == g_seen_th) {
+                if (win_w() == g_seen_w) {
+                  if (win_h() == g_seen_h) {
+                    if (g_mode == g_seen_mode) {
+                      if (g_mode < 3) {
+                        if (g_view_gen == g_seen_gen) {
+                          if (mb == 0) {
+                            if (g_cur != g_seen_cur) {
+                              paint_caret(g_seen_cur, 0);
+                              paint_caret(g_cur, 1);
+                              g_seen_cur = g_cur;
+                            }
+                            skip_draw = 1;
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      if (skip_draw == 0) {
+        draw_text_view();
+        g_seen_ok = 1;
+        g_seen_len = g_len;
+        g_seen_cur = g_cur;
+        g_seen_ts = g_tscroll;
+        g_seen_th = g_thscroll;
+        g_seen_w = win_w();
+        g_seen_h = win_h();
+        g_seen_mode = g_mode;
+        g_seen_gen = g_view_gen;
+      }
     }
     draw_status();
     win_end();

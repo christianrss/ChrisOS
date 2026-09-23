@@ -84,6 +84,30 @@ static int compile_lst(const char *lst_path) {
     return 1;
 }
 
+static int compile_textruns(void) {
+    static const char src[] =
+        "void main() {\n"
+        "  int rec[5];\n"
+        "  rec[0] = 8;\n"
+        "  rec[1] = 8;\n"
+        "  rec[2] = 16777215;\n"
+        "  rec[3] = 2;\n"
+        "  rec[4] = 0;\n"
+        "  textruns(rec, 1);\n"
+        "  wait(1);\n"
+        "}\n";
+    static uint8_t code[65536];
+    ChrisResult res;
+    memset(&res, 0, sizeof(res));
+    if (!chrisc_compile(src, strlen(src), code, sizeof(code), &res)) {
+        fprintf(stderr, "textruns: %s:%d:%d %s\n", res.diag.file, res.diag.line,
+                res.diag.column, res.diag.message);
+        return 0;
+    }
+    printf("textruns: %u bytes\n", (unsigned)res.code_size);
+    return 1;
+}
+
 int main(void) {
     const char *lists[] = {
         "APPS/DESKTOP/DESKTOP.LST", "APPS/TASKBAR/TASKBAR.LST",
@@ -95,6 +119,9 @@ int main(void) {
         if (!compile_lst(lists[i])) {
             return 1;
         }
+    }
+    if (!compile_textruns()) {
+        return 1;
     }
     puts("test_chrisc_apps: ok");
     return 0;

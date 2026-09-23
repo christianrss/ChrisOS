@@ -1,12 +1,18 @@
 #include "jit.h"
 
+#include "bootinfo.h"
 #include "clvm/clvm_vm.h"
 #include "clvm_sys.h"
 #include "mm.h"
 #include "pmm.h"
 #include "serial.h"
 
-#define JIT_VIRT_BASE 0xffffffff92000000ull
+/*
+ * Kernel/Limine live in the 1GiB at 0xffffffff80000000 (PDPT[2]), together
+ * with LAPIC (90000000) and the old JIT window (92000000). Mapping 4K pages
+ * there and reloading CR3 left the machine dead mid-serial. PDPT[3] is empty.
+ */
+#define JIT_VIRT_BASE 0xffffffffc0000000ull
 #define JIT_VIRT_LIMIT (JIT_VIRT_BASE + 8192ull * PMM_PAGE)
 
 static uint64_t g_jit_virt_next = JIT_VIRT_BASE;
@@ -14,16 +20,17 @@ static ClvmVm *g_jit_vm;
 static void *g_jit_user;
 
 int jit_alloc(JitBuf *buf) {
-    uint32_t i;
     uint64_t virt;
 
     if (buf == NULL) {
         return -1;
     }
+    if (buf->pages == 0 || buf->pages > JIT_PAGES) {
+        buf->pages = JIT_PAGES;
+    }
     serial_puts("jit: alloc begin pages=");
-    serial_write_u64((uint64_t)JIT_PAGES);
+    serial_write_u64((uint64_t)buf->pages);
     serial_puts("\n");
-    buf->pages = JIT_PAGES;
     buf->phys = pmm_alloc_contig(buf->pages);
     if (buf->phys == 0) {
         serial_puts("jit: alloc contig failed\n");
@@ -39,17 +46,12 @@ int jit_alloc(JitBuf *buf) {
         return -1;
     }
     virt = g_jit_virt_next;
-    buf->w = (uint8_t *)(uintptr_t)virt;
-    buf->x = buf->w;
-    for (i = 0; i < buf->pages; ++i) {
-        map_4k(virt + (uint64_t)i * PMM_PAGE,
-               buf->phys + (uint64_t)i * PMM_PAGE,
-               MM_PRESENT | MM_WRITE | MM_NX);
-    }
     g_jit_virt_next += (uint64_t)buf->pages * PMM_PAGE;
+    buf->w = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(buf->phys);
+    buf->x = (uint8_t *)(uintptr_t)virt;
     buf->used = 0;
     buf->cap = (uint32_t)buf->pages * (uint32_t)PMM_PAGE;
-    serial_puts("jit: alloc map done cap=");
+    serial_puts("jit: alloc hhdm cap=");
     serial_write_u64((uint64_t)buf->cap);
     serial_puts("\n");
     return 0;
@@ -74,12 +76,27 @@ void jit_seal(JitBuf *buf) {
     if (buf == NULL || buf->x == NULL || buf->phys == 0) {
         return;
     }
+    serial_puts("jit: map exec pages=");
+    serial_write_u64((uint64_t)buf->pages);
+    serial_puts("\n");
     virt = (uint64_t)(uintptr_t)buf->x;
     for (i = 0; i < buf->pages; ++i) {
         map_4k(virt + (uint64_t)i * PMM_PAGE,
                buf->phys + (uint64_t)i * PMM_PAGE,
                MM_PRESENT);
     }
+    {
+        uint32_t eax, ebx, ecx, edx;
+        eax = 0;
+        __asm__ volatile("cpuid"
+                         : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
+                         : "a"(eax)
+                         : "memory");
+        (void)ebx;
+        (void)ecx;
+        (void)edx;
+    }
+    serial_puts("jit: map exec done\n");
 }
 
 void jit_free(JitBuf *buf) {
