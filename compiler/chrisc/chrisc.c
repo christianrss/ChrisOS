@@ -124,6 +124,8 @@ typedef struct Symbol {
     int16_t struct_id;
     uint16_t stride;
     uint16_t array_n;
+    uint8_t is_tls;
+    uint16_t tls_i;
 } Symbol;
 
 typedef struct StructDef {
@@ -259,6 +261,8 @@ typedef struct Compiler {
     int scope_stack[32];
     int tu_id;
     uint8_t saw_static;
+    uint8_t saw_tls;
+    int n_tls;
     uint8_t pack_pragma;
     uint16_t abi_major;
     uint16_t abi_minor;
@@ -450,6 +454,21 @@ static const Builtin builtins[] = {
     {"setjmp", 58, 1, 1, 0}, {"longjmp", 59, 2, 0, 0},
     {"gc_alloc", 70, 1, 1, 0}, {"gc_collect", 71, 0, 0, 0},
     {"thrd_create", 62, 2, 1, 0}, {"thrd_join", 63, 1, 1, 0},
+    {"mtx_lock", 127, 1, 1, 0}, {"mtx_unlock", 128, 1, 1, 0},
+    {"cnd_wait", 129, 2, 1, 0}, {"cnd_signal", 130, 1, 1, 0},
+    {"tls_get", 131, 1, 1, 0}, {"tls_set", 132, 2, 0, 0},
+    {"sock_listen", 140, 1, 1, 0}, {"sock_accept", 141, 1, 1, 0},
+    {"sock_connect", 142, 2, 1, 0}, {"sock_send", 143, 3, 1, 0},
+    {"sock_recv", 144, 3, 1, 0}, {"sock_close", 145, 1, 1, 0},
+    {"dns_lookup", 146, 1, 1, 0},
+    {"app_state", 133, 2, 1, 0}, {"app_reload", 134, 0, 1, 0},
+    {"rng_u32", 150, 0, 1, 0},
+    {"sha256", 151, 3, 1, 0}, {"aes_encrypt", 152, 3, 1, 0},
+    {"x25519", 153, 3, 1, 0},
+    {"pcm_write", 160, 2, 1, 0},
+    {"drv_outw", 170, 2, 1, 0}, {"drv_inw", 171, 1, 1, 0},
+    {"drv_outb", 172, 2, 1, 0}, {"drv_inb", 173, 1, 1, 0},
+    {"drv_irq", 174, 1, 1, 0}, {"drv_pci", 175, 4, 1, 0},
     {"cla_load", 64, 1, 1, 0},
     {"fseek", 65, 2, 1, 0},
     {"fb_blit", 72, 3, 0, 0}, {"setpal", 73, 1, 0, 0},
@@ -2402,6 +2421,7 @@ static int take(Compiler *c, TokenKind k) {
 static uint8_t take_qualifiers(Compiler *c) {
     uint8_t uns = 0;
     c->saw_static = 0;
+    c->saw_tls = 0;
     for (;;) {
         if (take(c, T_UNSIGNED)) {
             uns = 1;
@@ -2417,7 +2437,11 @@ static uint8_t take_qualifiers(Compiler *c) {
         }
         if (take(c, T_CONST) || take(c, T_EXTERN) ||
             take(c, T_VOLATILE) || take(c, T_INLINE) || take(c, T_RESTRICT) ||
-            take(c, T_NORETURN) || take(c, T_THREADLOCAL)) {
+            take(c, T_NORETURN)) {
+            continue;
+        }
+        if (take(c, T_THREADLOCAL)) {
+            c->saw_tls = 1;
             continue;
         }
         break;
@@ -2655,6 +2679,12 @@ static int sym_add(Compiler *c, Token *t, uint8_t is_float, uint8_t width,
             ? (uint16_t)(pointee ? pointee : 4)
             : (uint16_t)need;
         c->syms[i].array_n = 0;
+        c->syms[i].is_tls = 0;
+        c->syms[i].tls_i = 0;
+        if (c->saw_tls && scope_cur(c) == 0 && c->n_tls < 16) {
+            c->syms[i].is_tls = 1;
+            c->syms[i].tls_i = (uint16_t)c->n_tls++;
+        }
         c->mem_next += need;
         if (c->syms[i].scope == 0) {
             ht_ins_grid(c->ht_sym, HT_SYM_N, c->syms[i].name, i,
@@ -7642,6 +7672,10 @@ static int gen_expr(Compiler *c, int id) {
         return push(c, (int32_t)c->str_base + n->value, n) ? 1 : -1;
     }
     if (n->kind == N_VAR) {
+        if (c->syms[n->value].is_tls) {
+            return push(c, (int32_t)c->syms[n->value].tls_i, n) &&
+                   push(c, 131, n) && byte(c, CL_OP_SYS, n) ? 1 : -1;
+        }
         if (c->syms[n->value].is_array) {
             return push(c, (int32_t)c->syms[n->value].address, n) ? 1 : -1;
         }
@@ -8412,10 +8446,19 @@ static int gen_stmt(Compiler *c, int id) {
         } else if (!push(c, 0, n)) {
             return 0;
         }
+        if (c->syms[n->value].is_tls) {
+            return push(c, (int32_t)c->syms[n->value].tls_i, n) &&
+                   push(c, 132, n) && byte(c, CL_OP_SYS, n);
+        }
         return push(c, c->syms[n->value].address, n) &&
                byte(c, is_float ? CL_OP_FSTORE : mem_st(&c->syms[n->value]), n);
     }
     if (n->kind == N_ASSIGN) {
+        if (c->syms[n->value].is_tls) {
+            v = gen_expr(c, n->left);
+            return v == 1 && push(c, (int32_t)c->syms[n->value].tls_i, n) &&
+                   push(c, 132, n) && byte(c, CL_OP_SYS, n);
+        }
         v = gen_expr(c, n->left);
         return v == 1 && push(c, c->syms[n->value].address, n) &&
                byte(c, mem_st(&c->syms[n->value]), n);
@@ -8991,6 +9034,7 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
     c->pp_skip = 0;
     c->pp_depth = 0;
     c->ndef = 0;
+    c->n_tls = 0;
     lookups_reset(c);
     inc_cache_reset();
     add_builtin_macros(c);
@@ -9104,6 +9148,7 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
     c->pp_skip = 0;
     c->pp_depth = 0;
     c->ndef = 0;
+    c->n_tls = 0;
     lookups_reset(c);
     inc_cache_reset();
     add_builtin_macros(c);

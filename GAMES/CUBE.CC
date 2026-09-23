@@ -17,7 +17,7 @@ void main() {
   idx[24]=0; idx[25]=3; idx[26]=7; idx[27]=0; idx[28]=7; idx[29]=4;
   idx[30]=1; idx[31]=5; idx[32]=6; idx[33]=1; idx[34]=6; idx[35]=2;
   a=0.0;
-  viewport(320,200);
+  viewport(1920, 1080);
   while(1){
     if(key(1)){ return; }
     clear(1);

@@ -68,6 +68,8 @@ typedef struct ClvmVm {
     int64_t il_loc[32];
     int64_t il_arg[16];
     void (*on_safepoint)(struct ClvmVm *vm);
+    int64_t tls[16];
+    int32_t join_wait;
 } ClvmVm;
 
 void clvm_vm_init(ClvmVm *vm, const ClvmImage *image,

@@ -21,6 +21,7 @@
 #include "cls/cls.h"
 #include "heap.h"
 #include "gc/gc.h"
+#include "proc.h"
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
 #include "serial.h"
@@ -70,6 +71,14 @@ typedef struct LangSlot {
     uint32_t *front_pixels;
     int front_w;
     int front_h;
+    int proc_id;
+    uint8_t checkpoint[256];
+    int checkpoint_n;
+    uint32_t checkpoint_off;
+    char fn_name[16][24];
+    uint32_t fn_pc[16];
+    int fn_n;
+    uint32_t watch;
 } LangSlot;
 
 static LangSlot slots[LANG_VM_SLOTS];
@@ -647,6 +656,7 @@ static void lang_load_map(int slot, const char *clv) {
     int n;
     int i;
     slots[slot].map_n = 0;
+    slots[slot].fn_n = 0;
     slots[slot].step_line = 0;
     if (!clv)
         return;
@@ -661,6 +671,34 @@ static void lang_load_map(int slot, const char *clv) {
         unsigned line = 0;
         while (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\r')
             i++;
+        if (buf[i] == 'F' && buf[i + 1] == ' ') {
+            int k = 0;
+            int fi;
+            i += 2;
+            fi = slots[slot].fn_n;
+            if (fi < 16) {
+                while (buf[i] && buf[i] != ' ' && k < 23) {
+                    slots[slot].fn_name[fi][k++] = buf[i++];
+                }
+                slots[slot].fn_name[fi][k] = 0;
+                while (buf[i] == ' ')
+                    i++;
+                {
+                    unsigned pc = 0;
+                    while (buf[i] >= '0' && buf[i] <= '9') {
+                        pc = pc * 10u + (unsigned)(buf[i] - '0');
+                        i++;
+                    }
+                    slots[slot].fn_pc[fi] = pc;
+                    slots[slot].fn_n++;
+                }
+            }
+            while (buf[i] && buf[i] != '\n')
+                i++;
+            if (buf[i] == '\n')
+                i++;
+            continue;
+        }
         if (buf[i] == '0' && (buf[i + 1] == 'x' || buf[i + 1] == 'X'))
             i += 2;
         while ((buf[i] >= '0' && buf[i] <= '9') ||
@@ -719,11 +757,14 @@ static int lang_setup_viewport(int i, const ClvmImage *image, const char *name) 
     uint32_t *pix;
     uint32_t *zb;
     int slot;
-    (void)name;
+    int game3d;
+    (void)image;
     lang_slot_release_gfx(i);
     w = CLVM_SYS_GAME_W;
     h = CLVM_SYS_GAME_H;
-    if ((image->flags & CLVM_FLAG_GAME) != 0) {
+    game3d = name && name[0] == 'G' && name[1] == 'A' && name[2] == 'M' &&
+             name[3] == 'E' && name[4] == 'S' && name[5] == '/';
+    if (game3d) {
         slot = gfx_slot_alloc(w, h, &pix, &zb);
         if (slot >= 0) {
             slots[i].gfx_slot_id = slot;
@@ -981,6 +1022,7 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     scopy(slots[i].name, LANG_NAME_MAX, name);
     slots[i].task_id = -1;
     slots[i].used = 1;
+    slots[i].proc_id = proc_create(name);
     slots[i].debug_on = g_want_debug;
     slots[i].paused = g_want_debug;
     slots[i].step_one = 0;
@@ -1016,6 +1058,68 @@ int lang_run_path(const char *name) {
 int lang_run_path_replace(const char *name) {
     (void)lang_kill_by_name(name);
     return lang_run_path_arg(name, 0);
+}
+
+int lang_checkpoint_save(int slot, const uint8_t *bytes, int n, uint32_t off) {
+    int i;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used || !bytes)
+        return -1;
+    if (n < 0)
+        n = 0;
+    if (n > (int)sizeof(slots[slot].checkpoint))
+        n = (int)sizeof(slots[slot].checkpoint);
+    for (i = 0; i < n; ++i)
+        slots[slot].checkpoint[i] = bytes[i];
+    slots[slot].checkpoint_n = n;
+    slots[slot].checkpoint_off = off;
+    return n;
+}
+
+int lang_hot_reload(const char *name) {
+    int i;
+    int n;
+    int k;
+    ClvmImage image;
+    ClvmLoadError load;
+    uint8_t *born;
+    if (!name || !name[0])
+        return 0;
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && samestr(slots[i].name, name))
+            break;
+    }
+    if (i == LANG_VM_SLOTS)
+        return 0;
+    if (!slot_ensure_file(i))
+        return 0;
+    n = fs_read(name, file_buffer, (int)sizeof(file_buffer));
+    if (n < 0)
+        return 0;
+    load = clvm_parse(file_buffer, (size_t)n, &image);
+    if (load != CL_LOAD_OK)
+        return 0;
+    for (k = 0; k < n; ++k)
+        slots[i].file[k] = file_buffer[k];
+    slots[i].file_size = (size_t)n;
+    image.code = slots[i].file + (image.code - file_buffer);
+    clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
+    born = slots[i].vm.mem_owned ? slots[i].vm.memory : 0;
+    slots[i].vm.on_safepoint = lang_safepoint;
+    lang_attach_slot_ram(i, &image);
+    if (born && born != slots[i].heap_ram)
+        kfree(born);
+    if (slots[i].checkpoint_n > 0 && slots[i].vm.memory &&
+        (uint64_t)slots[i].checkpoint_off + (uint64_t)slots[i].checkpoint_n <=
+            slots[i].vm.mem_size) {
+        for (k = 0; k < slots[i].checkpoint_n; ++k)
+            slots[i].vm.memory[slots[i].checkpoint_off + (uint32_t)k] =
+                slots[i].checkpoint[k];
+    }
+    lang_load_map(i, name);
+    serial_puts("run: hot reload ");
+    serial_puts(name);
+    serial_puts("\n");
+    return 1;
 }
 
 void lang_set_app_arg(const char *arg) {
@@ -1281,6 +1385,7 @@ int lang_splash_start(const char *name) {
     scopy(slots[i].name, LANG_NAME_MAX, name);
     slots[i].task_id = -1;
     slots[i].used = 1;
+    slots[i].proc_id = proc_create(name);
     return 1;
 }
 
@@ -1315,6 +1420,7 @@ void lang_tick(uint32_t now) {
     int i;
 
     bench_frame_tick();
+    clvm_threads_tick();
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         if (slots[i].used) {
             ClvmStepResult r;
@@ -1377,6 +1483,10 @@ void lang_tick(uint32_t now) {
                     if (r != CLVM_STEP_SLICE) {
                         break;
                     }
+                    if (proc_slice_due()) {
+                        proc_slice_ack();
+                        break;
+                    }
                     if (game) {
                         break;
                     }
@@ -1388,6 +1498,8 @@ void lang_tick(uint32_t now) {
             }
     if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT || slots[i].dying) {
                 if (r == CLVM_STEP_FAULT) {
+                    proc_record_fault(slots[i].proc_id, 0, 0,
+                                      (uint64_t)slots[i].vm.pc);
                     serial_puts("run: FAULT slot=");
                     serial_write_u64((uint64_t)(uint32_t)i);
                     serial_puts(" pc=");
@@ -1463,6 +1575,10 @@ int lang_kill(int slot) {
         kfree(slots[slot].file);
         slots[slot].file = 0;
         slots[slot].file_cap = 0;
+    }
+    if (slots[slot].proc_id > 0) {
+        proc_destroy(slots[slot].proc_id);
+        slots[slot].proc_id = 0;
     }
     slots[slot].used = 0;
     slots[slot].dying = 0;
@@ -1698,6 +1814,28 @@ void lang_write_map(const char *clv_path, const ChrisResult *r) {
                 buf[n++] = tmp[c];
         }
     }
+    for (i = 0; i < r->nexports && n + 40 < (int)sizeof(buf); ++i) {
+        int c;
+        buf[n++] = 'F';
+        buf[n++] = ' ';
+        for (c = 0; r->export_name[i][c] && n + 8 < (int)sizeof(buf); ++c)
+            buf[n++] = r->export_name[i][c];
+        buf[n++] = ' ';
+        {
+            unsigned x = r->export_pc[i];
+            char dec[12];
+            int d = 0;
+            if (x == 0)
+                dec[d++] = '0';
+            while (x && d < 12) {
+                dec[d++] = (char)('0' + (x % 10));
+                x /= 10;
+            }
+            while (d && n + 2 < (int)sizeof(buf))
+                buf[n++] = dec[--d];
+        }
+        buf[n++] = '\n';
+    }
     buf[n] = 0;
     if (n > 0)
         (void)fs_write(mapn, buf, n);
@@ -1745,6 +1883,75 @@ uint32_t lang_debug_pc(void) {
             return slots[i].vm.pc;
     }
     return 0;
+}
+
+uint32_t lang_debug_call(int depth) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on) {
+            if (depth < 0 || depth >= (int)slots[s].vm.csp)
+                return 0;
+            return slots[s].vm.calls[slots[s].vm.csp - 1 - depth];
+        }
+    }
+    return 0;
+}
+
+const char *lang_debug_fn(uint32_t pc) {
+    int s;
+    int i;
+    int best = -1;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (!slots[s].used || !slots[s].debug_on)
+            continue;
+        for (i = 0; i < slots[s].fn_n; ++i) {
+            if (slots[s].fn_pc[i] <= pc &&
+                (best < 0 || slots[s].fn_pc[i] >= slots[s].fn_pc[best]))
+                best = i;
+        }
+        if (best >= 0)
+            return slots[s].fn_name[best];
+    }
+    return "";
+}
+
+void lang_debug_set_watch(uint32_t addr) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on)
+            slots[s].watch = addr;
+    }
+}
+
+uint32_t lang_debug_watch(void) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on)
+            return slots[s].watch;
+    }
+    return 0;
+}
+
+int lang_debug_sys(int index, int *id) {
+    int slot = -1;
+    int sys = 0;
+    clvm_sys_trace(index, &sys, &slot);
+    if (id)
+        *id = sys;
+    return slot;
+}
+
+int lang_debug_fault(uint64_t *cr2, int *pid, uint64_t *rip) {
+    const ProcFault *f = proc_last_fault();
+    if (!f || !f->valid)
+        return 0;
+    if (cr2)
+        *cr2 = f->cr2;
+    if (pid)
+        *pid = f->pid;
+    if (rip)
+        *rip = f->rip;
+    return 1;
 }
 
 int64_t lang_debug_stack(int i) {

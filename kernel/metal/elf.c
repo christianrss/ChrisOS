@@ -4,6 +4,7 @@
 #include "mm.h"
 #include "pmm.h"
 #include "syscall.h"
+#include "proc.h"
 
 #define ELF_MAGIC0 0x7fu
 #define ELF_CLASS64 2u
@@ -53,14 +54,18 @@ static int elf_check_header(const uint8_t *file, uint32_t nbytes) {
     return 0;
 }
 
-static void elf_zero_page(uint64_t virt, uint64_t phys, uint64_t page_flags) {
+static int g_elf_pid;
+
+static void elf_zero_user(uint64_t virt, uint64_t phys, uint64_t page_flags) {
     uint64_t *words;
     uint64_t index;
 
-    map_4k(virt, phys, page_flags);
     words = (uint64_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
     for (index = 0; index < PMM_PAGE / sizeof(uint64_t); ++index) {
         words[index] = 0;
+    }
+    if (proc_map_user(g_elf_pid, virt, phys, page_flags) != 0) {
+        map_4k(virt, phys, page_flags);
     }
 }
 
@@ -72,7 +77,6 @@ static int elf_map_segment(const uint8_t *file, uint32_t nbytes,
     uint64_t page_end;
     uint64_t virt;
     uint64_t phys;
-    uint64_t copy_off;
     uint64_t copy_len;
     uint8_t *dst;
 
@@ -95,33 +99,33 @@ static int elf_map_segment(const uint8_t *file, uint32_t nbytes,
     page_end = (vaddr + memsz + PMM_PAGE - 1ull) & ~(PMM_PAGE - 1ull);
 
     for (virt = page_start; virt < page_end; virt += PMM_PAGE) {
+        uint64_t page_off;
         phys = pmm_alloc();
         if (phys == 0) {
             return -1;
         }
-        elf_zero_page(virt, phys, page_flags);
-    }
-
-    copy_off = 0;
-    while (copy_off < filesz) {
-        virt = vaddr + copy_off;
-        phys = mm_virt_to_phys(virt);
-        if (phys == 0) {
-            return -1;
+        elf_zero_user(virt, phys, page_flags);
+        if (virt + PMM_PAGE <= vaddr || virt >= vaddr + filesz) {
+            continue;
         }
-        dst = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(phys & ~(PMM_PAGE - 1ull));
-        dst += virt & (PMM_PAGE - 1ull);
-        copy_len = PMM_PAGE - (virt & (PMM_PAGE - 1ull));
-        if (copy_len > filesz - copy_off) {
-            copy_len = filesz - copy_off;
+        page_off = virt < vaddr ? 0 : virt - vaddr;
+        dst = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
+        if (virt < vaddr) {
+            dst += (uint32_t)(vaddr - virt);
+        }
+        copy_len = PMM_PAGE;
+        if (virt < vaddr) {
+            copy_len = PMM_PAGE - (vaddr - virt);
+        }
+        if (page_off + copy_len > filesz) {
+            copy_len = filesz - page_off;
         }
         {
             uint64_t i;
             for (i = 0; i < copy_len; ++i) {
-                dst[i] = file[offset + copy_off + i];
+                dst[i] = file[offset + page_off + i];
             }
         }
-        copy_off += copy_len;
     }
 
     syscall_set_user_map(USER_LOAD_LO, USER_LOAD_HI);
@@ -153,6 +157,12 @@ int elf_load(const uint8_t *file, uint32_t nbytes, uint64_t *entry_out) {
     if (entry < USER_LOAD_LO || entry >= USER_LOAD_HI) {
         return -1;
     }
+
+    g_elf_pid = proc_create("elf");
+    if (g_elf_pid < 0) {
+        return -1;
+    }
+    proc_switch(g_elf_pid);
 
     for (index = 0; index < phnum; ++index) {
         const uint8_t *ph = file + phoff + (uint64_t)index * (uint64_t)phentsize;

@@ -12,6 +12,10 @@
 
 void mm_init(void);
 void mm_selftest(void);
+uint64_t mm_kernel_cr3(void);
+uint64_t mm_clone_kernel_space(void);
+void mm_switch(uint64_t cr3_phys);
+int mm_map_cr3(uint64_t cr3_phys, uint64_t virt, uint64_t phys, uint64_t flags);
 void map_4k(uint64_t virt, uint64_t phys, uint64_t flags);
 void map_4k_nosync(uint64_t virt, uint64_t phys, uint64_t flags);
 void mm_flush_tlb(void);

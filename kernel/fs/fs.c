@@ -385,6 +385,23 @@ int fs_stat(const char *path, uint32_t *size, uint16_t *type) {
     return CFS_OK;
 }
 
+int fs_mtime(const char *path, uint64_t *out) {
+    Cfs *fs;
+    if (!out) {
+        return CFS_EINVAL;
+    }
+    if (g_backend == FS_BACKEND_CFS) {
+        fs = storage_cfs();
+        if (!fs) {
+            return CFS_ENOTMOUNTED;
+        }
+        return cfs_mtime(fs, path, out);
+    }
+    *out = 0;
+    (void)path;
+    return CFS_ENOENT;
+}
+
 int fs_list_at(const char *path, FsListFn fn, void *ctx) {
     Cfs *fs;
     if (!fn) {

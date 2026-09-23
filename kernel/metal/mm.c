@@ -67,6 +67,25 @@ static uint64_t *ensure_table(uint64_t *parent, unsigned index) {
     return table_from_phys(entry);
 }
 
+static uint64_t *ensure_table_flags(uint64_t *parent, unsigned index, uint64_t extra) {
+    uint64_t entry;
+    uint64_t child;
+
+    entry = parent[index];
+    if ((entry & MM_PRESENT) == 0) {
+        child = alloc_zero_table();
+        parent[index] = child | MM_PRESENT | MM_WRITE | extra;
+        return table_from_phys(child);
+    }
+    if ((entry & MM_PS) != 0) {
+        panic("mm: huge page no caminho de map_4k");
+    }
+    if ((extra & MM_USER) != 0 && (entry & MM_USER) == 0) {
+        parent[index] = entry | MM_USER;
+    }
+    return table_from_phys(entry);
+}
+
 static void map_4k_ex(uint64_t virt, uint64_t phys, uint64_t flags, int shootdown) {
     uint64_t *pml4;
     uint64_t *pdpt;
@@ -161,6 +180,54 @@ uint64_t mm_virt_to_phys(uint64_t virt) {
         return 0;
     }
     return (entry & MM_ADDR_MASK) | (virt & 0xfffull);
+}
+
+uint64_t mm_kernel_cr3(void) {
+    return mm_cr3_phys;
+}
+
+uint64_t mm_clone_kernel_space(void) {
+    uint64_t phys;
+    uint64_t *dst;
+    uint64_t *src;
+    unsigned i;
+
+    if (!mm_ready) {
+        return 0;
+    }
+    phys = alloc_zero_table();
+    dst = table_from_phys(phys);
+    src = table_from_phys(mm_cr3_phys);
+    for (i = 256; i < 512; ++i) {
+        dst[i] = src[i];
+    }
+    return phys;
+}
+
+void mm_switch(uint64_t cr3_phys) {
+    __asm__ volatile ("mov %0, %%cr3" : : "r"(cr3_phys) : "memory");
+}
+
+int mm_map_cr3(uint64_t cr3_phys, uint64_t virt, uint64_t phys, uint64_t flags) {
+    uint64_t *pml4;
+    uint64_t *pdpt;
+    uint64_t *pd;
+    uint64_t *pt;
+    uint64_t extra;
+
+    if (!mm_ready || cr3_phys == 0) {
+        return -1;
+    }
+    if ((virt & (PMM_PAGE - 1ull)) != 0 || (phys & (PMM_PAGE - 1ull)) != 0) {
+        return -1;
+    }
+    extra = (flags & MM_USER) ? MM_USER : 0;
+    pml4 = table_from_phys(cr3_phys);
+    pdpt = ensure_table_flags(pml4, pml4_index(virt), extra);
+    pd = ensure_table_flags(pdpt, pdpt_index(virt), extra);
+    pt = ensure_table_flags(pd, pd_index(virt), extra);
+    pt[pt_index(virt)] = (phys & MM_ADDR_MASK) | (flags | MM_PRESENT);
+    return 0;
 }
 
 void mm_init(void) {

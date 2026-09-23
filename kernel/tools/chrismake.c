@@ -31,6 +31,7 @@ typedef struct {
     int nrules;
     int visiting[MK_RULES];
     ChrisMakeRecipeFn run;
+    ChrisMakeStampFn stamp;
     void *user;
 } MkFile;
 
@@ -516,6 +517,25 @@ static int build_target(MkFile *m, const char *name, int depth, char *err,
             return 0;
         }
     }
+    if (!m->rules[ri].phony && m->stamp) {
+        uint64_t tm = 0;
+        int fresh = 1;
+        if (m->stamp(m->user, name, &tm) != 0) {
+            fresh = 0;
+        }
+        for (i = 0; fresh && i < m->rules[ri].npre; i++) {
+            char pre[MK_PATH];
+            uint64_t pm = 0;
+            expand(m, m->rules[ri].prereq[i], pre, MK_PATH, name, 0);
+            if (m->stamp(m->user, pre, &pm) != 0 || pm > tm) {
+                fresh = 0;
+            }
+        }
+        if (fresh) {
+            m->visiting[ri] = 0;
+            return 1;
+        }
+    }
     lt = m->rules[ri].npre ? m->rules[ri].prereq[0] : "";
     {
         char lt_exp[MK_PATH];
@@ -546,8 +566,9 @@ static int build_target(MkFile *m, const char *name, int depth, char *err,
     return 1;
 }
 
-int chrismake_run(const char *text, const char *target, ChrisMakeRecipeFn run,
-                  void *user, char *err, int err_cap) {
+int chrismake_run_stamped(const char *text, const char *target,
+                          ChrisMakeRecipeFn run, ChrisMakeStampFn stamp,
+                          void *user, char *err, int err_cap) {
     MkFile m;
     char want[MK_PATH];
     if (err && err_cap > 0) {
@@ -557,6 +578,7 @@ int chrismake_run(const char *text, const char *target, ChrisMakeRecipeFn run,
         return 0;
     }
     m.run = run;
+    m.stamp = stamp;
     m.user = user;
     if (target && target[0]) {
         mk_copy(want, MK_PATH, target);
@@ -566,6 +588,11 @@ int chrismake_run(const char *text, const char *target, ChrisMakeRecipeFn run,
         return 0;
     }
     return build_target(&m, want, 0, err, err_cap);
+}
+
+int chrismake_run(const char *text, const char *target, ChrisMakeRecipeFn run,
+                  void *user, char *err, int err_cap) {
+    return chrismake_run_stamped(text, target, run, 0, user, err, err_cap);
 }
 
 int chrismake_first_recipe(const char *text, const char *target, char *out,

@@ -6,4 +6,6 @@ int mtx_lock(int *m);
 int mtx_unlock(int *m);
 int cnd_wait(int *c, int *m);
 int cnd_signal(int *c);
+int tls_get(int i);
+void tls_set(int i, int v);
 #endif

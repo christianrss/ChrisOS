@@ -87,6 +87,10 @@ int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity);
 int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
                 uint32_t capacity);
 int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size);
+int cfs_mtime(Cfs *fs, const char *path, uint64_t *out);
+int cfs_write_at(Cfs *fs, const char *path, uint32_t offset,
+                 const void *data, uint32_t size);
+void cfs_set_now(uint64_t now);
 int cfs_truncate(Cfs *fs, const char *path, uint32_t size);
 int cfs_list(Cfs *fs, CfsListFn fn, void *ctx);
 int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx);

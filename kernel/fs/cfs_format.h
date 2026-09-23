@@ -35,6 +35,9 @@ typedef struct CfsInode {
     uint32_t uid;
     uint32_t gid;
     uint32_t mode;
+    uint32_t triple_indirect;
+    uint32_t mtime_lo;
+    uint32_t mtime_hi;
 } CfsInode;
 
 typedef struct CfsDirent {
@@ -108,7 +111,10 @@ static inline void cfs_super_encode(uint8_t out[512],
 static inline int cfs_super_decode(CfsSuper *s,
                                    const uint8_t in[512]) {
     if (cfs_get32(in + 0) != CFS_MAGIC) return -1;
-    if (cfs_get16(in + 4) != CFS_VERSION) return -2;
+    {
+        uint16_t ver = cfs_get16(in + 4);
+        if (ver != CFS_VERSION && ver != CFS_VERSION_COMPAT) return -2;
+    }
     if (cfs_get16(in + 6) != STOR_SECTOR_SIZE) return -3;
     if (cfs_get32(in + 8) != STOR_DISK_SECTORS) return -4;
     if (cfs_get32(in + 12) != CFS_BITMAP_LBA) return -5;
@@ -144,6 +150,9 @@ static inline void cfs_inode_encode(uint8_t out[CFS_INODE_SIZE],
     cfs_put32(out + 68, n->uid);
     cfs_put32(out + 72, n->gid);
     cfs_put32(out + 76, n->mode);
+    cfs_put32(out + 80, n->triple_indirect);
+    cfs_put32(out + 84, n->mtime_lo);
+    cfs_put32(out + 88, n->mtime_hi);
     cfs_put32(out + 124, cfs_checksum(out, 124u));
 }
 
@@ -163,6 +172,9 @@ static inline int cfs_inode_decode(CfsInode *n,
     n->uid = cfs_get32(in + 68);
     n->gid = cfs_get32(in + 72);
     n->mode = cfs_get32(in + 76);
+    n->triple_indirect = cfs_get32(in + 80);
+    n->mtime_lo = cfs_get32(in + 84);
+    n->mtime_hi = cfs_get32(in + 88);
     return 0;
 }
 

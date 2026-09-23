@@ -4,6 +4,7 @@
 #include "serial.h"
 #include "virtio_net.h"
 #include "net_xfer.h"
+#include "sock.h"
 
 #define NET_IP0 10u
 #define NET_IP1 0u
@@ -277,6 +278,7 @@ static void net_udp_echo(const uint8_t *frame, uint32_t n) {
     udp = ip + ihl;
     dport = read_be16(udp + 2);
     if (dport != 7u) {
+        sock_on_udp(frame, n);
         return;
     }
     udp_len = read_be16(udp + 4);
@@ -394,6 +396,9 @@ static void net_tcp(const uint8_t *frame, uint32_t n) {
         net_xfer_tcp(frame, n);
         return;
     }
+    if (sock_on_tcp(frame, n)) {
+        return;
+    }
     if (dst_port != 7u) {
         return;
     }
@@ -497,6 +502,7 @@ int net_init(void) {
     }
     g_net_ready = 1;
     net_xfer_init();
+    sock_init();
     serial_puts("net: ip=");
     serial_write_u64(NET_IP0);
     serial_puts(".");
@@ -509,9 +515,58 @@ int net_init(void) {
     return 1;
 }
 
+int net_copy_gw_mac(uint8_t mac[6]) {
+    int i;
+    if (!g_gw_mac_valid || !mac) {
+        return 0;
+    }
+    for (i = 0; i < 6; ++i) {
+        mac[i] = g_gw_mac[i];
+    }
+    return 1;
+}
+
+const uint8_t *net_our_ip(void) {
+    return g_our_ip;
+}
+
+int net_udp_send(const uint8_t dst_ip[4], uint16_t src_port, uint16_t dst_port,
+                 const uint8_t *payload, uint32_t payload_len) {
+    uint8_t mac[6];
+    const uint8_t *our_mac;
+    uint32_t udp_len;
+    uint32_t ip_total;
+    uint32_t out_len;
+    uint32_t i;
+
+    if (!g_net_ready || !dst_ip || payload_len > 1400u) {
+        return -1;
+    }
+    if (!net_copy_gw_mac(mac)) {
+        return -1;
+    }
+    our_mac = virtio_net_mac();
+    udp_len = 8u + payload_len;
+    ip_total = 20u + udp_len;
+    eth_build(g_tx, mac, our_mac, 0x0800u);
+    (void)ip_build(g_tx + 14, g_our_ip, dst_ip, IP_PROTO_UDP, (uint16_t)ip_total);
+    write_be16(g_tx + 34, src_port);
+    write_be16(g_tx + 36, dst_port);
+    write_be16(g_tx + 38, (uint16_t)udp_len);
+    write_be16(g_tx + 40, 0);
+    for (i = 0; i < payload_len; ++i) {
+        g_tx[42 + i] = payload[i];
+    }
+    out_len = 14u + ip_total;
+    net_send_frame(g_tx, out_len);
+    return (int)payload_len;
+}
+
 void net_poll(void) {
     if (g_net_ready) {
         virtio_net_poll();
+        sock_tick();
+        host_rebuild_tick();
     }
 }
 

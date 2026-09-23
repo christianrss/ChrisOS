@@ -1,4 +1,7 @@
 #include "clvm_vm.h"
+#ifdef __freestanding__
+#include "proc.h"
+#endif
 
 #ifdef __freestanding__
 #include "heap.h"
@@ -176,6 +179,12 @@ void clvm_vm_init(ClvmVm *vm, const ClvmImage *image,
     vm->print_n = 0;
     vm->safepoint = 0;
     vm->on_safepoint = 0;
+    vm->join_wait = -1;
+    {
+        int ti;
+        for (ti = 0; ti < 16; ++ti)
+            vm->tls[ti] = 0;
+    }
     if (vm->mem_size >= (16ull * 1024ull * 1024ull))
         vm->heap_off = 1024ull * 1024ull;
     else if (vm->mem_size > 131072ull)
@@ -346,6 +355,10 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
             return fail(vm, CLVM_FAULT_PC, op_pc);
         op = arg[0];
         ++vm->executed;
+#ifdef __freestanding__
+        if ((vm->executed & 8191ull) == 0 && proc_slice_due())
+            return CLVM_STEP_YIELD;
+#endif
 
         switch (op) {
         case CL_OP_NOP:
@@ -355,6 +368,10 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
             if (vm->on_safepoint)
                 vm->on_safepoint(vm);
             vm->safepoint = 0;
+#ifdef __freestanding__
+            if (proc_slice_due())
+                return CLVM_STEP_YIELD;
+#endif
             break;
         case CL_OP_PUSH:
             if (!fetch(vm, 4, &arg))

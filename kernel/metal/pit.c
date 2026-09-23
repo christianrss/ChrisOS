@@ -1,6 +1,7 @@
 #include "pit.h"
 #include "irq.h"
 #include "port.h"
+#include "proc.h"
 
 #define PIT_INPUT_HZ 1193182u
 
@@ -9,6 +10,7 @@ volatile uint64_t ticks;
 static void pit_irq(struct irq_frame *frame) {
     (void)frame;
     ++ticks;
+    proc_on_tick();
 }
 
 bool pit_init(uint32_t frequency_hz) {

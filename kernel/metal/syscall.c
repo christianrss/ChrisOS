@@ -6,6 +6,7 @@
 #include "serial.h"
 #include "fs.h"
 #include "input.h"
+#include "proc.h"
 
 static int g_user_exited;
 static int g_user_exit_code;
@@ -216,13 +217,18 @@ void syscall_dispatch(struct irq_frame *frame) {
 }
 
 void panic_user_fault(struct irq_frame *frame, uint64_t cr2) {
+    int pid = proc_current();
+    proc_record_fault(pid, 0, cr2, frame->rip);
+    if (pid > 0) {
+        proc_destroy(pid);
+    }
     serial_puts("\nuser fault rip=");
     serial_write_hex(frame->rip);
     serial_puts(" cr2=");
     serial_write_hex(cr2);
     serial_puts(" err=");
     serial_write_hex(frame->error);
-    serial_puts(" (returned to kernel)\n");
+    serial_puts(" (process ended)\n");
     g_user_exit_code = -11;
     syscall_return_to_kernel(frame);
 }

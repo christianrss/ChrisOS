@@ -290,7 +290,7 @@ int cfs_fsck(Cfs *fs) {
             errors++;
             continue;
         }
-        if (inode.size > CFS_MAX_FILE_SIZE) {
+        if (inode.size > CFS_MAX_FILE_BYTES) {
             set_reason("size vs blocks");
             errors++;
         }
@@ -320,6 +320,8 @@ int cfs_fsck(Cfs *fs) {
             (void)note_ptr_table(fs->dev, inode.indirect, &errors, 1);
         if (inode.double_indirect)
             (void)note_ptr_table(fs->dev, inode.double_indirect, &errors, 2);
+        if (inode.triple_indirect)
+            (void)note_ptr_table(fs->dev, inode.triple_indirect, &errors, 3);
         if (id == CFS_ROOT_INODE && inode.type != CFS_INODE_DIR) {
             set_reason("root type");
             errors++;

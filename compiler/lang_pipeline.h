@@ -62,5 +62,13 @@ int lang_bp_add(uint32_t pc);
 int lang_bp_toggle_line(int line);
 uint16_t lang_debug_line(void);
 void lang_write_map(const char *clv_path, const ChrisResult *r);
+int lang_hot_reload(const char *clv_name);
+int lang_checkpoint_save(int slot, const uint8_t *bytes, int n, uint32_t off);
+uint32_t lang_debug_call(int depth);
+const char *lang_debug_fn(uint32_t pc);
+void lang_debug_set_watch(uint32_t addr);
+uint32_t lang_debug_watch(void);
+int lang_debug_sys(int index, int *id);
+int lang_debug_fault(uint64_t *cr2, int *pid, uint64_t *rip);
 
 #endif

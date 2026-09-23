@@ -2,6 +2,11 @@
 #include <stdint.h>
 #include "port.h"
 #include "ata_pio.h"
+#include "pci.h"
+#include "irq.h"
+#include "pmm.h"
+#include "bootinfo.h"
+#include "serial.h"
 
 #define ATA_REG_DATA       0u
 #define ATA_REG_COUNT      2u
@@ -21,6 +26,97 @@
 #define ATA_CMD_WRITE      0x30u
 #define ATA_CMD_FLUSH      0xe7u
 #define ATA_CMD_IDENTIFY   0xecu
+#define ATA_CMD_READ_DMA   0xc8u
+#define ATA_CMD_WRITE_DMA  0xcau
+
+static volatile int g_ide_irq;
+static uint16_t g_bm_io;
+
+static void ide_irq(struct irq_frame *frame) {
+    uint8_t st;
+    (void)frame;
+    g_ide_irq = 1;
+    if (g_bm_io != 0) {
+        st = inb((uint16_t)(g_bm_io + 2u));
+        outb((uint16_t)(g_bm_io + 2u), st);
+    }
+}
+
+static void ata_program(const AtaPio *a, uint32_t lba,
+                        uint8_t count, uint8_t command);
+
+static int ata_dma_wait(uint16_t bm) {
+    uint32_t i;
+    for (i = 0; i < 1000000u; ++i) {
+        uint8_t st = inb((uint16_t)(bm + 2u));
+        if (g_ide_irq || (st & 0x04u)) {
+            if (st & 0x02u) {
+                return BD_EIO;
+            }
+            return BD_OK;
+        }
+        __asm__ volatile ("pause");
+    }
+    return BD_ETIMEOUT;
+}
+
+static int ata_dma_xfer(AtaPio *a, uint32_t lba, uint8_t count,
+                        uint8_t *buf, int write) {
+    uint32_t bytes;
+    uint64_t pages;
+    uint64_t phys;
+    uint64_t prdt_phys;
+    uint8_t *dst;
+    uint32_t *prdt;
+    uint8_t cmd;
+    int rc;
+
+    if (!a->dma || a->bm == 0 || count == 0 || count > 16u) {
+        return BD_ENODEV;
+    }
+    bytes = (uint32_t)count * 512u;
+    pages = (bytes + PMM_PAGE - 1ull) / PMM_PAGE;
+    phys = pmm_alloc_contig(pages);
+    prdt_phys = pmm_alloc();
+    if (phys == 0 || prdt_phys == 0) {
+        if (phys) {
+            pmm_free_contig(phys, pages);
+        }
+        if (prdt_phys) {
+            pmm_free(prdt_phys);
+        }
+        return BD_EIO;
+    }
+    dst = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
+    if (write) {
+        uint32_t i;
+        for (i = 0; i < bytes; ++i) {
+            dst[i] = buf[i];
+        }
+    }
+    prdt = (uint32_t *)(uintptr_t)bootinfo_phys_to_virt(prdt_phys);
+    prdt[0] = (uint32_t)phys;
+    prdt[1] = bytes | 0x80000000u;
+    outb((uint16_t)(a->bm + 0u), 0);
+    outl((uint16_t)(a->bm + 4u), (uint32_t)prdt_phys);
+    outb((uint16_t)(a->bm + 2u), 0x06u);
+    cmd = write ? 0x00u : 0x08u;
+    outb((uint16_t)(a->bm + 0u), cmd);
+    g_ide_irq = 0;
+    ata_program(a, lba, count, write ? ATA_CMD_WRITE_DMA : ATA_CMD_READ_DMA);
+    outb((uint16_t)(a->bm + 0u), (uint8_t)(cmd | 0x01u));
+    rc = ata_dma_wait(a->bm);
+    outb((uint16_t)(a->bm + 0u), 0);
+    if (rc == BD_OK && !write) {
+        uint32_t i;
+        for (i = 0; i < bytes; ++i) {
+            buf[i] = dst[i];
+        }
+    }
+    pmm_free_contig(phys, pages);
+    pmm_free(prdt_phys);
+    return rc;
+}
 
 static uint16_t ata_inw(uint16_t port) {
     uint16_t v;
@@ -135,8 +231,12 @@ static int ata_bd_read(void *ctx, uint32_t lba,
     AtaPio *a = ctx;
     uint8_t *p = dst;
     while (count) {
-        uint8_t n = (uint8_t)(count > 255u ? 255u : count);
-        int rc = ata_read_chunk(a, lba, n, p);
+        uint8_t n = (uint8_t)(count > 16u ? 16u : count);
+        int rc = ata_dma_xfer(a, lba, n, p, 0);
+        if (rc != BD_OK) {
+            n = (uint8_t)(count > 255u ? 255u : count);
+            rc = ata_read_chunk(a, lba, n, p);
+        }
         if (rc != BD_OK)
             return rc;
         lba += n;
@@ -151,8 +251,12 @@ static int ata_bd_write(void *ctx, uint32_t lba,
     AtaPio *a = ctx;
     const uint8_t *p = src;
     while (count) {
-        uint8_t n = (uint8_t)(count > 255u ? 255u : count);
-        int rc = ata_write_chunk(a, lba, n, p);
+        uint8_t n = (uint8_t)(count > 16u ? 16u : count);
+        int rc = ata_dma_xfer(a, lba, n, (uint8_t *)p, 1);
+        if (rc != BD_OK) {
+            n = (uint8_t)(count > 255u ? 255u : count);
+            rc = ata_write_chunk(a, lba, n, p);
+        }
         if (rc != BD_OK)
             return rc;
         lba += n;
@@ -172,6 +276,8 @@ void ata_pio_configure(AtaPio *a, uint32_t sectors) {
     a->drive = 0u;
     a->sectors = sectors;
     a->poll_limit = 1000000u;
+    a->bm = 0;
+    a->dma = 0;
 }
 
 static void ata_soft_reset_port(uint16_t ctrl) {
@@ -217,7 +323,20 @@ static int ata_try_identify(AtaPio *a, uint32_t *reported_sectors) {
         return BD_EIO;
     }
     *reported_sectors = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
-    return *reported_sectors ? BD_OK : BD_EIO;
+    if ((id[49] & (1u << 8)) != 0) {
+        uint16_t bm = 0;
+        if (pci_find_ide(&bm)) {
+            a->bm = bm;
+            a->dma = 1;
+            g_bm_io = bm;
+            irq_set_handler(14, ide_irq);
+            pic_set_mask(14, false);
+            serial_puts("ata dma bm=");
+            serial_write_hex(bm);
+            serial_puts("\n");
+        }
+    }
+    return BD_OK;
 }
 
 int ata_pio_identify(AtaPio *a, uint32_t *reported_sectors) {

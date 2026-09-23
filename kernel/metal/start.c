@@ -26,6 +26,8 @@
 #include "smp.h"
 #include "sse_init.h"
 #include "boot_splash.h"
+#include "proc.h"
+#include "ac97.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -57,6 +59,7 @@ void kstart(void) {
     heap_init();
     sse_bsp_init();
     heap_selftest();
+    proc_init();
 
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||
@@ -80,16 +83,15 @@ void kstart(void) {
     fs_init();
     lang_init(clvm_sys_dispatch, 0);
     speaker_off();
+    (void)ac97_init();
+
+    __asm__ volatile ("sti");
+    desktop_init();
+    desktop_boot_apps();
+    gfx_present();
     if (!net_init()) {
         serial_puts("ChrisOS: net unavailable\n");
     }
-
-    __asm__ volatile ("sti");
-    boot_splash_load();
-    desktop_init();
-    boot_splash_run(120);
-    boot_splash_stop();
-    desktop_boot_apps();
     serial_puts("ChrisOS: desktop 60Hz\n");
     desktop_run();
 }

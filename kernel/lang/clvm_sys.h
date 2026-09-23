@@ -22,6 +22,8 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h);
 
 int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user);
 void clvm_sys_frame(uint32_t now);
+void clvm_threads_tick(void);
+void clvm_sys_trace(int index, int *id, int *slot);
 void clvm_sys_blit_to(const uint32_t *src, int dx, int dy, int sw, int sh,
                       int max_w, int max_h);
 void clvm_sys_blit_scaled(const uint32_t *src, int sw, int sh, int dx, int dy,

@@ -6,7 +6,6 @@
 #include "fs.h"
 #include "cla/cla.h"
 #include "gc/gc.h"
-#include "kthread.h"
 #include "gfx2d.h"
 #include "gfx_fast.h"
 #include "gfx_slot.h"
@@ -30,18 +29,31 @@
 #include "chrismake.h"
 #include "cls/cls.h"
 #include "serial.h"
+#include "sock.h"
+#include "sha256.h"
+#include "aes.h"
+#include "x25519.h"
+#include "rng.h"
+#include "ac97.h"
+#include "port.h"
+#include "pci.h"
 
 #define CLVM_FD_MAX 32
 #define CLVM_FD_PER_SLOT 8
 #define CLVM_FD_CAP 65536u
 #define CLVM_FD_MAX_BYTES (16u * 1024u * 1024u)
-#define CLVM_TH_MAX 4
+#define CLVM_TH_MAX 32
+#define CLVM_TH_PER 8
 #define CLVM_PAL_SLOTS 16
 
 typedef struct ClvmTh {
     int used;
     int done;
-    int kid;
+    int blocked;
+    int slot;
+    int mtx_addr;
+    int cnd_addr;
+    ClvmVm *parent;
     ClvmVm *vm;
 } ClvmTh;
 
@@ -64,19 +76,78 @@ static ClvmFile g_fds[CLVM_FD_MAX];
 static uint8_t g_pal[CLVM_PAL_SLOTS][768];
 static int g_pal_set[CLVM_PAL_SLOTS];
 
-static void clvm_th_run(void *arg) {
-    ClvmTh *t = (ClvmTh *)arg;
-    if (!t || !t->vm)
-        return;
-    t->vm->state = CLVM_READY;
-    for (;;) {
-        ClvmStepResult r = clvm_step(t->vm, 4096);
-        if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
-            break;
-        if (r == CLVM_STEP_YIELD)
-            clvm_vm_wake(t->vm, 0);
+static int th_count_slot(int slot) {
+    int i;
+    int n = 0;
+    for (i = 0; i < CLVM_TH_MAX; ++i) {
+        if (g_th[i].used && g_th[i].slot == slot)
+            n++;
     }
-    t->done = 1;
+    return n;
+}
+
+static void th_wake_mutex(int addr) {
+    int i;
+    for (i = 0; i < CLVM_TH_MAX; ++i) {
+        if (g_th[i].used && g_th[i].blocked && g_th[i].mtx_addr == addr) {
+            g_th[i].blocked = 0;
+            g_th[i].mtx_addr = 0;
+            if (g_th[i].vm)
+                clvm_vm_wake(g_th[i].vm, 0);
+            return;
+        }
+    }
+}
+
+static void th_wake_cond(int addr) {
+    int i;
+    for (i = 0; i < CLVM_TH_MAX; ++i) {
+        if (g_th[i].used && g_th[i].blocked && g_th[i].cnd_addr == addr) {
+            g_th[i].blocked = 0;
+            if (g_th[i].vm)
+                clvm_vm_wake(g_th[i].vm, 0);
+            return;
+        }
+    }
+}
+
+void clvm_threads_tick(void) {
+    int i;
+    for (i = 0; i < CLVM_TH_MAX; ++i) {
+        ClvmStepResult r;
+        ClvmTh *t = &g_th[i];
+        if (!t->used || t->done || t->blocked || !t->vm)
+            continue;
+        r = clvm_step(t->vm, 8192u);
+        if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT) {
+            t->done = 1;
+            if (t->parent && t->parent->join_wait == i)
+                clvm_vm_wake(t->parent, 0);
+        }
+    }
+}
+
+static int guest_load_i32(ClvmVm *vm, int64_t addr, int32_t *out) {
+    uint32_t v;
+    if (!vm->memory || addr < 0 || (uint64_t)addr + 4u > vm->mem_size)
+        return 0;
+    v = (uint32_t)vm->memory[addr] |
+        ((uint32_t)vm->memory[addr + 1] << 8) |
+        ((uint32_t)vm->memory[addr + 2] << 16) |
+        ((uint32_t)vm->memory[addr + 3] << 24);
+    *out = (int32_t)v;
+    return 1;
+}
+
+static int guest_store_i32(ClvmVm *vm, int64_t addr, int32_t val) {
+    uint32_t v = (uint32_t)val;
+    if (!vm->memory || addr < 0 || (uint64_t)addr + 4u > vm->mem_size)
+        return 0;
+    vm->memory[addr] = (uint8_t)v;
+    vm->memory[addr + 1] = (uint8_t)(v >> 8);
+    vm->memory[addr + 2] = (uint8_t)(v >> 16);
+    vm->memory[addr + 3] = (uint8_t)(v >> 24);
+    return 1;
 }
 
 static int guest_cstr(ClvmVm *vm, uint64_t off, char *out, int cap) {
@@ -92,6 +163,71 @@ static int guest_cstr(ClvmVm *vm, uint64_t off, char *out, int cap) {
     }
     out[i] = 0;
     return 1;
+}
+
+static int guest_read(ClvmVm *vm, uint64_t off, uint8_t *dst, int n) {
+    int i;
+    if (!vm || !vm->memory || !dst || n < 0)
+        return 0;
+    if (off + (uint64_t)n > vm->mem_size)
+        return 0;
+    for (i = 0; i < n; ++i)
+        dst[i] = vm->memory[off + (uint64_t)i];
+    return 1;
+}
+
+static int guest_write(ClvmVm *vm, uint64_t off, const uint8_t *src, int n) {
+    int i;
+    if (!vm || !vm->memory || !src || n < 0)
+        return 0;
+    if (off + (uint64_t)n > vm->mem_size)
+        return 0;
+    for (i = 0; i < n; ++i)
+        vm->memory[off + (uint64_t)i] = src[i];
+    return 1;
+}
+
+static int drv_allowed(ClvmVm *vm) {
+    int slot;
+    const char *name;
+    int i;
+    slot = lang_find_slot_by_gfx(vm ? vm->sys_user : 0);
+    name = lang_slot_name(slot);
+    if (!name)
+        return 0;
+    for (i = 0; name[i]; ++i) {
+        if (name[i] == 'D' && name[i + 1] == 'R' && name[i + 2] == 'V')
+            return 1;
+    }
+    return 0;
+}
+
+#define SYS_TRACE 32
+static struct {
+    int id;
+    int slot;
+} g_sys_trace[SYS_TRACE];
+static int g_sys_n;
+
+void clvm_sys_trace(int index, int *id, int *slot) {
+    int n;
+    int i;
+    if (id)
+        *id = 0;
+    if (slot)
+        *slot = -1;
+    if (index < 0 || index >= SYS_TRACE || g_sys_n <= 0)
+        return;
+    n = g_sys_n < SYS_TRACE ? g_sys_n : SYS_TRACE;
+    if (index >= n)
+        return;
+    i = (g_sys_n - 1 - index) % SYS_TRACE;
+    if (i < 0)
+        i += SYS_TRACE;
+    if (id)
+        *id = g_sys_trace[i].id;
+    if (slot)
+        *slot = g_sys_trace[i].slot;
 }
 
 static int pop_i32(ClvmVm *vm, int32_t *out) {
@@ -461,7 +597,7 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h) {
      * Large UI / wallpaper: 2D slot (no z-buffer, halves VRAM).
      * Game-sized viewports keep a private z-buffer for mesh/voxel.
      */
-    ui2d = (nw > CLVM_SYS_GAME_W + 32 || nh > CLVM_SYS_GAME_H + 32);
+    ui2d = (ctx->zbuf == 0);
     if (ctx->slot_id >= 0 && ctx->w == nw && ctx->h == nh && ctx->pixels != 0 &&
         (ui2d ? ctx->zbuf == 0 : ctx->zbuf != 0)) {
         math3d_set_screen(nw, nh);
@@ -756,6 +892,12 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     pix = ctx->pixels;
     gw = ctx->w;
     gh = ctx->h;
+    {
+        int tr = g_sys_n % SYS_TRACE;
+        g_sys_trace[tr].id = id;
+        g_sys_trace[tr].slot = lang_find_slot_by_gfx(ctx);
+        g_sys_n++;
+    }
 
     switch (id) {
     case 1:
@@ -1057,9 +1199,13 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t fn;
         int64_t arg;
         int i;
+        int slot;
         ClvmVm *child;
         if (!clvm_vm_pop64(vm, &arg) || !clvm_vm_pop64(vm, &fn))
             return -1;
+        slot = lang_slot_of((ClvmGfxCtx *)vm->sys_user);
+        if (th_count_slot(slot) >= CLVM_TH_PER)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
         for (i = 0; i < CLVM_TH_MAX; ++i) {
             if (!g_th[i].used)
                 break;
@@ -1083,25 +1229,351 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         child->sys_user = vm->sys_user;
         child->pc = (uint32_t)fn;
         child->state = CLVM_READY;
+        child->join_wait = -1;
         (void)clvm_vm_push64(child, arg);
         g_th[i].used = 1;
         g_th[i].done = 0;
+        g_th[i].blocked = 0;
+        g_th[i].slot = slot;
+        g_th[i].mtx_addr = 0;
+        g_th[i].cnd_addr = 0;
+        g_th[i].parent = vm;
         g_th[i].vm = child;
-        g_th[i].kid = kthread_create(clvm_th_run, &g_th[i]);
         return clvm_vm_push64(vm, i) ? 0 : -1;
     }
     case 63: {
         int64_t a;
         if (!clvm_vm_pop64(vm, &a))
             return -1;
-        if (a >= 0 && a < CLVM_TH_MAX && g_th[a].used) {
-            kthread_join(g_th[a].kid);
-            if (g_th[a].vm)
-                kfree(g_th[a].vm);
-            g_th[a].vm = 0;
-            g_th[a].used = 0;
+        if (a < 0 || a >= CLVM_TH_MAX || !g_th[a].used)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        if (!g_th[a].done) {
+            vm->join_wait = (int32_t)a;
+            vm->state = CLVM_WAITING;
+            if (!clvm_vm_push64(vm, a) || !clvm_vm_push64(vm, 63))
+                return -1;
+            return 0;
         }
+        vm->join_wait = -1;
+        if (g_th[a].vm)
+            kfree(g_th[a].vm);
+        g_th[a].vm = 0;
+        g_th[a].used = 0;
         return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 127: {
+        int64_t addr;
+        int32_t word;
+        int self;
+        if (!clvm_vm_pop64(vm, &addr))
+            return -1;
+        if (!guest_load_i32(vm, addr, &word))
+            return -1;
+        self = 1;
+        {
+            int i;
+            for (i = 0; i < CLVM_TH_MAX; ++i) {
+                if (g_th[i].used && g_th[i].vm == vm) {
+                    self = i + 2;
+                    break;
+                }
+            }
+        }
+        if (word == 0 || word == self) {
+            if (!guest_store_i32(vm, addr, self))
+                return -1;
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        }
+        {
+            int i;
+            for (i = 0; i < CLVM_TH_MAX; ++i) {
+                if (g_th[i].vm == vm) {
+                    g_th[i].blocked = 1;
+                    g_th[i].mtx_addr = (int)addr;
+                    break;
+                }
+            }
+        }
+        vm->state = CLVM_WAITING;
+        if (!clvm_vm_push64(vm, addr) || !clvm_vm_push64(vm, 127))
+            return -1;
+        return 0;
+    }
+    case 128: {
+        int64_t addr;
+        if (!clvm_vm_pop64(vm, &addr))
+            return -1;
+        if (!guest_store_i32(vm, addr, 0))
+            return -1;
+        th_wake_mutex((int)addr);
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 129: {
+        int64_t mtx;
+        int64_t cnd;
+        if (!clvm_vm_pop64(vm, &mtx) || !clvm_vm_pop64(vm, &cnd))
+            return -1;
+        if (!guest_store_i32(vm, mtx, 0))
+            return -1;
+        th_wake_mutex((int)mtx);
+        {
+            int i;
+            int already = 0;
+            for (i = 0; i < CLVM_TH_MAX; ++i) {
+                if (g_th[i].vm == vm && g_th[i].cnd_addr == (int)cnd &&
+                    !g_th[i].blocked) {
+                    already = 1;
+                    g_th[i].cnd_addr = 0;
+                    break;
+                }
+            }
+            if (already) {
+                if (!clvm_vm_push64(vm, mtx) || !clvm_vm_push64(vm, 127))
+                    return -1;
+                return 0;
+            }
+            for (i = 0; i < CLVM_TH_MAX; ++i) {
+                if (g_th[i].vm == vm) {
+                    g_th[i].blocked = 1;
+                    g_th[i].cnd_addr = (int)cnd;
+                    g_th[i].mtx_addr = (int)mtx;
+                    break;
+                }
+            }
+        }
+        vm->state = CLVM_WAITING;
+        if (!clvm_vm_push64(vm, cnd) || !clvm_vm_push64(vm, mtx) ||
+            !clvm_vm_push64(vm, 129))
+            return -1;
+        return 0;
+    }
+    case 130: {
+        int64_t cnd;
+        if (!clvm_vm_pop64(vm, &cnd))
+            return -1;
+        th_wake_cond((int)cnd);
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 131: {
+        int64_t idx;
+        if (!clvm_vm_pop64(vm, &idx))
+            return -1;
+        if (idx < 0 || idx >= 16)
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        return clvm_vm_push64(vm, vm->tls[idx]) ? 0 : -1;
+    }
+    case 132: {
+        int64_t idx;
+        int64_t val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &idx))
+            return -1;
+        if (idx >= 0 && idx < 16)
+            vm->tls[idx] = val;
+        return 0;
+    }
+    case 140: {
+        int64_t port;
+        if (!clvm_vm_pop64(vm, &port))
+            return -1;
+        return clvm_vm_push64(vm, sock_listen((uint16_t)port)) ? 0 : -1;
+    }
+    case 141: {
+        int64_t fd;
+        if (!clvm_vm_pop64(vm, &fd))
+            return -1;
+        return clvm_vm_push64(vm, sock_accept((int)fd)) ? 0 : -1;
+    }
+    case 142: {
+        int64_t ip;
+        int64_t port;
+        if (!clvm_vm_pop64(vm, &port) || !clvm_vm_pop64(vm, &ip))
+            return -1;
+        return clvm_vm_push64(vm, sock_connect((uint32_t)ip, (uint16_t)port)) ? 0 : -1;
+    }
+    case 143: {
+        int64_t fd, addr, n;
+        uint8_t tmp[200];
+        int i;
+        int rc;
+        if (!clvm_vm_pop64(vm, &n) || !clvm_vm_pop64(vm, &addr) || !clvm_vm_pop64(vm, &fd))
+            return -1;
+        if (n > 200)
+            n = 200;
+        if (n < 0 || !vm->memory || (uint64_t)addr + (uint64_t)n > vm->mem_size)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        for (i = 0; i < (int)n; ++i)
+            tmp[i] = vm->memory[addr + i];
+        rc = sock_send((int)fd, tmp, (int)n);
+        return clvm_vm_push64(vm, rc) ? 0 : -1;
+    }
+    case 144: {
+        int64_t fd, addr, n;
+        uint8_t tmp[200];
+        int rc;
+        int i;
+        if (!clvm_vm_pop64(vm, &n) || !clvm_vm_pop64(vm, &addr) || !clvm_vm_pop64(vm, &fd))
+            return -1;
+        if (n > 200)
+            n = 200;
+        if (n < 0 || !vm->memory || (uint64_t)addr + (uint64_t)n > vm->mem_size)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        rc = sock_recv((int)fd, tmp, (int)n);
+        if (rc > 0) {
+            for (i = 0; i < rc; ++i)
+                vm->memory[addr + i] = tmp[i];
+        }
+        return clvm_vm_push64(vm, rc) ? 0 : -1;
+    }
+    case 145: {
+        int64_t fd;
+        if (!clvm_vm_pop64(vm, &fd))
+            return -1;
+        return clvm_vm_push64(vm, sock_close((int)fd)) ? 0 : -1;
+    }
+    case 146: {
+        int64_t addr;
+        char name[64];
+        uint32_t ip = 0;
+        int rc;
+        if (!clvm_vm_pop64(vm, &addr))
+            return -1;
+        if (!guest_cstr(vm, (uint64_t)addr, name, (int)sizeof(name)))
+            return clvm_vm_push64(vm, 0) ? 0 : -1;
+        rc = sock_dns(name, &ip);
+        (void)rc;
+        return clvm_vm_push64(vm, (int64_t)ip) ? 0 : -1;
+    }
+    case 133: {
+        int64_t addr;
+        int64_t n;
+        int slot;
+        if (!clvm_vm_pop64(vm, &n) || !clvm_vm_pop64(vm, &addr))
+            return -1;
+        slot = lang_find_slot_by_gfx(ctx);
+        if (n < 0)
+            n = 0;
+        if (n > 256)
+            n = 256;
+        if (!vm->memory || (uint64_t)addr + (uint64_t)n > vm->mem_size)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, lang_checkpoint_save(slot, vm->memory + addr,
+                                                       (int)n, (uint32_t)addr))
+                   ? 0
+                   : -1;
+    }
+    case 134: {
+        int slot = lang_find_slot_by_gfx(ctx);
+        return clvm_vm_push64(vm, lang_hot_reload(lang_slot_name(slot))) ? 0 : -1;
+    }
+    case 150: {
+        return clvm_vm_push64(vm, (int64_t)rng_u32()) ? 0 : -1;
+    }
+    case 151: {
+        int64_t src, n, dst;
+        uint8_t tmp[256];
+        uint8_t dig[32];
+        if (!clvm_vm_pop64(vm, &dst) || !clvm_vm_pop64(vm, &n) || !clvm_vm_pop64(vm, &src))
+            return -1;
+        if (n < 0 || n > 256)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        if (!guest_read(vm, (uint64_t)src, tmp, (int)n))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        sha256(tmp, (unsigned)n, dig);
+        if (!guest_write(vm, (uint64_t)dst, dig, 32))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, 32) ? 0 : -1;
+    }
+    case 152: {
+        int64_t key, in, out;
+        uint8_t k[16], b[16], o[16];
+        if (!clvm_vm_pop64(vm, &out) || !clvm_vm_pop64(vm, &in) || !clvm_vm_pop64(vm, &key))
+            return -1;
+        if (!guest_read(vm, (uint64_t)key, k, 16) || !guest_read(vm, (uint64_t)in, b, 16))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        aes128_encrypt(k, b, o);
+        if (!guest_write(vm, (uint64_t)out, o, 16))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, 16) ? 0 : -1;
+    }
+    case 153: {
+        int64_t out, scalar, point;
+        uint8_t s[32], p[32], o[32];
+        if (!clvm_vm_pop64(vm, &point) || !clvm_vm_pop64(vm, &scalar) ||
+            !clvm_vm_pop64(vm, &out))
+            return -1;
+        if (!guest_read(vm, (uint64_t)scalar, s, 32) || !guest_read(vm, (uint64_t)point, p, 32))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        x25519(o, s, p);
+        if (!guest_write(vm, (uint64_t)out, o, 32))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, 32) ? 0 : -1;
+    }
+    case 160: {
+        int64_t addr, n;
+        int16_t tmp[128];
+        int rc;
+        if (!clvm_vm_pop64(vm, &n) || !clvm_vm_pop64(vm, &addr))
+            return -1;
+        if (n > 128)
+            n = 128;
+        if (n < 0 || !guest_read(vm, (uint64_t)addr, (uint8_t *)tmp, (int)n * 2))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        rc = ac97_write(tmp, (int)n);
+        return clvm_vm_push64(vm, rc) ? 0 : -1;
+    }
+    case 170: {
+        int64_t port, val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &port))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        outw((uint16_t)port, (uint16_t)val);
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 171: {
+        int64_t port;
+        if (!clvm_vm_pop64(vm, &port))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, inw((uint16_t)port)) ? 0 : -1;
+    }
+    case 172: {
+        int64_t port, val;
+        if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &port))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        outb((uint16_t)port, (uint8_t)val);
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
+    case 173: {
+        int64_t port;
+        if (!clvm_vm_pop64(vm, &port))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, inb((uint16_t)port)) ? 0 : -1;
+    }
+    case 174: {
+        int64_t irq;
+        if (!clvm_vm_pop64(vm, &irq))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, ac97_take_event((int)irq)) ? 0 : -1;
+    }
+    case 175: {
+        int64_t bus, dev, fn, off;
+        if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &fn) ||
+            !clvm_vm_pop64(vm, &dev) || !clvm_vm_pop64(vm, &bus))
+            return -1;
+        if (!drv_allowed(vm))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, pci_read((uint8_t)bus, (uint8_t)dev, (uint8_t)fn,
+                                           (uint8_t)off))
+                   ? 0
+                   : -1;
     }
     case 64: {
         int64_t a;

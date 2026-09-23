@@ -133,7 +133,11 @@ int storage_init(void) {
         serial_puts("cfs mounted\n");
     }
     hello_probe(&g_cfs);
-    fsck_report();
+    if (g_cfs.super.clean) {
+        serial_puts("cfs fsck: skipped clean\n");
+    } else {
+        fsck_report();
+    }
     return CFS_OK;
 }
 

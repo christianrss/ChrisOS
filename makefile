@@ -20,7 +20,7 @@ DISK_IMG := $(BUILD_DIR)/disk.img
 LIMINE_CONF_SRC := iso_root/boot/limine/limine.conf
 
 KINC := -Ikernel/metal -Ikernel/gfx -Ikernel/wm -Ikernel/tools \
-	-Ikernel/fs -Ikernel/lang -Ikernel/net -Icompiler -Icompiler/clvm \
+	-Ikernel/fs -Ikernel/lang -Ikernel/net -Ikernel/crypto -Icompiler -Icompiler/clvm \
 	-Icompiler/jit -Icompiler/chrisld -Icompiler/chrisasm -Icompiler/kcc
 
 HOST_CHRIS_INC := -Icompiler/chrisld -Icompiler/chrisasm -Icompiler/kcc
@@ -59,7 +59,9 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/metal/elf.o kernel/metal/pit.o kernel/metal/ps2.o \
 	kernel/metal/bootinfo.o kernel/metal/pmm.o kernel/metal/mm.o \
 	kernel/metal/heap.o kernel/metal/pci.o \
-	kernel/net/virtio_net.o kernel/net/net.o \
+	kernel/net/virtio_net.o kernel/net/net.o kernel/net/sock.o \
+	kernel/crypto/sha256.o kernel/crypto/rng.o kernel/crypto/aes.o kernel/crypto/x25519.o \
+	kernel/gfx/ac97.o \
 	kernel/gfx/graphics.o kernel/gfx/font.o kernel/gfx/input.o \
 	kernel/gfx/speaker.o kernel/gfx/gfx2d.o \
 	kernel/wm/task.o kernel/wm/ui.o kernel/wm/desktop.o kernel/wm/main.o \
@@ -79,7 +81,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	compiler/gc/gc.o compiler/il/il.o compiler/cla/cla.o compiler/cls/cls.o \
 	kernel/tools/taskmgr.o kernel/metal/apic.o kernel/metal/ioapic.o \
 	kernel/metal/spin.o kernel/metal/smp.o kernel/metal/job.o \
-	kernel/metal/kthread.o kernel/metal/kcc_job.o kernel/net/net_xfer.o \
+	kernel/metal/kthread.o kernel/metal/kcc_job.o kernel/metal/proc.o kernel/net/net_xfer.o \
 	$(GFX_3D_OBJS)
 
 ASM_OBJECTS_REL := kernel/metal/idt_stubs.o
@@ -150,7 +152,7 @@ $(OBJ_DIR)/kernel/lang/clvm_sys.o: kernel/lang/clvm_sys.c
 	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
 
 
-.PHONY: all iso run run-stop clean disk disk.img host-gates seed-selfhost disk-seed
+.PHONY: all iso run run-stop clean disk disk.img host-gates seed-selfhost disk-seed kernel apps
 
 disk-seed: seed-selfhost
 
@@ -160,6 +162,40 @@ run-stop:
 all: iso
 
 iso: $(ISO)
+
+kernel: $(KERNEL)
+
+apps: disk-base
+
+disk-base: disk-ui
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/Makefile APPS/Makefile
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/CC.CC APPS/CC/CC.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/HELLO.CC APPS/CC/HELLO.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/IN.CC APPS/CC/IN.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/OUT.CLV APPS/CC/OUT.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/THREADS/COUNT.CC APPS/THREADS/COUNT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/HTTP.CC APPS/NET/HTTP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/FTP.CC APPS/NET/FTP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/MAIL.CC APPS/NET/MAIL.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/BROWSER.CC APPS/NET/BROWSER.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/TLS.CC APPS/NET/TLS.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/SSH.CC APPS/NET/SSH.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/WAV/PLAY.CC APPS/WAV/PLAY.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PAINT/PAINT.CC APPS/PAINT/PAINT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/BMP.H LIB/BMP.H
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/BMP.CC LIB/BMP.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/AC97.CC SYS/DRV/AC97.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/CC.CLV APPS/CC/CC.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/THREADS/COUNT.CLV APPS/THREADS/COUNT.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/HTTP.CLV APPS/NET/HTTP.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/FTP.CLV APPS/NET/FTP.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/MAIL.CLV APPS/NET/MAIL.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/BROWSER.CLV APPS/NET/BROWSER.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/TLS.CLV APPS/NET/TLS.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/SSH.CLV APPS/NET/SSH.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/WAV/PLAY.CLV APPS/WAV/PLAY.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PAINT/PAINT.CLV APPS/PAINT/PAINT.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SYS/DRV/AC97.CLV SYS/DRV/AC97.CLV
 
 test_sse_init: tools/test_sse_init.c kernel/gfx/sse_init.c
 	mkdir -p $(HOST_BIN)
@@ -935,6 +971,10 @@ $(OBJ_DIR)/kernel/net/%.o: kernel/net/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+$(OBJ_DIR)/kernel/crypto/%.o: kernel/crypto/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
 $(OBJ_DIR)/compiler/%.o: compiler/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -1031,6 +1071,7 @@ run: $(ISO) disk-ui run-stop
 		-drive file=$(DISK_IMG),format=raw,if=ide,index=0 \
 		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
 		-device virtio-net-pci,netdev=n0 \
+		-device AC97 \
 		-netdev user,id=n0,hostfwd=udp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_NET_PORT)-:7,hostfwd=tcp:127.0.0.1:$(HOST_XFER_PORT)-:9016 \
 		-serial stdio -no-reboot -no-shutdown \
 		-cpu qemu64 -accel kvm

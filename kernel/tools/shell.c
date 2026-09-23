@@ -13,9 +13,11 @@
 #include "pit.h"
 #include "net.h"
 #include "elf.h"
+#include "proc.h"
 #include "user_enter.h"
 #include "chrisbuild.h"
 #include "chrismake.h"
+#include "sock.h"
 #include "port.h"
 #include "heap.h"
 #include "kcc.h"
@@ -265,6 +267,9 @@ static void cc_ok(int run_after) {
         return;
     }
     sh_emit_prefixed("compiled ", clv);
+    if (lang_hot_reload(clv)) {
+        sh_emit("reloaded");
+    }
     if (!run_after) {
         return;
     }
@@ -392,6 +397,7 @@ static void cmd_runelf(const char *arg) {
     }
     kfree(buf);
     enter_user(entry, 0x400FF8ull);
+    proc_switch(0);
     sh_emit("runelf done");
 }
 
@@ -588,6 +594,22 @@ static void cmd_mk(const char *arg) {
     sh_emit("mk kernel|clean|install");
 }
 
+static int make_stamp(void *user, const char *path, uint64_t *mtime) {
+    char full[FS_PATH];
+    (void)user;
+    if (!path || !mtime) {
+        return -1;
+    }
+    join_cwd(path, full, FS_PATH);
+    if (fs_mtime(full, mtime) == CFS_OK) {
+        return 0;
+    }
+    if (fs_mtime(path, mtime) == CFS_OK) {
+        return 0;
+    }
+    return -1;
+}
+
 static int make_recipe(void *user, const char *recipe, char *err, int err_cap) {
     (void)user;
     g_cmd_ok = 1;
@@ -677,7 +699,8 @@ static void cmd_make(const char *arg) {
         return;
     }
     text[n] = 0;
-    if (!chrismake_run(text, target, make_recipe, 0, err, (int)sizeof(err))) {
+    if (!chrismake_run_stamped(text, target, make_recipe, make_stamp, 0, err,
+                               (int)sizeof(err))) {
         g_cmd_ok = 0;
         sh_emit(err[0] ? err : "make fail");
         return;
@@ -688,6 +711,11 @@ static void cmd_make(const char *arg) {
 static void cmd_reboot(void) {
     sh_emit("rebooting");
     machine_reboot();
+}
+
+static void cmd_rebuild(void) {
+    host_rebuild_start();
+    sh_emit("rebuild asked");
 }
 
 static void cmd_bench(void) {
@@ -746,6 +774,7 @@ static void sh_exec(const char *line) {
     else if (sh_eq(cmd, "as")) cmd_as(arg);
     else if (sh_eq(cmd, "mk")) cmd_mk(arg);
     else if (sh_eq(cmd, "make")) cmd_make(arg);
+    else if (sh_eq(cmd, "rebuild")) cmd_rebuild();
     else if (sh_eq(cmd, "reboot")) cmd_reboot();
     else if (sh_eq(cmd, "run")) cmd_run(arg);
     else if (sh_eq(cmd, "jit")) cmd_jit(arg);
