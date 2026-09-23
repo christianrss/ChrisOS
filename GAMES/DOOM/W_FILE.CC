@@ -7,6 +7,8 @@ struct chris_wad {
     int fd;
 };
 
+typedef struct chris_wad chris_wad_t;
+
 struct chris_wad *W_OpenFile(char *path) {
     struct chris_wad *w;
     int fd;
@@ -16,7 +18,7 @@ struct chris_wad *W_OpenFile(char *path) {
         return 0;
     len = fsize(path);
     printf("W_OpenFile %s fd=%d len=%d\n", path, fd, len);
-    w = malloc(32);
+    w = malloc(sizeof(chris_wad_t));
     if (!w) {
         fclose(fd);
         return 0;

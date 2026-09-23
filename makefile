@@ -941,7 +941,7 @@ $(OBJ_DIR)/compiler/%.o: compiler/%.c
 
 $(OBJ_DIR)/compiler/chrisc/%.o: compiler/chrisc/%.c
 	@mkdir -p $(dir $@)
-	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+	$(CC) $(GFX_FLOAT_CFLAGS) -O2 -c $< -o $@
 
 $(OBJ_DIR)/compiler/clvm/%.o: compiler/clvm/%.c
 	@mkdir -p $(dir $@)

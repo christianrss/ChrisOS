@@ -7,7 +7,7 @@ static int progress_count;
 
 static void progress(void *user, int index, int total, const char *path) {
     (void)user;
-    if (index == progress_count && total > 0 && path && path[0])
+    if (index >= 0 && index == progress_count && total > 0 && path && path[0])
         progress_count++;
 }
 

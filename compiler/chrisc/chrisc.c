@@ -14,7 +14,7 @@
 #define FUNC_ARG_MAX 16
 #define CALL_ARG_LOCAL 32
 #define FNPTR_MAX 1024
-#define GINIT_MAX 2048
+#define GINIT_MAX 65536
 #define CALL_PATCH_MAX 8192
 #define INCLUDE_MAX 1024
 #define INCLUDE_DEPTH 16
@@ -31,7 +31,15 @@
 #define TYPEDEF_MAX 1024
 #define LABEL_MAX 1024
 #define SWITCH_CASE_MAX 256
-#define PRAGMA_ONCE_MAX 64
+#define PRAGMA_ONCE_MAX 256
+#define HT_DEF_N 8192
+#define HT_FUNC_N 8192
+#define HT_TD_N 2048
+#define HT_ST_N 2048
+#define HT_SYM_N 32768
+#define HT_CONST_N 8192
+#define INC_CACHE_N 160
+#define INC_CACHE_STORE (2u * 1024u * 1024u)
 
 typedef enum TokenKind {
     T_EOF = 0, T_ID, T_NUM, T_FNUM, T_STR, T_VOID, T_INT, T_FLOAT, T_CHAR,
@@ -130,6 +138,7 @@ typedef struct StructDef {
     int16_t fstruct[FIELD_MAX];
     uint16_t size;
     uint8_t packed;
+    uint8_t is_union;
 } StructDef;
 
 typedef struct DeclType {
@@ -139,6 +148,8 @@ typedef struct DeclType {
     uint8_t uns;
     uint8_t is_void;
     int16_t sid;
+    uint16_t arr_n;  /* >1: typedef/type is an array of arr_n elements */
+    uint16_t elemw;  /* array element width when arr_n > 1 */
 } DeclType;
 
 typedef struct FuncDef {
@@ -190,7 +201,8 @@ typedef struct Compiler {
     int fnptr_at[FNPTR_MAX];
     int fnptr_fn[FNPTR_MAX];
     int nginits;
-    int ginit_sym[GINIT_MAX];
+    uint32_t ginit_addr[GINIT_MAX];
+    uint8_t ginit_w[GINIT_MAX];
     int ginit_expr[GINIT_MAX];
     uint32_t va_base;
     uint32_t icall_base;
@@ -235,6 +247,8 @@ typedef struct Compiler {
     int td_width[TYPEDEF_MAX];
     int td_ptr[TYPEDEF_MAX];
     int td_struct[TYPEDEF_MAX];
+    int td_count[TYPEDEF_MAX];
+    int td_elemw[TYPEDEF_MAX];
     int nconst;
     char const_name[ENUM_MAX][NAME_MAX];
     int32_t const_val[ENUM_MAX];
@@ -250,6 +264,12 @@ typedef struct Compiler {
     uint16_t abi_minor;
     int pp_line;
     int pp_file;
+    uint16_t ht_def[HT_DEF_N];
+    uint16_t ht_func[HT_FUNC_N];
+    uint16_t ht_td[HT_TD_N];
+    uint16_t ht_st[HT_ST_N];
+    uint16_t ht_sym[HT_SYM_N];
+    uint16_t ht_const[HT_CONST_N];
 } Compiler;
 
 static Compiler g_chrisc;
@@ -258,6 +278,158 @@ static char g_tu[CHRIS_SOURCE_MAX];
 static char g_inc[INCLUDE_DEPTH][CHRIS_INC_MAX];
 static char g_line_exp[16384];
 static char g_logical[32768];
+static void (*g_yield_fn)(void);
+static int g_yield_ctr;
+static char g_ic_path[INC_CACHE_N][FILE_NAME_MAX];
+static uint32_t g_ic_off[INC_CACHE_N];
+static int g_ic_len[INC_CACHE_N];
+static int g_ic_n;
+static char g_ic_store[INC_CACHE_STORE];
+static uint32_t g_ic_used;
+
+static int same(const char *a, const char *b);
+static void text(char *d, size_t n, const char *s);
+
+void chrisc_set_yield(void (*fn)(void)) {
+    g_yield_fn = fn;
+    g_yield_ctr = 0;
+}
+
+static void maybe_yield(void) {
+    g_yield_ctr++;
+    if (g_yield_fn && (g_yield_ctr & 1023) == 0) {
+        g_yield_fn();
+    }
+}
+
+static unsigned hash_str(const char *s) {
+    unsigned h = 2166136261u;
+    if (!s) {
+        return 0;
+    }
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static void ht_zero(uint16_t *tab, int n) {
+    int i;
+    for (i = 0; i < n; ++i) {
+        tab[i] = 0;
+    }
+}
+
+static int ht_find_grid(const uint16_t *tab, int cap, const char *key,
+                        const char *grid, int stride) {
+    unsigned h = hash_str(key);
+    int i;
+    if (!key) {
+        return -1;
+    }
+    for (i = 0; i < cap; ++i) {
+        unsigned s = (h + (unsigned)i) & (unsigned)(cap - 1);
+        uint16_t v = tab[s];
+        if (!v) {
+            return -1;
+        }
+        if (same(grid + (int)(v - 1) * stride, key)) {
+            return (int)(v - 1);
+        }
+    }
+    return -1;
+}
+
+static void ht_ins_grid(uint16_t *tab, int cap, const char *key, int id,
+                        const char *grid, int stride) {
+    unsigned h = hash_str(key);
+    int i;
+    if (!key || id < 0) {
+        return;
+    }
+    for (i = 0; i < cap; ++i) {
+        unsigned s = (h + (unsigned)i) & (unsigned)(cap - 1);
+        uint16_t v = tab[s];
+        if (!v) {
+            tab[s] = (uint16_t)(id + 1);
+            return;
+        }
+        if (same(grid + (int)(v - 1) * stride, key)) {
+            return;
+        }
+    }
+}
+
+static void lookups_reset(Compiler *c) {
+    ht_zero(c->ht_def, HT_DEF_N);
+    ht_zero(c->ht_func, HT_FUNC_N);
+    ht_zero(c->ht_td, HT_TD_N);
+    ht_zero(c->ht_st, HT_ST_N);
+    ht_zero(c->ht_sym, HT_SYM_N);
+    ht_zero(c->ht_const, HT_CONST_N);
+}
+
+static void inc_cache_reset(void) {
+    g_ic_n = 0;
+    g_ic_used = 0;
+}
+
+static int inc_cache_get(const char *path, char *out, int cap) {
+    int i;
+    for (i = 0; i < g_ic_n; ++i) {
+        if (same(g_ic_path[i], path)) {
+            int n = g_ic_len[i];
+            int k;
+            if (n >= cap) {
+                n = cap - 1;
+            }
+            for (k = 0; k < n; ++k) {
+                out[k] = g_ic_store[g_ic_off[i] + (uint32_t)k];
+            }
+            out[n] = 0;
+            return n;
+        }
+    }
+    return -1;
+}
+
+static void inc_cache_put(const char *path, const char *src, int n) {
+    uint32_t off;
+    int k;
+    if (!path || n < 0 || g_ic_n >= INC_CACHE_N) {
+        return;
+    }
+    if (g_ic_used + (uint32_t)n + 1u > INC_CACHE_STORE) {
+        return;
+    }
+    off = g_ic_used;
+    for (k = 0; k < n; ++k) {
+        g_ic_store[off + (uint32_t)k] = src[k];
+    }
+    g_ic_store[off + (uint32_t)n] = 0;
+    g_ic_used += (uint32_t)n + 1u;
+    text(g_ic_path[g_ic_n], FILE_NAME_MAX, path);
+    g_ic_off[g_ic_n] = off;
+    g_ic_len[g_ic_n] = n;
+    g_ic_n++;
+}
+
+static int read_include(Compiler *c, const char *path, char *out, int cap) {
+    int n;
+    n = inc_cache_get(path, out, cap);
+    if (n >= 0) {
+        return n;
+    }
+    if (!c->read_fn || !path) {
+        return -1;
+    }
+    n = c->read_fn(c->read_user, path, out, cap);
+    if (n >= 0) {
+        inc_cache_put(path, out, n);
+    }
+    return n;
+}
 
 static const Builtin builtins[] = {
     {"pixel", 1, 3, 0, 0}, {"rect", 2, 5, 0, 0}, {"line", 3, 5, 0, 0},
@@ -610,6 +782,7 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                        size_t *ulen, int *unit_line, int depth);
 static int sys_inc_map(const char *inc, char *out, int cap);
 static size_t compact_line_cont(char *s, size_t n);
+static int once_has(Compiler *c, const char *path);
 
 static int expand_include(Compiler *c, const char *cur_path, const char *inc,
                           size_t *ulen, int *unit_line, int depth) {
@@ -624,13 +797,18 @@ static int expand_include(Compiler *c, const char *cur_path, const char *inc,
     if (!resolve_include(cur_path, inc, resolved, FILE_NAME_MAX)) {
         return fail(c, *unit_line, 1, "bad include path");
     }
-    n = c->read_fn(c->read_user, resolved, g_inc[depth], (int)CHRIS_INC_MAX - 1);
+    if (once_has(c, resolved)) {
+        return 1;
+    }
+    n = read_include(c, resolved, g_inc[depth], (int)CHRIS_INC_MAX - 1);
     if (n < 0) {
         char mapped[FILE_NAME_MAX];
         if (sys_inc_map(inc, mapped, FILE_NAME_MAX)) {
             text(resolved, FILE_NAME_MAX, mapped);
-            n = c->read_fn(c->read_user, resolved, g_inc[depth],
-                           (int)CHRIS_INC_MAX - 1);
+            if (once_has(c, resolved)) {
+                return 1;
+            }
+            n = read_include(c, resolved, g_inc[depth], (int)CHRIS_INC_MAX - 1);
         }
     }
     if (n < 0 && !has_slash(inc)) {
@@ -646,8 +824,10 @@ static int expand_include(Compiler *c, const char *cur_path, const char *inc,
             }
             resolved[4 + k] = 0;
         }
-        n = c->read_fn(c->read_user, resolved, g_inc[depth],
-                       (int)CHRIS_INC_MAX - 1);
+        if (once_has(c, resolved)) {
+            return 1;
+        }
+        n = read_include(c, resolved, g_inc[depth], (int)CHRIS_INC_MAX - 1);
     }
     if (n < 0) {
         return fail(c, *unit_line, 1, "include not found");
@@ -726,13 +906,7 @@ static int kw_is(const char *line, size_t n, size_t i, const char *w) {
 }
 
 static int def_find(Compiler *c, const char *name) {
-    int i;
-    for (i = 0; i < c->ndef; ++i) {
-        if (same(c->def_name[i], name)) {
-            return i;
-        }
-    }
-    return -1;
+    return ht_find_grid(c->ht_def, HT_DEF_N, name, c->def_name[0], NAME_MAX);
 }
 
 static void add_def(Compiler *c, const char *name, const char *body) {
@@ -744,6 +918,7 @@ static void add_def(Compiler *c, const char *name, const char *body) {
     if (di < 0) {
         di = c->ndef++;
         text(c->def_name[di], NAME_MAX, name);
+        ht_ins_grid(c->ht_def, HT_DEF_N, name, di, c->def_name[0], NAME_MAX);
     }
     text(c->def_body[di], DEF_BODY, body ? body : "1");
     c->def_fn[di] = 0;
@@ -1346,13 +1521,14 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
             }
         }
     }
-    if (!map_push(c, *unit_line, fid, orig_line)) {
+    if (!    map_push(c, *unit_line, fid, orig_line)) {
         return fail(c, 1, 1, "include map full");
     }
     while (i < n) {
         size_t line_beg = i;
         size_t line_n;
         char inc[FILE_NAME_MAX];
+        maybe_yield();
         while (i < n && src[i] != '\n') {
             ++i;
         }
@@ -1461,6 +1637,8 @@ static int expand_file(Compiler *c, const char *path, const char *src, size_t n,
                         }
                         di = c->ndef++;
                         text(c->def_name[di], NAME_MAX, name);
+                        ht_ins_grid(c->ht_def, HT_DEF_N, name, di, c->def_name[0],
+                                    NAME_MAX);
                     }
                     c->def_fn[di] = 0;
                     c->def_nparam[di] = 0;
@@ -1698,6 +1876,7 @@ static int lex(Compiler *c, const char *s, size_t n) {
     while (i < n) {
         int ch = (unsigned char)s[i];
         int start = col;
+        maybe_yield();
 
         if (ch == ' ' || ch == '\t' || ch == '\r') {
             ++i;
@@ -2389,16 +2568,16 @@ static int sym_find(Compiler *c, const char *name) {
     if (c->tu_id > 0) {
         char mang[NAME_MAX];
         static_mangle(c, name, mang);
-        for (i = 0; i < c->nsyms; ++i) {
-            if (c->syms[i].is_global && same(c->syms[i].name, mang)) {
-                return i;
-            }
-        }
-    }
-    for (i = 0; i < c->nsyms; ++i) {
-        if (c->syms[i].is_global && same(c->syms[i].name, name)) {
+        i = ht_find_grid(c->ht_sym, HT_SYM_N, mang, (const char *)c->syms,
+                         (int)sizeof(Symbol));
+        if (i >= 0 && c->syms[i].is_global) {
             return i;
         }
+    }
+    i = ht_find_grid(c->ht_sym, HT_SYM_N, name, (const char *)c->syms,
+                     (int)sizeof(Symbol));
+    if (i >= 0 && c->syms[i].is_global) {
+        return i;
     }
     return -1;
 }
@@ -2418,10 +2597,10 @@ static int reuse_global_sym(Compiler *c, Token *t) {
         return -1;
     }
     decl_name(c, t, want);
-    for (i = 0; i < c->nsyms; ++i) {
-        if (c->syms[i].scope == 0 && same(c->syms[i].name, want)) {
-            return i;
-        }
+    i = ht_find_grid(c->ht_sym, HT_SYM_N, want, (const char *)c->syms,
+                     (int)sizeof(Symbol));
+    if (i >= 0 && c->syms[i].scope == 0) {
+        return i;
     }
     return -1;
 }
@@ -2473,10 +2652,14 @@ static int sym_add(Compiler *c, Token *t, uint8_t is_float, uint8_t width,
         c->syms[i].pointee = pointee;
         c->syms[i].struct_id = -1;
         c->syms[i].stride = is_ptr
-            ? (uint16_t)(pointee <= 1 ? 1 : (pointee < 4 ? 4 : pointee))
+            ? (uint16_t)(pointee ? pointee : 4)
             : (uint16_t)need;
         c->syms[i].array_n = 0;
         c->mem_next += need;
+        if (c->syms[i].scope == 0) {
+            ht_ins_grid(c->ht_sym, HT_SYM_N, c->syms[i].name, i,
+                        (const char *)c->syms, (int)sizeof(Symbol));
+        }
         return i;
     }
 }
@@ -2526,7 +2709,9 @@ static int sym_add_array(Compiler *c, Token *t, int32_t count, uint8_t is_float,
     }
     if (elem_w == 0)
         elem_w = packed ? 1 : 4;
-    stride = packed ? 1u : (uint16_t)(elem_w >= 8 ? 8 : (elem_w < 4 ? 4 : elem_w));
+    /* Do not cap stride at 8: packed WAD structs are 12–40 bytes, and
+     * `filelump_t dir[n]` must step sizeof(filelump_t). */
+    stride = packed ? 1u : (uint16_t)(elem_w < 4 ? 4 : elem_w);
     if (packed) {
         need = (uint32_t)((count + 3) & ~3);
     } else {
@@ -2552,27 +2737,26 @@ static int sym_add_array(Compiler *c, Token *t, int32_t count, uint8_t is_float,
     c->syms[i].stride = stride;
     c->syms[i].array_n = (uint16_t)(count > 65535 ? 65535 : count);
     c->mem_next += need;
+    if (c->syms[i].scope == 0) {
+        ht_ins_grid(c->ht_sym, HT_SYM_N, c->syms[i].name, i,
+                    (const char *)c->syms, (int)sizeof(Symbol));
+    }
     return i;
 }
 
+static int sym_add_typedef_array(Compiler *c, Token *t, const DeclType *dt) {
+    uint8_t ew = (uint8_t)(dt->elemw ? dt->elemw : 1u);
+    uint8_t packed = (ew <= 1u) ? 1u : 0u;
+    return sym_add_array(c, t, dt->arr_n > 0 ? dt->arr_n : 1, dt->isf, packed, ew);
+}
+
 static int typedef_find(Compiler *c, const char *name) {
-    int i;
-    for (i = 0; i < c->ntypedef; ++i) {
-        if (same(c->td_name[i], name)) {
-            return i;
-        }
-    }
-    return -1;
+    return ht_find_grid(c->ht_td, HT_TD_N, name, c->td_name[0], NAME_MAX);
 }
 
 static int struct_find(Compiler *c, const char *name) {
-    int i;
-    for (i = 0; i < c->nstructs; ++i) {
-        if (same(c->structs[i].name, name)) {
-            return i;
-        }
-    }
-    return -1;
+    return ht_find_grid(c->ht_st, HT_ST_N, name, (const char *)c->structs,
+                        (int)sizeof(StructDef));
 }
 
 static int func_find(Compiler *c, const char *name) {
@@ -2580,18 +2764,18 @@ static int func_find(Compiler *c, const char *name) {
     if (c->tu_id > 0) {
         char mang[NAME_MAX];
         static_mangle(c, name, mang);
-        for (i = 0; i < c->nfuncs; ++i) {
-            if (same(c->funcs[i].name, mang)) {
-                return i;
-            }
-        }
-    }
-    for (i = 0; i < c->nfuncs; ++i) {
-        if (same(c->funcs[i].name, name)) {
+        i = ht_find_grid(c->ht_func, HT_FUNC_N, mang, (const char *)c->funcs,
+                         (int)sizeof(FuncDef));
+        if (i >= 0) {
             return i;
         }
     }
-    return -1;
+    return ht_find_grid(c->ht_func, HT_FUNC_N, name, (const char *)c->funcs,
+                        (int)sizeof(FuncDef));
+}
+
+static int const_find(Compiler *c, const char *name) {
+    return ht_find_grid(c->ht_const, HT_CONST_N, name, c->const_name[0], NAME_MAX);
 }
 
 static int field_find(StructDef *s, const char *name) {
@@ -2638,6 +2822,69 @@ static int struct_add_field_ex(Compiler *c, StructDef *s, const char *name,
     return 1;
 }
 
+/* Trailing `} PACKEDATTR name;` is parsed after fields are laid out, so
+ * recompute offsets from fwidth once packed/union is known. */
+static void struct_recompute_layout(StructDef *s) {
+    int i;
+    uint16_t off = 0;
+    uint16_t maxneed = 0;
+    for (i = 0; i < s->nfields; ++i) {
+        uint16_t w = s->fwidth[i] ? s->fwidth[i] : 4u;
+        uint16_t need;
+        if (s->packed) {
+            need = w;
+        } else if (w <= 2) {
+            need = 4;
+        } else {
+            need = w;
+        }
+        if (s->is_union) {
+            s->foff[i] = 0;
+            if (need > maxneed) {
+                maxneed = need;
+            }
+        } else {
+            s->foff[i] = off;
+            off = (uint16_t)(off + need);
+        }
+    }
+    s->size = s->is_union ? maxneed : off;
+}
+
+/* `typedef struct Foo Foo;` is recorded before the body, so td_width is
+ * still 4. Refresh when the struct is completed so `Foo *` strides sizeof(Foo). */
+static void typedef_refresh_struct(Compiler *c, int sid) {
+    int ti;
+    uint16_t sz;
+    if (sid < 0 || sid >= c->nstructs) {
+        return;
+    }
+    sz = c->structs[sid].size;
+    if (!sz) {
+        return;
+    }
+    for (ti = 0; ti < c->ntypedef; ++ti) {
+        if (c->td_struct[ti] == sid && !c->td_ptr[ti] && c->td_count[ti] <= 1) {
+            c->td_width[ti] = (int)sz;
+        }
+    }
+}
+
+static uint16_t typedef_live_width(Compiler *c, int ti) {
+    int sid;
+    uint16_t w;
+    if (ti < 0 || ti >= c->ntypedef) {
+        return 4;
+    }
+    w = (uint16_t)(c->td_width[ti] ? c->td_width[ti] : 4);
+    sid = c->td_struct[ti];
+    if (!c->td_ptr[ti] && c->td_count[ti] <= 1 && sid >= 0 &&
+        sid < c->nstructs && c->structs[sid].size) {
+        w = c->structs[sid].size;
+    }
+    return w;
+}
+
 static int struct_add_field(Compiler *c, StructDef *s, const char *name,
                             uint8_t isf, uint16_t w, int is_union, int line,
                             int col, int16_t nested, uint8_t is_ptr) {
@@ -2674,12 +2921,10 @@ static int parse_const_prim(Compiler *c, int *out) {
         int i;
         int found = 0;
         v = 0;
-        for (i = 0; i < c->nconst; ++i) {
-            if (same(c->const_name[i], cur(c)->name)) {
-                v = (int)c->const_val[i];
-                found = 1;
-                break;
-            }
+        i = const_find(c, cur(c)->name);
+        if (i >= 0) {
+            v = (int)c->const_val[i];
+            found = 1;
         }
         if (!found) {
             return 0;
@@ -2825,6 +3070,8 @@ static int parse_enum_list(Compiler *c) {
         if (c->nconst < ENUM_MAX) {
             text(c->const_name[c->nconst], NAME_MAX, en->name);
             c->const_val[c->nconst] = val;
+            ht_ins_grid(c->ht_const, HT_CONST_N, en->name, c->nconst,
+                        c->const_name[0], NAME_MAX);
             c->nconst++;
         }
         ev = val + 1;
@@ -2892,6 +3139,7 @@ static int parse_struct_def(Compiler *c, int is_union) {
     }
     if (exist >= 0) {
         s = &c->structs[exist];
+        s->is_union = (uint8_t)is_union;
         if (skip_attr(c)) {
             s->packed = 1;
         }
@@ -2907,9 +3155,12 @@ static int parse_struct_def(Compiler *c, int is_union) {
         }
         s = &c->structs[c->nstructs++];
         text(s->name, NAME_MAX, tag);
+        ht_ins_grid(c->ht_st, HT_ST_N, tag, c->nstructs - 1,
+                    (const char *)c->structs, (int)sizeof(StructDef));
         s->nfields = 0;
         s->size = 0;
         s->packed = c->pack_pragma;
+        s->is_union = (uint8_t)is_union;
         for (i = 0; i < FIELD_MAX; ++i) {
             s->fstruct[i] = -1;
             s->fptr[i] = 0;
@@ -3042,8 +3293,15 @@ static int parse_struct_def(Compiler *c, int is_union) {
             if (!dt.ptr && dt.sid >= 0 && c->structs[dt.sid].size) {
                 thisw = c->structs[dt.sid].size;
             }
+            if (dt.arr_n > 1 && !dt.ptr) {
+                elemw = dt.elemw ? dt.elemw : 1u;
+                thisw = dt.w ? dt.w : thisw;
+            }
             if (thisc > 1) {
-                elemw = thisw ? thisw : 4u;
+                if (elemw == 0)
+                    elemw = thisw ? thisw : 4u;
+                else
+                    elemw = thisw;
                 thisw = (uint16_t)(thisw * (uint16_t)thisc);
             }
             if (!struct_add_field_ex(c, s, fn->name, dt.isf, thisw, elemw,
@@ -3072,6 +3330,8 @@ static int parse_struct_def(Compiler *c, int is_union) {
     if (skip_attr(c)) {
         s->packed = 1;
     }
+    struct_recompute_layout(s);
+    typedef_refresh_struct(c, (int)(s - c->structs));
     return 1;
 }
 
@@ -3087,6 +3347,8 @@ static int parse_type_n(Compiler *c, DeclType *d, char *name_out, int ncap) {
     d->uns = 0;
     d->is_void = 0;
     d->sid = -1;
+    d->arr_n = 0;
+    d->elemw = 0;
     skip_attr(c);
     while (take(c, T_CONST) || take(c, T_VOLATILE) || take(c, T_RESTRICT)) {
     }
@@ -3171,9 +3433,11 @@ static int parse_type_n(Compiler *c, DeclType *d, char *name_out, int ncap) {
         if (ti < 0) {
             return 0;
         }
-        d->w = (uint8_t)c->td_width[ti];
+        d->w = typedef_live_width(c, ti);
         d->ptr = (uint8_t)c->td_ptr[ti];
         d->sid = (int16_t)c->td_struct[ti];
+        d->arr_n = (uint16_t)c->td_count[ti];
+        d->elemw = (uint16_t)c->td_elemw[ti];
         ++c->pos;
         got = 1;
     }
@@ -3190,6 +3454,10 @@ static int parse_type_n(Compiler *c, DeclType *d, char *name_out, int ncap) {
             /* char* keeps element width; char** / int** pointee is a pointer. */
             if (stars > 1)
                 d->w = 8;
+            else if (d->arr_n > 1 && d->elemw)
+                d->w = d->elemw;
+            d->arr_n = 0;
+            d->elemw = 0;
         }
     }
     if (cur(c)->kind == T_LP && c->pos + 1 < c->ntok &&
@@ -3368,15 +3636,13 @@ static int primary(Compiler *c) {
     }
     ++c->pos;
     {
-        int ci;
-        for (ci = 0; ci < c->nconst; ++ci) {
-            if (same(c->const_name[ci], t->name)) {
-                id = node(c, N_INT, t);
-                if (id >= 0) {
-                    c->nodes[id].value = c->const_val[ci];
-                }
-                return id;
+        int ci = const_find(c, t->name);
+        if (ci >= 0) {
+            id = node(c, N_INT, t);
+            if (id >= 0) {
+                c->nodes[id].value = c->const_val[ci];
             }
+            return id;
         }
     }
     if (take(c, T_LP)) {
@@ -3560,6 +3826,9 @@ static int primary(Compiler *c) {
                     c->nodes[fid].left = id;
                     c->nodes[fid].third = (int)c->structs[sid].foff[fi];
                     c->nodes[fid].value = fw;
+                    if (c->structs[sid].felemw[fi] > 0) {
+                        c->nodes[fid].value |= 0x40000;
+                    }
                     c->nodes[fid].is_float = isf;
                     c->nodes[fid].sid = c->structs[sid].fstruct[fi];
                 }
@@ -3670,6 +3939,15 @@ static int primary(Compiler *c) {
                     c->nodes[p].third = 0;
                     c->nodes[p].value = stride;
                     c->nodes[p].sid = (int16_t)sid;
+                    /* `p->defaults[i]`: N_ARROW yields the field address; load
+                     * the pointer before scaling the index. */
+                    if (arr_elem == 0 &&
+                        (c->nodes[fid].kind == N_ARROW ||
+                         c->nodes[fid].kind == N_FIELD ||
+                         (c->nodes[fid].kind == N_PTRFIELD &&
+                          c->nodes[fid].right < 0))) {
+                        c->nodes[p].value |= 0x10000;
+                    }
                     /* Mark byte elements so stores/loads use STOREB/LOADB. */
                     if (stride == 1)
                         c->nodes[p].value |= 0x20000;
@@ -3704,6 +3982,9 @@ static int primary(Compiler *c) {
                     c->nodes[p].right = -1;
                     c->nodes[p].third = (int)c->structs[sid].foff[fi];
                     c->nodes[p].value = (int)c->structs[sid].fwidth[fi];
+                    if (c->structs[sid].felemw[fi] > 0) {
+                        c->nodes[p].value |= 0x40000;
+                    }
                     if (next_arrow && c->nodes[fid].kind == N_PTRFIELD &&
                         c->nodes[fid].right >= 0) {
                         c->nodes[p].value |= 0x10000;
@@ -3907,7 +4188,7 @@ static int parse_cast_type(Compiler *c, CastType *ct) {
         if (ti < 0) {
             return fail(c, cur(c)->line, cur(c)->column, "expected type in cast");
         }
-        ct->width = (uint8_t)c->td_width[ti];
+        ct->width = (uint8_t)typedef_live_width(c, ti);
         ct->sid = (int16_t)c->td_struct[ti];
         if (c->td_ptr[ti]) {
             ct->is_ptr = 1;
@@ -3992,8 +4273,22 @@ static int postfix_expr(Compiler *c, int id) {
                 } else if (c->syms[sy].stride) {
                     stride = (int)c->syms[sy].stride;
                 }
-            } else if (c->nodes[id].kind == N_PTRFIELD && c->nodes[id].value) {
-                stride = c->nodes[id].value;
+                if (c->syms[sy].struct_id >= 0 &&
+                    c->structs[c->syms[sy].struct_id].size) {
+                    stride = (int)c->structs[c->syms[sy].struct_id].size;
+                }
+            } else if (c->nodes[id].kind == N_PTRFIELD ||
+                       c->nodes[id].kind == N_FIELD ||
+                       c->nodes[id].kind == N_ARROW) {
+                int psid = c->nodes[id].sid;
+                if (psid >= 0 && psid < c->nstructs &&
+                    c->structs[psid].size) {
+                    stride = (int)c->structs[psid].size;
+                } else if (c->nodes[id].kind == N_PTRFIELD &&
+                           c->nodes[id].value) {
+                    int fw = c->nodes[id].value & 0xffff;
+                    stride = (fw == 8) ? 1 : (fw ? fw : 4);
+                }
             }
             p = node(c, N_PTRFIELD, t);
             if (p < 0) {
@@ -4003,6 +4298,10 @@ static int postfix_expr(Compiler *c, int id) {
             c->nodes[p].right = idx;
             c->nodes[p].third = 0;
             c->nodes[p].value = stride;
+            /* Pointer field (`p->defaults[i]`): load the pointer, then index. */
+            if (c->nodes[id].kind == N_PTRFIELD && c->nodes[id].right < 0) {
+                c->nodes[p].value |= 0x10000;
+            }
             c->nodes[p].sid = c->nodes[id].sid;
             id = p;
             continue;
@@ -4040,6 +4339,9 @@ static int postfix_expr(Compiler *c, int id) {
             c->nodes[p].right = -1;
             c->nodes[p].third = (int)c->structs[sid].foff[fi];
             c->nodes[p].value = (int)c->structs[sid].fwidth[fi];
+            if (c->structs[sid].felemw[fi] > 0) {
+                c->nodes[p].value |= 0x40000;
+            }
             if (is_arrow && c->nodes[id].kind == N_PTRFIELD &&
                 c->nodes[id].right >= 0) {
                 c->nodes[p].value |= 0x10000;
@@ -4570,6 +4872,7 @@ static int make_assign(Compiler *c, int lhs, int rhs, Token *t) {
         int addr = c->nodes[lhs].left;
         int stride_v = c->nodes[lhs].value & 0xffff;
         int is_byte = (stride_v == 1) || ((c->nodes[lhs].value & 0x20000) != 0);
+        int store_w = is_byte ? 1 : (stride_v == 2 ? 2 : (stride_v >= 8 ? 8 : 4));
         if (c->nodes[lhs].right >= 0) {
             int muln = node(c, N_MUL, t);
             int stride = node(c, N_INT, t);
@@ -4609,7 +4912,7 @@ static int make_assign(Compiler *c, int lhs, int rhs, Token *t) {
         }
         c->nodes[id].left = rhs;
         c->nodes[id].right = addr;
-        c->nodes[id].value = is_byte ? 1 : 0;
+        c->nodes[id].value = store_w;
         return id;
     }
     return fail(c, t->line, t->column, "assignment needs lvalue");
@@ -4708,6 +5011,271 @@ static int expression(Compiler *c) {
     return left;
 }
 
+static uint8_t ginit_store_w(uint8_t w) {
+    if (w >= 8) {
+        return CL_OP_STORE64;
+    }
+    if (w == 1) {
+        return CL_OP_STOREB;
+    }
+    return CL_OP_STORE;
+}
+
+static int ginit_add(Compiler *c, uint32_t addr, uint8_t w, int expr) {
+    Token *t = cur(c);
+    if (expr < 0) {
+        return 0;
+    }
+    if (c->nginits >= GINIT_MAX) {
+        return fail(c, t->line, t->column, "too many global initializers");
+    }
+    c->ginit_addr[c->nginits] = addr;
+    c->ginit_w[c->nginits] = w ? w : 4u;
+    c->ginit_expr[c->nginits] = expr;
+    c->nginits++;
+    return 1;
+}
+
+static int skip_one_init(Compiler *c) {
+    int brace = 0;
+    int paren = 0;
+    int brack = 0;
+    if (cur(c)->kind == T_LB) {
+        brace = 1;
+        ++c->pos;
+        while (c->pos < c->ntok && brace > 0) {
+            if (cur(c)->kind == T_LB) {
+                brace++;
+            } else if (cur(c)->kind == T_RB) {
+                brace--;
+            }
+            ++c->pos;
+        }
+        return 1;
+    }
+    while (c->pos < c->ntok) {
+        TokenKind k = cur(c)->kind;
+        if (paren == 0 && brack == 0 && brace == 0 &&
+            (k == T_COMMA || k == T_RB || k == T_SEMI)) {
+            return 1;
+        }
+        if (k == T_LP) {
+            paren++;
+        } else if (k == T_RP && paren > 0) {
+            paren--;
+        } else if (k == T_LBRACK) {
+            brack++;
+        } else if (k == T_RBRACK && brack > 0) {
+            brack--;
+        } else if (k == T_LB) {
+            brace++;
+        } else if (k == T_RB && brace > 0) {
+            brace--;
+        }
+        ++c->pos;
+    }
+    return 1;
+}
+
+static int count_brace_inits(Compiler *c) {
+    int saved = c->pos;
+    int n = 0;
+    if (cur(c)->kind != T_LB) {
+        return 1;
+    }
+    ++c->pos;
+    while (cur(c)->kind != T_RB && cur(c)->kind != T_EOF) {
+        if (cur(c)->kind == T_COMMA) {
+            ++c->pos;
+            continue;
+        }
+        if (!skip_one_init(c)) {
+            break;
+        }
+        n++;
+        take(c, T_COMMA);
+    }
+    c->pos = saved;
+    return n;
+}
+
+static uint8_t field_init_w(const StructDef *s, int fi) {
+    if (s->fptr[fi] || s->fwidth[fi] >= 8) {
+        return 8;
+    }
+    if (s->packed && s->fwidth[fi] == 1) {
+        return 1;
+    }
+    return 4;
+}
+
+static int parse_ginit_struct(Compiler *c, uint32_t addr, int sid);
+static int parse_ginit_array(Compiler *c, uint32_t addr, int count, int sid,
+                             uint16_t stride, uint8_t elem_w);
+
+static int parse_ginit_scalar(Compiler *c, uint32_t addr, uint8_t w) {
+    int gi;
+    if (take(c, T_LB)) {
+        gi = assignment_expr(c);
+        if (gi < 0) {
+            return 0;
+        }
+        take(c, T_COMMA);
+        while (cur(c)->kind != T_RB && cur(c)->kind != T_EOF) {
+            skip_one_init(c);
+            take(c, T_COMMA);
+        }
+        if (!expect(c, T_RB, "expected } after initializer")) {
+            return 0;
+        }
+        return ginit_add(c, addr, w, gi);
+    }
+    gi = assignment_expr(c);
+    if (gi < 0) {
+        return 0;
+    }
+    return ginit_add(c, addr, w, gi);
+}
+
+static int parse_ginit_struct(Compiler *c, uint32_t addr, int sid) {
+    StructDef *s;
+    int braced;
+    int fi;
+    if (sid < 0 || sid >= c->nstructs) {
+        return parse_ginit_scalar(c, addr, 4);
+    }
+    s = &c->structs[sid];
+    braced = take(c, T_LB);
+    fi = 0;
+    while (fi < s->nfields) {
+        uint32_t fa;
+        int nested;
+        if (braced && (cur(c)->kind == T_RB || cur(c)->kind == T_EOF)) {
+            break;
+        }
+        if (braced && cur(c)->kind == T_COMMA) {
+            ++c->pos;
+            if (cur(c)->kind == T_RB) {
+                break;
+            }
+            continue;
+        }
+        fa = addr + (uint32_t)s->foff[fi];
+        nested = s->fstruct[fi];
+        if (!s->fptr[fi] && nested >= 0 && s->felemw[fi] == 0) {
+            if (!parse_ginit_struct(c, fa, nested)) {
+                return 0;
+            }
+        } else if (!s->fptr[fi] && s->felemw[fi] > 0) {
+            int n = s->felemw[fi] ? (int)s->fwidth[fi] / (int)s->felemw[fi] : 1;
+            uint16_t st = s->felemw[fi];
+            if (n < 1) {
+                n = 1;
+            }
+            if (!parse_ginit_array(c, fa, n, nested, st, (uint8_t)st)) {
+                return 0;
+            }
+        } else {
+            if (!parse_ginit_scalar(c, fa, field_init_w(s, fi))) {
+                return 0;
+            }
+        }
+        fi++;
+        if (braced) {
+            take(c, T_COMMA);
+            if (cur(c)->kind == T_RB) {
+                break;
+            }
+        } else if (fi < s->nfields) {
+            if (!take(c, T_COMMA)) {
+                break;
+            }
+        }
+    }
+    if (braced) {
+        while (cur(c)->kind != T_RB && cur(c)->kind != T_EOF) {
+            skip_one_init(c);
+            take(c, T_COMMA);
+        }
+        if (!expect(c, T_RB, "expected } after struct initializer")) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int parse_ginit_array(Compiler *c, uint32_t addr, int count, int sid,
+                             uint16_t stride, uint8_t elem_w) {
+    int i = 0;
+    uint16_t step = stride ? stride : (elem_w ? elem_w : 4u);
+    if (!take(c, T_LB)) {
+        if (sid >= 0) {
+            return parse_ginit_struct(c, addr, sid);
+        }
+        return parse_ginit_scalar(c, addr, elem_w ? elem_w : 4u);
+    }
+    while (cur(c)->kind != T_RB && cur(c)->kind != T_EOF && i < count) {
+        uint32_t ea;
+        if (cur(c)->kind == T_COMMA) {
+            ++c->pos;
+            continue;
+        }
+        ea = addr + (uint32_t)i * (uint32_t)step;
+        if (sid >= 0) {
+            if (!parse_ginit_struct(c, ea, sid)) {
+                return 0;
+            }
+        } else {
+            if (!parse_ginit_scalar(c, ea, elem_w ? elem_w : 4u)) {
+                return 0;
+            }
+        }
+        i++;
+        take(c, T_COMMA);
+    }
+    while (cur(c)->kind != T_RB && cur(c)->kind != T_EOF) {
+        skip_one_init(c);
+        take(c, T_COMMA);
+    }
+    if (!expect(c, T_RB, "expected } after array initializer")) {
+        return 0;
+    }
+    return 1;
+}
+
+static int parse_ginit_for_sym(Compiler *c, int gsym) {
+    Symbol *s = &c->syms[gsym];
+    uint32_t addr = s->address;
+    int sid = s->struct_id;
+    uint8_t w = 4;
+    if (s->is_ptr || s->width >= 8) {
+        w = 8;
+    } else if (s->packed || s->width == 1) {
+        w = 1;
+    }
+    if (cur(c)->kind != T_LB) {
+        int gi = assignment_expr(c);
+        if (gi < 0) {
+            return 0;
+        }
+        return ginit_add(c, addr, w, gi);
+    }
+    if (s->is_array) {
+        int n = s->array_n ? (int)s->array_n : 1;
+        uint16_t st = s->stride ? s->stride : (s->width ? s->width : 4u);
+        uint8_t ew = (uint8_t)(st > 255u ? 255u : st);
+        if (sid < 0) {
+            ew = w;
+            st = ew;
+        }
+        return parse_ginit_array(c, addr, n, sid, st, ew);
+    }
+    if (sid >= 0 && !s->is_ptr) {
+        return parse_ginit_struct(c, addr, sid);
+    }
+    return parse_ginit_scalar(c, addr, w);
+}
+
 static int finish_decl(Compiler *c, int decl_id, Token *t) {
     int sym;
     int v;
@@ -4729,19 +5297,57 @@ static int finish_decl(Compiler *c, int decl_id, Token *t) {
                 int fi = -1;
                 int idxv = seq;
                 int desig = 0;
-                if (cur(c)->kind == T_LB) {
-                    int d = 0;
-                    do {
-                        if (take(c, T_LB)) {
-                            d++;
-                        } else if (take(c, T_RB)) {
-                            d--;
-                        } else if (cur(c)->kind == T_EOF) {
-                            break;
-                        } else {
+                if (cur(c)->kind == T_LB && c->syms[sym].struct_id >= 0) {
+                    int sid = c->syms[sym].struct_id;
+                    int fi = 0;
+                    int idxv = seq;
+                    take(c, T_LB);
+                    while (!take(c, T_RB) && cur(c)->kind != T_EOF) {
+                        int v2;
+                        int id2;
+                        if (cur(c)->kind == T_COMMA) {
                             ++c->pos;
+                            continue;
                         }
-                    } while (d > 0);
+                        if (cur(c)->kind == T_LB) {
+                            skip_one_init(c);
+                            take(c, T_COMMA);
+                            fi++;
+                            continue;
+                        }
+                        v2 = assignment_expr(c);
+                        if (v2 < 0) {
+                            return -1;
+                        }
+                        take(c, T_COMMA);
+                        id2 = node(c, N_FIELD_ASSIGN, t);
+                        if (id2 < 0) {
+                            return -1;
+                        }
+                        c->nodes[id2].value = sym;
+                        c->nodes[id2].left = v2;
+                        c->nodes[id2].third = fi;
+                        if (c->syms[sym].is_array) {
+                            int ix = node(c, N_INT, t);
+                            if (ix < 0) {
+                                return -1;
+                            }
+                            c->nodes[ix].value = idxv;
+                            c->nodes[id2].right = ix;
+                        } else {
+                            c->nodes[id2].right = -1;
+                        }
+                        (void)sid;
+                        c->nodes[last].next = id2;
+                        last = id2;
+                        fi++;
+                    }
+                    take(c, T_COMMA);
+                    seq++;
+                    continue;
+                }
+                if (cur(c)->kind == T_LB) {
+                    skip_one_init(c);
                     take(c, T_COMMA);
                     seq++;
                     continue;
@@ -5001,6 +5607,7 @@ static int statement(Compiler *c) {
     int step;
     uint8_t uns;
 
+    maybe_yield();
     uns = take_qualifiers(c);
     if (take(c, T_SEMI)) {
         id = node(c, N_BLOCK, t);
@@ -5232,11 +5839,30 @@ static int statement(Compiler *c) {
                 (c->tokens[c->pos + 1].kind == T_ID ||
                  c->tokens[c->pos + 1].kind == T_STAR ||
                  c->tokens[c->pos + 1].kind == T_LBRACK)) {
-                uint8_t w = (uint8_t)c->td_width[ti];
+                uint16_t live = typedef_live_width(c, ti);
+                uint8_t w = (uint8_t)(live > 255 ? 255 : live);
                 uint8_t ptr = (uint8_t)c->td_ptr[ti];
+                int nstar = 0;
+                DeclType td;
                 ++c->pos;
+                td.w = live;
+                td.ptr = ptr;
+                td.isf = 0;
+                td.uns = uns;
+                td.is_void = 0;
+                td.sid = (int16_t)c->td_struct[ti];
+                td.arr_n = (uint16_t)c->td_count[ti];
+                td.elemw = (uint16_t)c->td_elemw[ti];
                 while (take(c, T_STAR)) {
                     ptr = 1;
+                    nstar++;
+                    td.ptr = 1;
+                    td.arr_n = 0;
+                    td.elemw = 0;
+                }
+                if (nstar > 1) {
+                    w = 8;
+                    td.w = 8;
                 }
                 name = cur(c);
                 if (!expect(c, T_ID, "expected variable name")) {
@@ -5244,10 +5870,20 @@ static int statement(Compiler *c) {
                 }
                 if (take(c, T_LBRACK)) {
                     int count = 1;
+                    uint8_t ew;
                     if (!parse_array_dim(c, &count)) {
                         return -1;
                     }
-                    sym = sym_add_array(c, name, count, 0, 0, ptr ? 8 : w);
+                    if (ptr)
+                        ew = 8;
+                    else if (td.arr_n > 1)
+                        ew = (uint8_t)(td.w > 255 ? 255 : td.w);
+                    else
+                        ew = w ? w : 4u;
+                    sym = sym_add_array(c, name, count, 0, (ew <= 1 && !ptr) ? 1 : 0,
+                                        ew);
+                } else if (td.arr_n > 1 && !ptr) {
+                    sym = sym_add_typedef_array(c, name, &td);
                 } else {
                     sym = sym_add(c, name, 0, w, ptr);
                 }
@@ -5256,10 +5892,12 @@ static int statement(Compiler *c) {
                 }
                 c->syms[sym].is_unsigned = uns;
                 c->syms[sym].struct_id = (int16_t)c->td_struct[ti];
-                if (ptr && c->td_struct[ti] >= 0) {
+                if (ptr && nstar <= 1 && c->td_struct[ti] >= 0) {
                     uint16_t sz = c->structs[c->td_struct[ti]].size;
-                    c->syms[sym].pointee = (uint8_t)(sz > 255 ? 255 : sz);
-                    c->syms[sym].stride = sz ? sz : 8;
+                    if (sz) {
+                        c->syms[sym].pointee = (uint8_t)(sz > 255 ? 255 : sz);
+                        c->syms[sym].stride = sz;
+                    }
                 }
                 id = node(c, N_DECL, t);
                 if (id < 0) {
@@ -5926,6 +6564,8 @@ static int parse_function(Compiler *c, uint8_t ret, Token *name, int16_t ret_sid
     } else {
         f = &c->funcs[c->nfuncs++];
         text(f->name, NAME_MAX, fname);
+        ht_ins_grid(c->ht_func, HT_FUNC_N, fname, c->nfuncs - 1,
+                    (const char *)c->funcs, (int)sizeof(FuncDef));
         f->argc = 0;
         f->ret = ret;
         f->body = -1;
@@ -5998,10 +6638,16 @@ static int parse_function(Compiler *c, uint8_t ret, Token *name, int16_t ret_sid
                 return fail(c, an->line, an->column, "too many args");
             }
             ptr = dt.ptr;
-            /* Pass pointee width into sym_add; it sets storage width to 8. */
-            w = (uint8_t)(dt.w ? dt.w : (dt.isf ? 4 : 4));
-            if (!ptr && w >= 8)
-                w = 8;
+            /* C: array parameters decay to pointer to the element type. */
+            if (dt.arr_n > 1 && !ptr) {
+                ptr = 1;
+                w = (uint8_t)(dt.elemw ? dt.elemw : 1u);
+            } else {
+                /* Pass pointee width into sym_add; it sets storage width to 8. */
+                w = (uint8_t)(dt.w ? dt.w : (dt.isf ? 4 : 4));
+                if (!ptr && w >= 8)
+                    w = 8;
+            }
             if (ptr && dt.is_void)
                 w = 1;
             sym = sym_add(c, an, dt.isf, w, ptr);
@@ -6047,6 +6693,7 @@ static int parse_decls(Compiler *c) {
         uint8_t ptr = 0;
         Token *name;
         uint8_t uns;
+        maybe_yield();
         uns = take_qualifiers(c);
         if (take(c, T_ENUM)) {
             take(c, T_ID);
@@ -6087,12 +6734,19 @@ static int parse_decls(Compiler *c) {
                 }
             }
             if (take(c, T_LBRACK)) {
-                int dummy = 1;
-                if (!parse_array_dim(c, &dummy)) {
+                int n = 1;
+                uint16_t ew;
+                if (!parse_array_dim(c, &n)) {
                     return -1;
                 }
-                dt.ptr = 1;
-                dt.w = 8;
+                if (n < 1) {
+                    n = 1;
+                }
+                ew = dt.ptr ? 8u : (dt.arr_n > 1 ? dt.w : (dt.w ? dt.w : 4u));
+                dt.elemw = ew;
+                dt.arr_n = (uint16_t)n;
+                dt.w = (uint16_t)(ew * (uint16_t)n);
+                dt.ptr = 0;
             }
             if (!expect(c, T_SEMI, "expected ; after typedef")) {
                 return -1;
@@ -6102,11 +6756,15 @@ static int parse_decls(Compiler *c) {
                 if (ti < 0 && c->ntypedef < TYPEDEF_MAX) {
                     ti = c->ntypedef++;
                     text(c->td_name[ti], NAME_MAX, tn->name);
+                    ht_ins_grid(c->ht_td, HT_TD_N, tn->name, ti, c->td_name[0],
+                                NAME_MAX);
                 }
                 if (ti >= 0) {
-                    c->td_width[ti] = dt.ptr ? 8 : dt.w;
                     c->td_ptr[ti] = dt.ptr;
                     c->td_struct[ti] = dt.sid;
+                    c->td_count[ti] = dt.arr_n;
+                    c->td_elemw[ti] = dt.elemw;
+                    c->td_width[ti] = dt.ptr ? 8 : dt.w;
                 }
             }
             continue;
@@ -6121,9 +6779,18 @@ static int parse_decls(Compiler *c) {
                 return -1;
             }
             ptr = dt.ptr;
-            gw = (uint8_t)(ptr ? 8 : (dt.w >= 8 ? 8 : (dt.w ? dt.w : 4)));
             isf = dt.isf;
             gsid = dt.sid;
+            if (ptr) {
+                gw = 8;
+            } else if (gsid >= 0 && c->structs[gsid].size) {
+                {
+                    uint16_t sz = c->structs[gsid].size;
+                    gw = (uint8_t)(sz > 255 ? 255 : sz);
+                }
+            } else {
+                gw = (uint8_t)(dt.w >= 8 ? 8 : (dt.w ? dt.w : 4));
+            }
             if (cur(c)->kind == T_SEMI) {
                 if (nbuf[0]) {
                     Token vn;
@@ -6195,11 +6862,30 @@ static int parse_decls(Compiler *c) {
                 int gsym;
                 uint8_t pw = (uint8_t)(ptr ? (dt.w ? dt.w : 4) : gw);
                 for (;;) {
+                    int is_arr = 0;
+                    int unsized = 0;
+                    int count = 1;
                     if (take(c, T_LBRACK)) {
-                        int count = 256;
-                        if (!parse_array_dim(c, &count)) {
+                        is_arr = 1;
+                        if (take(c, T_RBRACK)) {
+                            unsized = 1;
+                            count = 256;
+                        } else if (!parse_array_dim(c, &count)) {
                             return -1;
                         }
+                    }
+                    if (unsized && cur(c)->kind == T_ASSIGN) {
+                        int saved = c->pos;
+                        ++c->pos;
+                        if (cur(c)->kind == T_LB) {
+                            int n = count_brace_inits(c);
+                            if (n > 0) {
+                                count = n;
+                            }
+                        }
+                        c->pos = saved;
+                    }
+                    if (is_arr) {
                         gsym = sym_add_array(c, name, count, isf, gw == 1 && !ptr,
                                              ptr ? 8 : gw);
                     } else {
@@ -6211,28 +6897,18 @@ static int parse_decls(Compiler *c) {
                     c->syms[gsym].is_global = 1;
                     c->syms[gsym].is_unsigned = uns;
                     c->syms[gsym].struct_id = (int16_t)gsid;
+                    if (gsid >= 0 && c->structs[gsid].size && !ptr) {
+                        uint16_t sz = c->structs[gsid].size;
+                        c->syms[gsym].stride = sz;
+                        if (!is_arr) {
+                            if (sz < 256) {
+                                c->syms[gsym].width = (uint8_t)sz;
+                            }
+                        }
+                    }
                     if (take(c, T_ASSIGN)) {
-                        if (take(c, T_LB)) {
-                            int depth = 1;
-                            while (depth && cur(c)->kind != T_EOF) {
-                                if (take(c, T_LB)) {
-                                    depth++;
-                                } else if (take(c, T_RB)) {
-                                    depth--;
-                                } else {
-                                    ++c->pos;
-                                }
-                            }
-                        } else {
-                            int gi = assignment_expr(c);
-                            if (gi < 0) {
-                                return -1;
-                            }
-                            if (c->nginits < GINIT_MAX) {
-                                c->ginit_sym[c->nginits] = gsym;
-                                c->ginit_expr[c->nginits] = gi;
-                                c->nginits++;
-                            }
+                        if (!parse_ginit_for_sym(c, gsym)) {
+                            return -1;
                         }
                     }
                     if (!take(c, T_COMMA)) {
@@ -6407,6 +7083,12 @@ static int gen_float_binop(Compiler *c, Node *n, uint8_t op) {
 
 static int gen_index_addr(Compiler *c, int sym, int idx_id, Node *n);
 static int gen_field_addr(Compiler *c, int sym, int fi, int idx_id, Node *n);
+static int expr_ptr_stride(Compiler *c, int nid);
+
+static int incdec_step(Compiler *c, int lhs) {
+    int st = expr_ptr_stride(c, lhs);
+    return st > 0 ? st : 1;
+}
 
 /* Emit ++/-- for a memory lvalue (field/arrow/deref). Leaves old (post) or
  * new (pre) value on the stack. */
@@ -6452,27 +7134,30 @@ static int gen_mem_incdec(Compiler *c, int target, int is_inc, int is_post,
     }
     if (!byte(c, ld, n))
         return -1;
-    if (is_post) {
-        if (!byte(c, CL_OP_DUP, n) || !push(c, 1, n) ||
-            !byte(c, is_inc ? CL_OP_ADD : CL_OP_SUB, n) ||
+    {
+        int step = incdec_step(c, target);
+        if (is_post) {
+            if (!byte(c, CL_OP_DUP, n) || !push(c, step, n) ||
+                !byte(c, is_inc ? CL_OP_ADD : CL_OP_SUB, n) ||
+                !byte(c, CL_OP_DUP, n))
+                return -1;
+            if (t->kind == N_ARROW) {
+                if (gen_field_addr(c, t->value, t->left, -3, t) != 1)
+                    return -1;
+            } else if (t->kind == N_FIELD) {
+                if (gen_field_addr(c, t->value, t->left, t->right, t) != 1)
+                    return -1;
+            } else if (gen_expr(c, t->left) != 1) {
+                return -1;
+            }
+            if (!byte(c, st, n) || !byte(c, CL_OP_DROP, n))
+                return -1;
+            return 1;
+        }
+        if (!push(c, step, n) || !byte(c, is_inc ? CL_OP_ADD : CL_OP_SUB, n) ||
             !byte(c, CL_OP_DUP, n))
             return -1;
-        if (t->kind == N_ARROW) {
-            if (gen_field_addr(c, t->value, t->left, -3, t) != 1)
-                return -1;
-        } else if (t->kind == N_FIELD) {
-            if (gen_field_addr(c, t->value, t->left, t->right, t) != 1)
-                return -1;
-        } else if (gen_expr(c, t->left) != 1) {
-            return -1;
-        }
-        if (!byte(c, st, n) || !byte(c, CL_OP_DROP, n))
-            return -1;
-        return 1;
     }
-    if (!push(c, 1, n) || !byte(c, is_inc ? CL_OP_ADD : CL_OP_SUB, n) ||
-        !byte(c, CL_OP_DUP, n))
-        return -1;
     if (t->kind == N_ARROW) {
         if (gen_field_addr(c, t->value, t->left, -3, t) != 1)
             return -1;
@@ -6859,6 +7544,26 @@ static int gen_narrow(Compiler *c, Node *n, int width, int uns) {
     return 1;
 }
 
+static int gen_load_w(Compiler *c, Node *n, int w) {
+    if (w >= 8) {
+        return byte(c, CL_OP_LOAD64, n) ? 1 : -1;
+    }
+    if (w <= 1) {
+        return byte(c, CL_OP_LOADB, n) ? 1 : -1;
+    }
+    if (w == 2) {
+        if (!byte(c, CL_OP_DUP, n) || !byte(c, CL_OP_LOADB, n) ||
+            !byte(c, CL_OP_SWAP, n) || !push(c, 1, n) ||
+            !byte(c, CL_OP_ADD, n) || !byte(c, CL_OP_LOADB, n) ||
+            !push(c, 8, n) || !byte(c, CL_OP_SHL, n) ||
+            !byte(c, CL_OP_OR, n)) {
+            return -1;
+        }
+        return gen_narrow(c, n, 2, 0) ? 1 : -1;
+    }
+    return byte(c, CL_OP_LOAD, n) ? 1 : -1;
+}
+
 static int expr_ptr_stride(Compiler *c, int nid) {
     Node *n;
     if (nid < 0) {
@@ -6879,10 +7584,25 @@ static int expr_ptr_stride(Compiler *c, int nid) {
         if (pw <= 1) {
             return 1;
         }
-        if (pw < 4) {
+        return pw;
+    }
+    if (n->kind == N_PTRFIELD) {
+        int w = n->value & 0xff;
+        if (w == 8 && n->sid >= 0 && n->sid < c->nstructs &&
+            c->structs[n->sid].size)
+            return (int)c->structs[n->sid].size;
+    }
+    if ((n->kind == N_ARROW || n->kind == N_FIELD) && n->value >= 0 &&
+        n->value < c->nsyms) {
+        int sid = c->syms[n->value].struct_id;
+        int fi = n->left;
+        if (sid >= 0 && fi >= 0 && fi < c->structs[sid].nfields &&
+            c->structs[sid].fptr[fi]) {
+            int fs = c->structs[sid].fstruct[fi];
+            if (fs >= 0 && c->structs[fs].size)
+                return (int)c->structs[fs].size;
             return 4;
         }
-        return pw;
     }
     if (n->kind == N_ADD || n->kind == N_SUB) {
         int sl = expr_ptr_stride(c, n->left);
@@ -6952,6 +7672,9 @@ static int gen_expr(Compiler *c, int id) {
             (c->syms[n->value].is_ptr && c->syms[n->value].pointee == 1)) {
             return byte(c, CL_OP_LOADB, n) ? 1 : -1;
         }
+        if (c->syms[n->value].is_ptr && c->syms[n->value].pointee == 2) {
+            return gen_load_w(c, n, 2);
+        }
         if (c->syms[n->value].is_float) {
             return byte(c, CL_OP_FLOAD, n) ? 1 : -1;
         }
@@ -6964,10 +7687,18 @@ static int gen_expr(Compiler *c, int id) {
     if (n->kind == N_FIELD) {
         int sid;
         uint8_t w = 4;
+        int elemw = 0;
+        sid = c->syms[n->value].struct_id;
+        if (sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields)
+            elemw = (int)c->structs[sid].felemw[n->left];
         if (gen_field_addr(c, n->value, n->left, n->right, n) != 1) {
             return -1;
         }
-        sid = c->syms[n->value].struct_id;
+        /* Embedded array decays to pointer. N_FIELD.right is a struct-array
+         * index (lumpinfo[i].name), not an index into the char[]. Element
+         * access is N_PTRFIELD. */
+        if (elemw > 0)
+            return 1;
         if (n->third > 0) {
             w = (uint8_t)(n->third & 15);
             if (w == 0) {
@@ -6979,13 +7710,7 @@ static int gen_expr(Compiler *c, int id) {
         if (n->is_float) {
             return byte(c, CL_OP_FLOAD, n) ? 1 : -1;
         }
-        if (w >= 8) {
-            return byte(c, CL_OP_LOAD64, n) ? 1 : -1;
-        }
-        if (w == 1) {
-            return byte(c, CL_OP_LOADB, n) ? 1 : -1;
-        }
-        return byte(c, CL_OP_LOAD, n) ? 1 : -1;
+        return gen_load_w(c, n, w);
     }
     if (n->kind == N_ARROW) {
         int sid;
@@ -7025,13 +7750,7 @@ static int gen_expr(Compiler *c, int id) {
         if (n->is_float) {
             return byte(c, CL_OP_FLOAD, n) ? 1 : -1;
         }
-        if (w >= 8) {
-            return byte(c, CL_OP_LOAD64, n) ? 1 : -1;
-        }
-        if (w == 1) {
-            return byte(c, CL_OP_LOADB, n) ? 1 : -1;
-        }
-        return byte(c, CL_OP_LOAD, n) ? 1 : -1;
+        return gen_load_w(c, n, w);
     }
     if (n->kind == N_PTRFIELD) {
         uint8_t w = 4;
@@ -7069,8 +7788,16 @@ static int gen_expr(Compiler *c, int id) {
                 !byte(c, CL_OP_ADD, n)) {
                 return -1;
             }
+            /* third==0: indexed address, no extra field offset.
+             * char/byte arrays must load; struct arrays leave the address
+             * for `.field` / `&p->arr[i]`. */
             if (n->third == 0) {
-                return 1;
+                if (stride == 1 || (n->value & 0x20000))
+                    return gen_load_w(c, n, 1);
+                if (n->sid >= 0)
+                    return 1;
+                w = (uint8_t)(stride >= 8 ? 8 : (stride ? stride : 4));
+                return gen_load_w(c, n, w);
             }
             if (stride == 1 || (n->value & 0x20000))
                 w = 1;
@@ -7088,16 +7815,13 @@ static int gen_expr(Compiler *c, int id) {
             (!push(c, n->third, n) || !byte(c, CL_OP_ADD, n))) {
             return -1;
         }
+        if ((n->value & 0x40000) && n->right < 0) {
+            return 1;
+        }
         if (n->is_float) {
             return byte(c, CL_OP_FLOAD, n) ? 1 : -1;
         }
-        if (w >= 8) {
-            return byte(c, CL_OP_LOAD64, n) ? 1 : -1;
-        }
-        if (w == 1) {
-            return byte(c, CL_OP_LOADB, n) ? 1 : -1;
-        }
-        return byte(c, CL_OP_LOAD, n) ? 1 : -1;
+        return gen_load_w(c, n, w);
     }
     if (n->kind == N_CALL) {
         return gen_call(c, n);
@@ -7200,8 +7924,12 @@ static int gen_expr(Compiler *c, int id) {
             return -1;
         }
         if (op == CL_OP_LOADB) {
-            int32_t cv = (n->left >= 0) ? c->nodes[n->left].value : 0;
-            int uns = (c->nodes[n->left].kind == N_CAST) && (cv & CAST_UNS);
+            int32_t cv = 0;
+            int uns = 0;
+            if (n->left >= 0) {
+                cv = c->nodes[n->left].value;
+                uns = (c->nodes[n->left].kind == N_CAST) && (cv & CAST_UNS);
+            }
             if (!uns && !gen_narrow(c, n, 1, 0)) {
                 return -1;
             }
@@ -7268,6 +7996,20 @@ static int gen_expr(Compiler *c, int id) {
             op = CL_OP_STORE64;
         } else if (fw == 1) {
             op = CL_OP_STOREB;
+        } else if (fw == 2) {
+            /* [val][val][addr] STOREB low, then high at addr+1. */
+            if (!byte(c, CL_OP_STOREB, n) || !byte(c, CL_OP_DUP, n) ||
+                !push(c, 8, n) || !byte(c, CL_OP_SHR, n)) {
+                return -1;
+            }
+            if (gen_field_addr(c, n->value, fi, n->right, n) != 1) {
+                return -1;
+            }
+            if (!push(c, 1, n) || !byte(c, CL_OP_ADD, n) ||
+                !byte(c, CL_OP_STOREB, n)) {
+                return -1;
+            }
+            return 1;
         } else {
             op = CL_OP_STORE;
         }
@@ -7276,13 +8018,31 @@ static int gen_expr(Compiler *c, int id) {
     if (n->kind == N_DEREF_ASSIGN) {
         uint8_t op = CL_OP_STORE;
         int src = n->right;
-        if (n->value == 1)
+        int sw = n->value;
+        if (sw == 1)
             op = CL_OP_STOREB;
         if (gen_expr(c, n->left) != 1) {
             return -1;
         }
         if (!byte(c, CL_OP_DUP, n)) {
             return -1;
+        }
+        if (sw == 2) {
+            if (gen_expr(c, n->right) != 1) {
+                return -1;
+            }
+            if (!byte(c, CL_OP_STOREB, n) || !byte(c, CL_OP_DUP, n) ||
+                !push(c, 8, n) || !byte(c, CL_OP_SHR, n)) {
+                return -1;
+            }
+            if (gen_expr(c, n->right) != 1) {
+                return -1;
+            }
+            if (!push(c, 1, n) || !byte(c, CL_OP_ADD, n) ||
+                !byte(c, CL_OP_STOREB, n)) {
+                return -1;
+            }
+            return 1;
         }
         if (gen_expr(c, n->right) != 1) {
             return -1;
@@ -7387,7 +8147,8 @@ static int gen_expr(Compiler *c, int id) {
             lhs->kind == N_DEREF)
             return gen_mem_incdec(c, n->left, n->kind == N_PREINC, 0, n);
         if (sym < 0 || !push(c, c->syms[sym].address, n) ||
-            !byte(c, mem_ld(&c->syms[sym]), n) || !push(c, 1, n) ||
+            !byte(c, mem_ld(&c->syms[sym]), n) ||
+            !push(c, incdec_step(c, n->left), n) ||
             !byte(c, n->kind == N_PREINC ? CL_OP_ADD : CL_OP_SUB, n) ||
             !byte(c, CL_OP_DUP, n) || !push(c, c->syms[sym].address, n) ||
             !byte(c, mem_st(&c->syms[sym]), n)) {
@@ -7405,7 +8166,7 @@ static int gen_expr(Compiler *c, int id) {
             return gen_mem_incdec(c, n->left, n->kind == N_POSTINC, 1, n);
         if (sym < 0 || !push(c, c->syms[sym].address, n) ||
             !byte(c, mem_ld(&c->syms[sym]), n) || !byte(c, CL_OP_DUP, n) ||
-            !push(c, 1, n) ||
+            !push(c, incdec_step(c, n->left), n) ||
             !byte(c, n->kind == N_POSTINC ? CL_OP_ADD : CL_OP_SUB, n) ||
             !push(c, c->syms[sym].address, n) ||
             !byte(c, mem_st(&c->syms[sym]), n)) {
@@ -7694,6 +8455,26 @@ static int gen_stmt(Compiler *c, int id) {
         v = gen_expr(c, n->left);
         if (v != 1) {
             return 0;
+        }
+        if (!isf && fw == 2) {
+            if (!byte(c, CL_OP_DUP, n)) {
+                return 0;
+            }
+            if (gen_field_addr(c, n->value, fi, n->right, n) != 1) {
+                return 0;
+            }
+            if (!byte(c, CL_OP_STOREB, n) || !push(c, 8, n) ||
+                !byte(c, CL_OP_SHR, n)) {
+                return 0;
+            }
+            if (gen_field_addr(c, n->value, fi, n->right, n) != 1) {
+                return 0;
+            }
+            if (!push(c, 1, n) || !byte(c, CL_OP_ADD, n) ||
+                !byte(c, CL_OP_STOREB, n)) {
+                return 0;
+            }
+            return 1;
         }
         if (gen_field_addr(c, n->value, fi, n->right, n) != 1) {
             return 0;
@@ -8047,6 +8828,7 @@ static int chrisc_emit(Compiler *c, ChrisResult *result) {
         Node *body;
         uint8_t end_op;
         int a;
+        maybe_yield();
         if (c->funcs[i].body < 0) {
             continue;
         }
@@ -8135,11 +8917,13 @@ static int chrisc_emit(Compiler *c, ChrisResult *result) {
             }
         }
         for (i = 0; i < c->nginits; ++i) {
+            uint8_t st;
             if (gen_expr(c, c->ginit_expr[i]) != 1) {
                 return 0;
             }
-            if (!push(c, (int32_t)c->syms[c->ginit_sym[i]].address, body) ||
-                !byte(c, mem_st(&c->syms[c->ginit_sym[i]]), body)) {
+            st = ginit_store_w(c->ginit_w[i]);
+            if (!push(c, (int32_t)c->ginit_addr[i], body) ||
+                !byte(c, st, body)) {
                 return 0;
             }
         }
@@ -8207,6 +8991,8 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
     c->pp_skip = 0;
     c->pp_depth = 0;
     c->ndef = 0;
+    lookups_reset(c);
+    inc_cache_reset();
     add_builtin_macros(c);
     c->nlabels = 0;
     c->ngoto = 0;
@@ -8318,6 +9104,8 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
     c->pp_skip = 0;
     c->pp_depth = 0;
     c->ndef = 0;
+    lookups_reset(c);
+    inc_cache_reset();
     add_builtin_macros(c);
     c->nlabels = 0;
     c->ngoto = 0;
@@ -8371,6 +9159,8 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
         if (parse_decls(c) != 1) {
             return 0;
         }
+        if (progress)
+            progress(progress_user, -(i + 1), npaths, paths[i]);
     }
     {
         int main_i = -1;
@@ -8384,6 +9174,9 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
             return fail(c, 1, 1, "expected main");
         }
     }
+    if (progress)
+        progress(progress_user, -(npaths + 1), npaths, "emit");
+    maybe_yield();
     return chrisc_emit(c, result);
 }
 

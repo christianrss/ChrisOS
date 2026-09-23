@@ -484,6 +484,483 @@ int main(void) {
             "void main(){ int *p; arr[0] = 0; arr[1] = 0; arr[2] = 0; arr[3] = 0; p = &arr[2]; *p = 11; z = arr[2]; }\n",
             11, "addr-index"))
         return 1;
+    if (run_first_int(
+            "int z;\n"
+            "struct WadInfo { char id[4]; int n; };\n"
+            "void main(){\n"
+            " struct WadInfo h;\n"
+            " char *p;\n"
+            " h.id[0] = 73;\n"
+            " h.id[1] = 87;\n"
+            " h.id[2] = 65;\n"
+            " h.id[3] = 68;\n"
+            " p = h.id;\n"
+            " z = p[0];\n"
+            "}\n",
+            73, "struct-array-decay"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "struct Lump { char name[8]; int sz; };\n"
+            "int takes(char *s) { return (int)s[0]; }\n"
+            "void main(){\n"
+            " struct Lump a[2];\n"
+            " struct Lump *p;\n"
+            " a[0].name[0] = 80;\n"
+            " a[0].name[1] = 76;\n"
+            " a[0].name[2] = 65;\n"
+            " a[0].name[3] = 89;\n"
+            " a[0].name[4] = 0;\n"
+            " a[0].sz = 0;\n"
+            " a[1].name[0] = 0;\n"
+            " a[1].sz = 0;\n"
+            " p = a;\n"
+            " z = takes(p->name);\n"
+            "}\n",
+            80, "arrow-char-array-decay"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "struct Lump { char name[8]; int sz; };\n"
+            "int takes(char *s) { return (int)s[0]; }\n"
+            "void main(){\n"
+            " struct Lump a[2];\n"
+            " a[0].name[0] = 80;\n"
+            " a[0].name[1] = 0;\n"
+            " a[0].sz = 0;\n"
+            " a[1].name[0] = 0;\n"
+            " a[1].sz = 0;\n"
+            " z = takes(a[0].name);\n"
+            "}\n",
+            80, "index-field-char-array-decay"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { short x; short y; } __attribute__((packed)) V;\n"
+            "void main(){ z = sizeof(V); }\n",
+            4, "packed-vertex-size"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { int filepos; int size; char name[8]; }"
+            " __attribute__((packed)) filelump_t;\n"
+            "void main(){ z = sizeof(filelump_t); }\n",
+            16, "packed-filelump-size"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct {\n"
+            " short width; short height; short left; short top;\n"
+            " int columnofs[8];\n"
+            "} __attribute__((packed)) patch_t;\n"
+            "void main(){ z = sizeof(patch_t); }\n",
+            40, "packed-patch-size"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct {\n"
+            " short v1; short v2; short flags; short special; short tag;\n"
+            " short sidenum[2];\n"
+            "} __attribute__((packed)) maplinedef_t;\n"
+            "void main(){ z = sizeof(maplinedef_t); }\n",
+            14, "packed-linedef-size"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "char buf[8];\n"
+            "typedef struct { short x; short y; } __attribute__((packed)) V;\n"
+            "void main(){\n"
+            " V *p;\n"
+            " buf[0] = 1; buf[1] = 0; buf[2] = 7; buf[3] = 0;\n"
+            " buf[4] = 0; buf[5] = 0; buf[6] = 0; buf[7] = 0;\n"
+            " p = (V *)buf;\n"
+            " z = p->y;\n"
+            "}\n",
+            7, "packed-short-overlay"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { int filepos; int size; char name[8]; }"
+            " __attribute__((packed)) filelump_t;\n"
+            "void main(){\n"
+            " filelump_t a[2];\n"
+            " filelump_t *p;\n"
+            " a[0].filepos = 11; a[0].size = 0;\n"
+            " a[1].filepos = 22; a[1].size = 0;\n"
+            " p = a;\n"
+            " ++p;\n"
+            " z = p->filepos;\n"
+            "}\n",
+            22, "filelump-ptr-inc"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { int filepos; int size; char name[8]; }"
+            " __attribute__((packed)) filelump_t;\n"
+            "void main(){\n"
+            " filelump_t a[2];\n"
+            " filelump_t *p;\n"
+            " a[0].filepos = 11; a[0].size = 0;\n"
+            " a[1].filepos = 22; a[1].size = 0;\n"
+            " p = a;\n"
+            " p++;\n"
+            " z = p->filepos;\n"
+            "}\n",
+            22, "filelump-postinc"))
+        return 1;
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { char id[4]; int n; int o; }"
+            " __attribute__((packed)) wadinfo_t;\n"
+            "void main(){ z = sizeof(wadinfo_t); }\n",
+            12, "packed-wadinfo-size"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct Lump Lump;\n"
+            "struct Lump { char name[8]; int sz; struct Lump *next; };\n"
+            "Lump lumps[3];\n"
+            "Lump *p;\n"
+            "void main(){\n"
+            " lumps[0].sz = 1; lumps[1].sz = 2; lumps[2].sz = 3;\n"
+            " p = lumps;\n"
+            " p = p + 1;\n"
+            " z = p->sz;\n"
+            "}\n",
+            2, "fwd-typedef-struct-ptr-stride"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct Lump Lump;\n"
+            "struct Lump { char name[8]; int sz; };\n"
+            "void main(){ z = sizeof(Lump); }\n",
+            12, "fwd-typedef-lump-size"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct Lump Lump;\n"
+            "struct Lump { char name[8]; int sz; };\n"
+            "Lump lumps[2];\n"
+            "void main(){\n"
+            " Lump *p;\n"
+            " char *d;\n"
+            " p = lumps;\n"
+            " d = p->name;\n"
+            " d[0] = 80; d[5] = 83;\n"
+            " p = p + 1;\n"
+            " d = p->name;\n"
+            " d[0] = 69;\n"
+            " p = lumps;\n"
+            " d = p->name;\n"
+            " z = d[0] + d[5];\n"
+            " p = p + 1;\n"
+            " d = p->name;\n"
+            " z = z + d[0];\n"
+            "}\n",
+            232, "fwd-typedef-lump-names"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef unsigned char byte;\n"
+            "typedef byte Dig[20];\n"
+            "void main(){ z = sizeof(Dig); }\n",
+            20, "array-typedef-size"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { char *name; int type; } Def;\n"
+            "Def tab[] = { { \"mouse_sensitivity\", 3 }, { \"use_joystick\", 7 } };\n"
+            "void main(){\n"
+            " int i;\n"
+            " z = 0;\n"
+            " i = 0;\n"
+            " while (i < 2) {\n"
+            "  char *s;\n"
+            "  s = tab[i].name;\n"
+            "  if (s[0] == 117 && s[4] == 106) {\n"
+            "   z = tab[i].type;\n"
+            "  }\n"
+            "  i = i + 1;\n"
+            " }\n"
+            "}\n",
+            7, "config-search-use-joystick"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { char *name; int type; } Def;\n"
+            "typedef struct { Def *defaults; int numdefaults; } Col;\n"
+            "Def tab[] = { { \"use_joystick\", 1 }, { \"mouse\", 2 } };\n"
+            "Col c = { tab, 2 };\n"
+            "void main(){\n"
+            " Col *p;\n"
+            " p = &c;\n"
+            " z = p->numdefaults;\n"
+            "}\n",
+            2, "config-collection-numdefaults"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { char *name; int type; } Def;\n"
+            "typedef struct { Def *defaults; int numdefaults; } Col;\n"
+            "Def tab[] = { { \"use_joystick\", 1 }, { \"mouse\", 2 } };\n"
+            "Col c = { tab, 2 };\n"
+            "void main(){\n"
+            " Col *p;\n"
+            " p = &c;\n"
+            " z = p->defaults[0].type;\n"
+            "}\n",
+            1, "config-collection-index0-type"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { char *name; int type; } Def;\n"
+            "typedef struct { Def *defaults; int numdefaults; } Col;\n"
+            "Def tab[] = { { \"use_joystick\", 1 }, { \"mouse\", 2 } };\n"
+            "Col c = { tab, 2 };\n"
+            "void main(){\n"
+            " Col *p;\n"
+            " Def *d;\n"
+            " p = &c;\n"
+            " d = p->defaults;\n"
+            " z = d[1].type;\n"
+            "}\n",
+            2, "config-collection-localptr-index"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { char *name; int type; } Def;\n"
+            "typedef struct { Def *defaults; int numdefaults; } Col;\n"
+            "Def tab[] = { { \"mouse_sensitivity\", 3 }, { \"use_joystick\", 7 } };\n"
+            "Col c = { tab, 2 };\n"
+            "void main(){\n"
+            " Col *collection;\n"
+            " int i;\n"
+            " collection = &c;\n"
+            " z = 0;\n"
+            " i = 0;\n"
+            " while (i < collection->numdefaults) {\n"
+            "  char *s;\n"
+            "  s = collection->defaults[i].name;\n"
+            "  if (s[0] == 117 && s[4] == 106) {\n"
+            "   z = collection->defaults[i].type;\n"
+            "  }\n"
+            "  i = i + 1;\n"
+            " }\n"
+            "}\n",
+            7, "config-searchcollection"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct { char *name; int type; } Def;\n"
+            "Def tab[] = { { \"use_joystick\", 1 }, { \"mouse\", 2 } };\n"
+            "void main(){ z = sizeof(tab) / sizeof(*tab); }\n",
+            2, "config-unsized-arrlen"))
+        return 1;
+
+    /* W_Checksum: lump->name is char[8]; passing it must decay to the field
+     * address, not LOAD64 the letters as a pointer ("ITEMS" == 1413694803). */
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct lumpinfo_s lumpinfo_t;\n"
+            "struct lumpinfo_s { char name[8]; int size; };\n"
+            "int firstc(char *s) { return s[0]; }\n"
+            "void main(){\n"
+            " lumpinfo_t L;\n"
+            " lumpinfo_t *p;\n"
+            " L.name[0] = 73;\n"
+            " L.name[1] = 84;\n"
+            " L.name[2] = 69;\n"
+            " L.name[3] = 77;\n"
+            " L.name[4] = 83;\n"
+            " L.name[5] = 0;\n"
+            " L.size = 1;\n"
+            " p = &L;\n"
+            " z = firstc(p->name);\n"
+            "}\n",
+            73, "lump-name-decay-firstc"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct lumpinfo_s lumpinfo_t;\n"
+            "struct lumpinfo_s { char name[8]; int size; };\n"
+            "void main(){\n"
+            " lumpinfo_t L;\n"
+            " lumpinfo_t *p;\n"
+            " L.name[0] = 73;\n"
+            " L.name[1] = 0;\n"
+            " p = &L;\n"
+            " z = p->name[0];\n"
+            "}\n",
+            73, "lump-name-index0"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef unsigned char byte;\n"
+            "typedef struct sha1_context_s sha1_context_t;\n"
+            "struct sha1_context_s {\n"
+            " unsigned int h0,h1,h2,h3,h4;\n"
+            " unsigned int nblocks;\n"
+            " byte buf[64];\n"
+            " int count;\n"
+            "};\n"
+            "void main(){ z = sizeof(sha1_context_t); }\n",
+            92, "sha1-context-sizeof"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef unsigned char byte;\n"
+            "typedef struct sha1_context_s sha1_context_t;\n"
+            "struct sha1_context_s {\n"
+            " unsigned int h0,h1,h2,h3,h4;\n"
+            " unsigned int nblocks;\n"
+            " byte buf[64];\n"
+            " int count;\n"
+            "};\n"
+            "int firstc(byte *s) { return s[0]; }\n"
+            "void main(){\n"
+            " sha1_context_t hd;\n"
+            " hd.buf[0] = 81;\n"
+            " z = firstc(hd.buf);\n"
+            "}\n",
+            81, "sha1-buf-decay"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef unsigned char byte;\n"
+            "typedef byte Dig[20];\n"
+            "typedef struct { int gamemode; Dig wad; int klass; } Conn;\n"
+            "void put20(Dig d) { d[0] = 9; d[19] = 7; }\n"
+            "void main(){\n"
+            " Conn c;\n"
+            " Conn *p;\n"
+            " p = &c;\n"
+            " p->gamemode = 1;\n"
+            " p->klass = 2;\n"
+            " put20(p->wad);\n"
+            " z = p->wad[0] + p->wad[19] + p->klass;\n"
+            "}\n",
+            18, "connect-digest-decay"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef struct lumpinfo_s lumpinfo_t;\n"
+            "struct lumpinfo_s { char name[8]; int size; };\n"
+            "int firstc(char *s) { return s[0]; }\n"
+            "lumpinfo_t tab[2];\n"
+            "lumpinfo_t *lumpinfo;\n"
+            "void main(){\n"
+            " lumpinfo_t *p;\n"
+            " tab[1].name[0] = 73;\n"
+            " tab[1].name[1] = 0;\n"
+            " tab[1].size = 4;\n"
+            " lumpinfo = tab;\n"
+            " p = &lumpinfo[1];\n"
+            " z = firstc(p->name);\n"
+            "}\n",
+            73, "lumpinfo-index-name-decay"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef unsigned char byte;\n"
+            "typedef struct sha1_context_s sha1_context_t;\n"
+            "struct sha1_context_s {\n"
+            " unsigned int h0,h1,h2,h3,h4;\n"
+            " unsigned int nblocks;\n"
+            " byte buf[64];\n"
+            " int count;\n"
+            "};\n"
+            "void upd(sha1_context_t *hd, byte *inbuf, int inlen) {\n"
+            " if (!inbuf) return;\n"
+            " while (inlen) {\n"
+            "  hd->buf[hd->count] = *inbuf;\n"
+            "  hd->count = hd->count + 1;\n"
+            "  inbuf = inbuf + 1;\n"
+            "  inlen = inlen - 1;\n"
+            " }\n"
+            "}\n"
+            "void main(){\n"
+            " sha1_context_t hd;\n"
+            " byte msg[8];\n"
+            " hd.count = 0;\n"
+            " msg[0] = 73;\n"
+            " msg[1] = 84;\n"
+            " msg[2] = 69;\n"
+            " msg[3] = 77;\n"
+            " msg[4] = 83;\n"
+            " msg[5] = 0;\n"
+            " upd(&hd, msg, 5);\n"
+            " z = hd.buf[0];\n"
+            "}\n",
+            73, "sha1-update-copy"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef unsigned char byte;\n"
+            "typedef struct sha1_context_s sha1_context_t;\n"
+            "struct sha1_context_s {\n"
+            " unsigned int h0,h1,h2,h3,h4;\n"
+            " unsigned int nblocks;\n"
+            " byte buf[64];\n"
+            " int count;\n"
+            "};\n"
+            "void upd(sha1_context_t *hd, byte *inbuf, int inlen) {\n"
+            " if (!inbuf) return;\n"
+            " while (inlen) {\n"
+            "  hd->buf[hd->count++] = *inbuf++;\n"
+            "  inlen = inlen - 1;\n"
+            " }\n"
+            "}\n"
+            "void main(){\n"
+            " sha1_context_t hd;\n"
+            " byte msg[8];\n"
+            " hd.count = 0;\n"
+            " msg[0] = 73;\n"
+            " msg[1] = 0;\n"
+            " upd(&hd, msg, 1);\n"
+            " z = hd.buf[0];\n"
+            "}\n",
+            73, "sha1-update-postinc"))
+        return 1;
+
+    if (run_first_int(
+            "int z;\n"
+            "typedef unsigned char byte;\n"
+            "typedef struct sha1_context_s sha1_context_t;\n"
+            "struct sha1_context_s {\n"
+            " unsigned int h0,h1,h2,h3,h4;\n"
+            " unsigned int nblocks;\n"
+            " byte buf[64];\n"
+            " int count;\n"
+            "};\n"
+            "int peek(byte *data) { return data[0]; }\n"
+            "void main(){\n"
+            " sha1_context_t hd;\n"
+            " sha1_context_t *p;\n"
+            " hd.buf[0] = 81;\n"
+            " hd.count = 0;\n"
+            " p = &hd;\n"
+            " z = peek(p->buf);\n"
+            "}\n",
+            81, "sha1-arrow-buf-decay"))
+        return 1;
 
     printf("test_chrisc_doom: ok\n");
     return 0;

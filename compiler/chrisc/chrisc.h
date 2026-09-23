@@ -51,4 +51,5 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
                             void *user, uint8_t *code, size_t code_cap,
                             ChrisResult *result, ChriscProgressFn progress,
                             void *progress_user);
+void chrisc_set_yield(void (*fn)(void));
 #endif

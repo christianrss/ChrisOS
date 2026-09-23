@@ -441,6 +441,18 @@ static int emit_game_clv(const char *outn) {
     return 1;
 }
 
+static uint32_t g_cc_hb_tick;
+
+static void lang_cc_pump(void) {
+    uint32_t now;
+    gc_poll();
+    now = (uint32_t)ticks;
+    if (now - g_cc_hb_tick >= 60u) {
+        g_cc_hb_tick = now;
+        serial_puts("cc: working...\n");
+    }
+}
+
 static int chrisc_fs_read(void *user, const char *path, char *out, int cap) {
     int n;
     (void)user;
@@ -458,6 +470,22 @@ static int chrisc_fs_read(void *user, const char *path, char *out, int cap) {
 static void chrisc_serial_progress(void *user, int index, int total,
                                    const char *path) {
     (void)user;
+    if (index < 0) {
+        int done = -index;
+        if (done > total) {
+            serial_puts("cc: emit\n");
+        } else {
+            serial_puts("cc: ok [");
+            serial_write_u64((uint64_t)(uint32_t)done);
+            serial_puts("/");
+            serial_write_u64((uint64_t)(uint32_t)total);
+            serial_puts("] ");
+            serial_puts(path ? path : "?");
+            serial_puts("\n");
+        }
+        lang_cc_pump();
+        return;
+    }
     serial_puts("cc: [");
     serial_write_u64((uint64_t)(uint32_t)(index + 1));
     serial_puts("/");
@@ -465,6 +493,7 @@ static void chrisc_serial_progress(void *user, int index, int total,
     serial_puts("] ");
     serial_puts(path ? path : "?");
     serial_puts("\n");
+    lang_cc_pump();
 }
 
 static void diag_status(Editor *e, int line, int col, const char *message) {
@@ -1111,14 +1140,19 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
 
 int lang_compile_many(const char **paths, int npaths) {
     char outn[LANG_NAME_MAX];
+    int ok;
     clear_last_lang();
     if (!paths || npaths < 1)
         return 0;
     if (!output_name(paths[0], outn))
         return 0;
-    if (!chrisc_compile_files_ex(paths, npaths, chrisc_fs_read, 0, code_buffer,
+    g_cc_hb_tick = (uint32_t)ticks;
+    chrisc_set_yield(lang_cc_pump);
+    ok = chrisc_compile_files_ex(paths, npaths, chrisc_fs_read, 0, code_buffer,
                                  sizeof(code_buffer), &g_chris_result,
-                                 chrisc_serial_progress, 0)) {
+                                 chrisc_serial_progress, 0);
+    chrisc_set_yield(0);
+    if (!ok) {
         set_err_diag(&g_chris_result.diag);
         serial_puts("cc: ");
         serial_puts(g_last_err[0] ? g_last_err : "compile failed");
@@ -1176,14 +1210,20 @@ int lang_compile_list(const char *lst_path) {
     if (npaths < 1)
         return 0;
     clear_last_lang();
-    if (!chrisc_compile_files_ex(pp, npaths, chrisc_fs_read, 0, code_buffer,
-                                 sizeof(code_buffer), &g_chris_result,
-                                 chrisc_serial_progress, 0)) {
-        set_err_diag(&g_chris_result.diag);
-        serial_puts("cc: ");
-        serial_puts(g_last_err[0] ? g_last_err : "compile failed");
-        serial_puts("\n");
-        return 0;
+    g_cc_hb_tick = (uint32_t)ticks;
+    chrisc_set_yield(lang_cc_pump);
+    {
+        int ok = chrisc_compile_files_ex(pp, npaths, chrisc_fs_read, 0, code_buffer,
+                                         sizeof(code_buffer), &g_chris_result,
+                                         chrisc_serial_progress, 0);
+        chrisc_set_yield(0);
+        if (!ok) {
+            set_err_diag(&g_chris_result.diag);
+            serial_puts("cc: ");
+            serial_puts(g_last_err[0] ? g_last_err : "compile failed");
+            serial_puts("\n");
+            return 0;
+        }
     }
     {
         char outn[LANG_NAME_MAX];
