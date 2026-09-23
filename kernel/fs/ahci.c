@@ -3,6 +3,7 @@
 #include "bdev.h"
 #include "hwgate.h"
 #include "pci.h"
+#include "port.h"
 #include "serial.h"
 
 typedef struct AhciPort {
@@ -40,6 +41,8 @@ static int issue(AhciPort *p, int write, uint8_t cmd, uint32_t lba,
     int i;
     int slot_ci;
 
+    if (count == 0 || count > 8u)
+        return -1;
     clo = hw_dma_lo(p->ctl);
     chi = hw_dma_hi(p->ctl);
     dlo = hw_dma_lo(p->data);
@@ -52,8 +55,10 @@ static int issue(AhciPort *p, int write, uint8_t cmd, uint32_t lba,
     hw_dma_w32(p->ctl, 12, chi);
     hw_dma_w32(p->ctl, 0x500u, 0x00008027u | ((uint32_t)cmd << 16));
     hw_dma_w32(p->ctl, 0x504u, (lba & 0xFFFFFFu) | (0x40u << 24));
-    hw_dma_w32(p->ctl, 0x508u, ((lba >> 24) & 0xFFFFFFu) | ((count & 0xFFu) << 24));
-    hw_dma_w32(p->ctl, 0x50Cu, (count >> 8) & 0xFFu);
+    /* H2D FIS: bytes 8-10 are LBA 24-47, byte 11 is features exp.
+       Sector count lives in bytes 12-13, not in features exp. */
+    hw_dma_w32(p->ctl, 0x508u, (lba >> 24) & 0xFFFFFFu);
+    hw_dma_w32(p->ctl, 0x50Cu, count & 0xFFFFu);
     hw_dma_w32(p->ctl, 0x580u, dlo);
     hw_dma_w32(p->ctl, 0x584u, dhi);
     hw_dma_w32(p->ctl, 0x58Cu, (count * 512u - 1u) | 0x80000000u);
@@ -61,9 +66,19 @@ static int issue(AhciPort *p, int write, uint8_t cmd, uint32_t lba,
     hw_mmio_w32(p->win, p->base + 0x38u, 1u);
     slot_ci = 1;
     for (i = 0; i < 500000; ++i) {
+        if ((i & 127) == 0)
+            io_wait();
         if ((hw_mmio_r32(p->win, p->base + 0x38u) & (uint32_t)slot_ci) == 0) {
-            if (hw_mmio_r32(p->win, p->base + 0x20u) & 0x01u)
+            uint32_t tfd = hw_mmio_r32(p->win, p->base + 0x20u);
+            uint32_t is = hw_mmio_r32(p->win, p->base + 0x10u);
+            if (tfd & 0x01u) {
+                serial_puts("ahci tfd ");
+                serial_write_u64(tfd);
+                serial_puts(" is ");
+                serial_write_u64(is);
+                serial_puts("\n");
                 return -1;
+            }
             return 0;
         }
     }
@@ -172,8 +187,12 @@ int ahci_probe(void) {
                     g_port.base = base;
                     g_port.ctl = hw_dma_alloc(1);
                     g_port.data = hw_dma_alloc(1);
-                    if (g_port.ctl < 0 || g_port.data < 0)
-                        return 0;
+                    if (g_port.ctl < 0 || g_port.data < 0) {
+                        hw_dma_free(g_port.ctl);
+                        hw_dma_free(g_port.data);
+                        g_port.ctl = g_port.data = -1;
+                        continue;
+                    }
                     if (start_port(&g_port) != 0)
                         continue;
                     if (issue(&g_port, 0, 0xEC, 0, 1) != 0)
@@ -182,6 +201,10 @@ int ahci_probe(void) {
                         int w;
                         for (w = 0; w < 128; ++w)
                             words[w] = hw_dma_r32(g_port.data, (uint32_t)w * 4u);
+                    }
+                    if (words[51] != 0u) {
+                        serial_puts("ahci disk too large\n");
+                        continue;
                     }
                     sectors = words[50];
                     if (sectors < 2048u)
@@ -196,7 +219,7 @@ int ahci_probe(void) {
                     bd.write = ahci_write;
                     bd.flush = 0;
                     bd.writable = 1;
-                    bd_add("ahci", &bd);
+                    bd_add_kind("ahci", &bd, BD_AHCI);
                     g_ready = 1;
                     serial_puts("ahci disk sectors=");
                     serial_write_u64(sectors);

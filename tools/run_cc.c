@@ -141,7 +141,7 @@ static int run_image(const char *path) {
     memset(&vm, 0, sizeof(vm));
     clvm_vm_init(&vm, &image, sys, 0);
     r = CLVM_STEP_SLICE;
-    for (steps = 0; steps < 20000 && r == CLVM_STEP_SLICE; ++steps)
+    for (steps = 0; steps < 40000 && r == CLVM_STEP_SLICE; ++steps)
         r = clvm_step(&vm, 200000u);
     if (r == CLVM_STEP_FAULT) {
         fprintf(stderr, "fault %s pc=%u fpc=%u\n", clvm_fault_text(vm.fault),
@@ -151,6 +151,11 @@ static int run_image(const char *path) {
     if (r != CLVM_STEP_HALT) {
         fprintf(stderr, "stopped result=%d pc=%u steps=%d\n", (int)r, vm.pc, steps);
         return 1;
+    }
+    {
+        int64_t v = 0;
+        if (clvm_vm_pop64(&vm, &v))
+            printf("stack %lld\n", (long long)v);
     }
     printf("halt %s pc=%u\n", path, vm.pc);
     return 0;

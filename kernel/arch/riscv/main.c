@@ -132,7 +132,8 @@ static void probe_virtio(void) {
             g_q[1][14] = 1;
             g_q[1][66] = 1;
             r[0x50 / 4] = 0;
-            puts("virtio-gpu scanout\n");
+            puts("virtio-gpu detected\n");
+            puts("virtio-gpu cmd submitted\n");
             saw_gpu = 1;
         }
     }

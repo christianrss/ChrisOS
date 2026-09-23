@@ -1,5 +1,9 @@
 #include "usb_msc.h"
 
+#include "usb.h"
+
+/* UHCI host + BOT mass storage. Not a generic USB stack. See usb.h. */
+
 #include "bdev.h"
 #include "hwgate.h"
 #include "pci.h"
@@ -341,7 +345,7 @@ int usb_msc_probe(void) {
                     bd.write = usb_write;
                     bd.flush = 0;
                     bd.writable = 1;
-                    bd_add("usb", &bd);
+                    bd_add_kind("usb", &bd, BD_USB);
                     g_ready = 1;
                     serial_puts("usb msc sectors=");
                     serial_write_u64(g_usb.sectors);

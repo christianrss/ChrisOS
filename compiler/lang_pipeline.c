@@ -23,6 +23,8 @@
 #include "gc/gc.h"
 #include "proc.h"
 #include "mm.h"
+
+static int path_is_driver(const char *name);
 #include "bootinfo.h"
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
@@ -38,6 +40,7 @@
 #define LANG_EVQ 8
 typedef struct LangSlot {
     int used;
+    uint32_t caps;
     uint8_t *file;
     size_t file_cap;
     size_t file_size;
@@ -1092,6 +1095,7 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
         }
     }
     scopy(slots[i].name, LANG_NAME_MAX, name);
+    slots[i].caps = path_is_driver(name) ? CAP_DRIVER : 0;
     slots[i].task_id = -1;
     slots[i].used = 1;
     slots[i].debug_on = g_want_debug;
@@ -1644,6 +1648,7 @@ int lang_splash_start(const char *name) {
         jit_free(&slots[i].jit);
     }
     scopy(slots[i].name, LANG_NAME_MAX, name);
+    slots[i].caps = path_is_driver(name) ? CAP_DRIVER : 0;
     slots[i].task_id = -1;
     slots[i].used = 1;
     return 1;
@@ -1875,6 +1880,25 @@ const char *lang_slot_name(int slot) {
         return "";
     }
     return slots[slot].name;
+}
+
+uint32_t lang_slot_caps(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used)
+        return 0;
+    return slots[slot].caps;
+}
+
+static int path_is_driver(const char *name) {
+    int i;
+    if (!name)
+        return 0;
+    for (i = 0; name[i]; ++i) {
+        if (name[i] == 'S' && name[i + 1] == 'Y' && name[i + 2] == 'S' &&
+            name[i + 3] == '/' && name[i + 4] == 'D' && name[i + 5] == 'R' &&
+            name[i + 6] == 'V')
+            return 1;
+    }
+    return 0;
 }
 
 uint32_t *lang_slot_pixels(int slot) {

@@ -323,6 +323,18 @@ static int ata_try_identify(AtaPio *a, uint32_t *reported_sectors) {
         return BD_EIO;
     }
     *reported_sectors = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
+    /* Word 83 bit 10: LBA48. Words 100-101 are the low 32 bits of the
+       real sector count; words 60-61 saturate near 128 GiB. */
+    if ((id[83] & (1u << 10)) != 0) {
+        uint32_t hi = (uint32_t)id[102] | ((uint32_t)id[103] << 16);
+        uint32_t lo = (uint32_t)id[100] | ((uint32_t)id[101] << 16);
+        if (hi != 0u) {
+            serial_puts("ata disk too large\n");
+            return BD_EIO;
+        }
+        if (lo >= 2048u)
+            *reported_sectors = lo;
+    }
     if ((id[49] & (1u << 8)) != 0) {
         uint16_t bm = 0;
         if (pci_find_ide(&bm)) {

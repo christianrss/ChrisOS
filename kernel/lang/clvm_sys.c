@@ -199,19 +199,9 @@ static int guest_write(ClvmVm *vm, uint64_t off, const uint8_t *src, int n) {
     return 1;
 }
 
-static int drv_allowed(ClvmVm *vm) {
-    int slot;
-    const char *name;
-    int i;
-    slot = lang_find_slot_by_gfx(vm ? vm->sys_user : 0);
-    name = lang_slot_name(slot);
-    if (!name)
-        return 0;
-    for (i = 0; name[i]; ++i) {
-        if (name[i] == 'D' && name[i + 1] == 'R' && name[i + 2] == 'V')
-            return 1;
-    }
-    return 0;
+static int drv_cap(ClvmVm *vm, uint32_t need) {
+    int slot = lang_find_slot_by_gfx(vm ? vm->sys_user : 0);
+    return (lang_slot_caps(slot) & need) == need;
 }
 
 #define SYS_TRACE 32
@@ -1572,7 +1562,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t port, val;
         if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &port))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         outw((uint16_t)port, (uint16_t)val);
         return clvm_vm_push64(vm, 0) ? 0 : -1;
@@ -1581,7 +1571,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t port;
         if (!clvm_vm_pop64(vm, &port))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, inw((uint16_t)port)) ? 0 : -1;
     }
@@ -1589,7 +1579,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t port, val;
         if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &port))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         outb((uint16_t)port, (uint8_t)val);
         return clvm_vm_push64(vm, 0) ? 0 : -1;
@@ -1598,7 +1588,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t port;
         if (!clvm_vm_pop64(vm, &port))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, inb((uint16_t)port)) ? 0 : -1;
     }
@@ -1606,7 +1596,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t irq;
         if (!clvm_vm_pop64(vm, &irq))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         if (!ac97_take_event((int)irq)) {
             vm->state = CLVM_WAITING;
@@ -1622,7 +1612,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &fn) ||
             !clvm_vm_pop64(vm, &dev) || !clvm_vm_pop64(vm, &bus))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, pci_read((uint8_t)bus, (uint8_t)dev, (uint8_t)fn,
                                            (uint8_t)off))
@@ -1635,7 +1625,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             !clvm_vm_pop64(vm, &fn) || !clvm_vm_pop64(vm, &dev) ||
             !clvm_vm_pop64(vm, &bus))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_PCI))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_pci_write((int)bus, (int)dev, (int)fn,
                                                (int)off, (uint32_t)val))
@@ -1647,7 +1637,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &bar) || !clvm_vm_pop64(vm, &fn) ||
             !clvm_vm_pop64(vm, &dev) || !clvm_vm_pop64(vm, &bus))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_MMIO))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_bar_map((int)bus, (int)dev, (int)fn,
                                              (int)bar))
@@ -1658,7 +1648,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t win, off;
         if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &win))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, 0) ? 0 : -1;
         return clvm_vm_push64(vm, hw_mmio_r32((int)win, (uint32_t)off)) ? 0 : -1;
     }
@@ -1667,7 +1657,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
             !clvm_vm_pop64(vm, &win))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_mmio_w32((int)win, (uint32_t)off,
                                               (uint32_t)val))
@@ -1678,7 +1668,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t win, off;
         if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &win))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, 0) ? 0 : -1;
         return clvm_vm_push64(vm, hw_mmio_r8((int)win, (uint32_t)off)) ? 0 : -1;
     }
@@ -1687,7 +1677,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
             !clvm_vm_pop64(vm, &win))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_mmio_w8((int)win, (uint32_t)off,
                                              (uint32_t)val))
@@ -1698,7 +1688,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t win, off;
         if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &win))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, 0) ? 0 : -1;
         return clvm_vm_push64(vm, hw_mmio_r16((int)win, (uint32_t)off)) ? 0 : -1;
     }
@@ -1707,7 +1697,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
             !clvm_vm_pop64(vm, &win))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_mmio_w16((int)win, (uint32_t)off,
                                               (uint32_t)val))
@@ -1718,7 +1708,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t pages;
         if (!clvm_vm_pop64(vm, &pages))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DMA))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_dma_alloc((int)pages)) ? 0 : -1;
     }
@@ -1726,7 +1716,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t id;
         if (!clvm_vm_pop64(vm, &id))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, 0) ? 0 : -1;
         return clvm_vm_push64(vm, hw_dma_lo((int)id)) ? 0 : -1;
     }
@@ -1734,7 +1724,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t id;
         if (!clvm_vm_pop64(vm, &id))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, 0) ? 0 : -1;
         return clvm_vm_push64(vm, hw_dma_hi((int)id)) ? 0 : -1;
     }
@@ -1743,7 +1733,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &val) || !clvm_vm_pop64(vm, &off) ||
             !clvm_vm_pop64(vm, &id))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_dma_w32((int)id, (uint32_t)off,
                                              (uint32_t)val))
@@ -1754,12 +1744,12 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t id, off;
         if (!clvm_vm_pop64(vm, &off) || !clvm_vm_pop64(vm, &id))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, 0) ? 0 : -1;
         return clvm_vm_push64(vm, hw_dma_r32((int)id, (uint32_t)off)) ? 0 : -1;
     }
     case 223:
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, 0) ? 0 : -1;
         return clvm_vm_push64(vm, hw_disk_sectors()) ? 0 : -1;
     case 224: {
@@ -1768,7 +1758,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &nsec) || !clvm_vm_pop64(vm, &ptr) ||
             !clvm_vm_pop64(vm, &lba))
             return -1;
-        if (!drv_allowed(vm) || nsec < 1 || nsec > 8)
+        if (!drv_cap(vm, CAP_DRIVER) || nsec < 1 || nsec > 8)
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         if (hw_disk_read((uint32_t)lba, tmp, (int)nsec) != 0)
             return clvm_vm_push64(vm, -1) ? 0 : -1;
@@ -1782,7 +1772,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_pop64(vm, &nsec) || !clvm_vm_pop64(vm, &ptr) ||
             !clvm_vm_pop64(vm, &lba))
             return -1;
-        if (!drv_allowed(vm) || nsec < 1 || nsec > 8)
+        if (!drv_cap(vm, CAP_DRIVER) || nsec < 1 || nsec > 8)
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         if (!guest_read(vm, (uint64_t)ptr, tmp, (int)nsec * 512))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
@@ -1791,7 +1781,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
                    : -1;
     }
     case 226:
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_disk_format()) ? 0 : -1;
     case 227: {
@@ -1801,7 +1791,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             !clvm_vm_pop64(vm, &fb) || !clvm_vm_pop64(vm, &cmd) ||
             !clvm_vm_pop64(vm, &q))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, hw_gpu_arm((int)q, (int)cmd, (int)fb, (int)w,
                                              (int)h, (int)nwin, (uint32_t)noff))
@@ -1811,16 +1801,42 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 228:
         return clvm_vm_push64(vm, hw_gpu_ready()) ? 0 : -1;
     case 229:
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DRIVER))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, bd_count()) ? 0 : -1;
     case 230: {
         int64_t index;
         if (!clvm_vm_pop64(vm, &index))
             return -1;
-        if (!drv_allowed(vm))
+        if (!drv_cap(vm, CAP_DISK_ADMIN))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         return clvm_vm_push64(vm, install_disk((int)index)) ? 0 : -1;
+    }
+    case 231: {
+        int64_t index;
+        if (!clvm_vm_pop64(vm, &index))
+            return -1;
+        if (!drv_cap(vm, CAP_DISK_ADMIN))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, bd_kind((int)index)) ? 0 : -1;
+    }
+    case 232: {
+        int64_t index;
+        if (!clvm_vm_pop64(vm, &index))
+            return -1;
+        if (!drv_cap(vm, CAP_DISK_ADMIN))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, bd_flags((int)index)) ? 0 : -1;
+    }
+    case 233: {
+        int64_t index;
+        BlockDevice *d;
+        if (!clvm_vm_pop64(vm, &index))
+            return -1;
+        if (!drv_cap(vm, CAP_DISK_ADMIN))
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        d = bd_get((int)index);
+        return clvm_vm_push64(vm, d ? (int64_t)d->sector_count : 0) ? 0 : -1;
     }
     case 64: {
         int64_t a;

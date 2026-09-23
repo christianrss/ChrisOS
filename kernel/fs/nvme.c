@@ -181,8 +181,15 @@ int nvme_probe(void) {
                 g_nv.io_sq = hw_dma_alloc(1);
                 g_nv.io_cq = hw_dma_alloc(1);
                 g_nv.data = hw_dma_alloc(1);
-                if (g_nv.admin_sq < 0 || g_nv.data < 0)
-                    return 0;
+                if (g_nv.admin_sq < 0 || g_nv.admin_cq < 0 || g_nv.io_sq < 0 ||
+                    g_nv.io_cq < 0 || g_nv.data < 0) {
+                    hw_dma_free(g_nv.admin_sq);
+                    hw_dma_free(g_nv.admin_cq);
+                    hw_dma_free(g_nv.io_sq);
+                    hw_dma_free(g_nv.io_cq);
+                    hw_dma_free(g_nv.data);
+                    continue;
+                }
                 g_nv.admin_phase = 1;
                 g_nv.io_phase = 1;
                 hw_mmio_w32(g_nv.win, 0x24, 1u | (1u << 16));
@@ -212,10 +219,14 @@ int nvme_probe(void) {
                               hw_dma_hi(g_nv.data), 0, 0) != 0)
                     continue;
                 nsze = hw_dma_r32(g_nv.data, 0);
+                if (hw_dma_r32(g_nv.data, 4) != 0u) {
+                    serial_puts("nvme disk too large\n");
+                    continue;
+                }
                 lbads = hw_dma_r32(g_nv.data, 128);
-                if (((lbads >> 16) & 0xFFu) != 9u && ((lbads >> 0) & 0xFFu) != 9u) {
-                    if (nsze < 2048u)
-                        continue;
+                if (((lbads >> 16) & 0xFFu) != 9u) {
+                    serial_puts("nvme sector size rejected\n");
+                    continue;
                 }
                 if (nsze < 2048u)
                     continue;
@@ -227,7 +238,7 @@ int nvme_probe(void) {
                 bd.write = nvme_write;
                 bd.flush = 0;
                 bd.writable = 1;
-                bd_add("nvme", &bd);
+                bd_add_kind("nvme", &bd, BD_NVME);
                 g_ready = 1;
                 serial_puts("nvme disk sectors=");
                 serial_write_u64(nsze);

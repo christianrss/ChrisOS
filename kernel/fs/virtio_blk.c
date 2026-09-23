@@ -43,20 +43,37 @@ static int kick(Vblk *b, int write, uint32_t lba, uint32_t bytes) {
     hw_dma_w32(b->q, 16, dlo);
     hw_dma_w32(b->q, 20, dhi);
     hw_dma_w32(b->q, 24, bytes);
-    hw_dma_w32(b->q, 28, (write ? 0u : 2u) | (2u << 16));
+    hw_dma_w32(b->q, 28, (write ? 1u : 3u) | (2u << 16));
     hw_dma_w32(b->q, 32, clo + 32u);
     hw_dma_w32(b->q, 36, chi);
     hw_dma_w32(b->q, 40, 1u);
     hw_dma_w32(b->q, 44, 2u);
     b->avail = (uint16_t)(b->avail + 1u);
     idx = b->avail;
+    hw_dma_w32(b->q, 68, 0);
     hw_dma_w32(b->q, 64, (uint32_t)idx << 16);
     hw_mmio_w16(b->nwin, b->noff, 0);
-    for (spins = 0; spins < 300000; ++spins) {
+    for (spins = 0; spins < 2000; ++spins) {
         uint32_t used = hw_dma_r32(b->q, 2048);
-        if ((used >> 16) == idx)
-            return (hw_dma_r32(b->cmd, 32) & 0xFFu) == 0u ? 0 : -1;
+        if ((used >> 16) == idx && (hw_dma_r32(b->cmd, 32) & 0xFFu) == 0u)
+            return 0;
     }
+    /* Disk writes finish on QEMU's iothread. serial_putc exits TCG long
+       enough for that thread to post status 0. */
+    for (spins = 0; spins < 256; ++spins) {
+        uint32_t used;
+        serial_putc(0);
+        used = hw_dma_r32(b->q, 2048);
+        if ((used >> 16) == idx && (hw_dma_r32(b->cmd, 32) & 0xFFu) == 0u)
+            return 0;
+    }
+    serial_puts("vblk timeout used=");
+    serial_write_u64(hw_dma_r32(b->q, 2048));
+    serial_puts(" len=");
+    serial_write_u64(hw_dma_r32(b->q, 2056));
+    serial_puts(" st=");
+    serial_write_u64(hw_dma_r32(b->cmd, 32) & 0xFFu);
+    serial_puts("\n");
     return -1;
 }
 
@@ -177,11 +194,19 @@ int virtio_blk_probe(void) {
                 g_blk.q = hw_dma_alloc(1);
                 g_blk.cmd = hw_dma_alloc(1);
                 g_blk.data = hw_dma_alloc(1);
-                if (g_blk.q < 0 || g_blk.cmd < 0 || g_blk.data < 0)
-                    return 0;
+                if (g_blk.q < 0 || g_blk.cmd < 0 || g_blk.data < 0) {
+                    hw_dma_free(g_blk.q);
+                    hw_dma_free(g_blk.cmd);
+                    hw_dma_free(g_blk.data);
+                    continue;
+                }
                 qlo = hw_dma_lo(g_blk.q);
                 qhi = hw_dma_hi(g_blk.q);
                 hw_mmio_w16(cwin, coff + 22, 0);
+                if (hw_mmio_r16(cwin, coff + 24) < 4u) {
+                    serial_puts("virtio-blk queue too small\n");
+                    continue;
+                }
                 hw_mmio_w16(cwin, coff + 24, 4);
                 hw_mmio_w32(cwin, coff + 32, qlo);
                 hw_mmio_w32(cwin, coff + 36, qhi);
@@ -198,7 +223,11 @@ int virtio_blk_probe(void) {
                 hw_mmio_w8(cwin, coff + 20, 15);
                 cap_lo = hw_mmio_r32(dwin, doff);
                 cap_hi = hw_mmio_r32(dwin, doff + 4u);
-                g_blk.sectors = cap_hi ? 0xFFFFFFFFu : cap_lo;
+                if (cap_hi != 0u) {
+                    serial_puts("virtio-blk too large\n");
+                    continue;
+                }
+                g_blk.sectors = cap_lo;
                 if (g_blk.sectors < 2048u)
                     continue;
                 g_blk.avail = 0;
@@ -209,7 +238,7 @@ int virtio_blk_probe(void) {
                 bd.write = vblk_write;
                 bd.flush = 0;
                 bd.writable = 1;
-                bd_add("virtio-blk", &bd);
+                bd_add_kind("virtio-blk", &bd, BD_VIRTIO);
                 g_ready = 1;
                 serial_puts("virtio-blk sectors=");
                 serial_write_u64(g_blk.sectors);

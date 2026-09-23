@@ -3,5 +3,6 @@
 
 int install_disk(int index);
 int install_selftest(void);
+int install_auto(void);
 
 #endif

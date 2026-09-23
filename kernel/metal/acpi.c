@@ -30,6 +30,46 @@ void acpi_probe(void) {
                 serial_puts("acpi rsdp oem=");
                 serial_puts(oem);
                 serial_puts("\n");
+                if (p[15] >= 2) {
+                    uint64_t xsdt = 0;
+                    const uint8_t *x;
+                    uint32_t len;
+                    uint32_t ent;
+                    int b;
+                    for (b = 0; b < 8; ++b)
+                        xsdt |= (uint64_t)p[24 + b] << (8 * b);
+                    x = (const uint8_t *)(uintptr_t)bootinfo_phys_to_virt(xsdt);
+                    if (x && x[0] == 'X' && x[1] == 'S' && x[2] == 'D' &&
+                        x[3] == 'T') {
+                        len = (uint32_t)x[4] | ((uint32_t)x[5] << 8) |
+                              ((uint32_t)x[6] << 16) | ((uint32_t)x[7] << 24);
+                        serial_puts("acpi xsdt\n");
+                        for (ent = 36; ent + 8 <= len && ent < 512; ent += 8) {
+                            uint64_t tp = 0;
+                            const uint8_t *t;
+                            char sig[5];
+                            for (b = 0; b < 8; ++b)
+                                tp |= (uint64_t)x[ent + b] << (8 * b);
+                            t = (const uint8_t *)(uintptr_t)
+                                bootinfo_phys_to_virt(tp);
+                            if (!t)
+                                continue;
+                            for (b = 0; b < 4; ++b)
+                                sig[b] = (char)t[b];
+                            sig[4] = 0;
+                            if ((sig[0] == 'A' && sig[1] == 'P' &&
+                                 sig[2] == 'I' && sig[3] == 'C') ||
+                                (sig[0] == 'M' && sig[1] == 'C' &&
+                                 sig[2] == 'F' && sig[3] == 'G') ||
+                                (sig[0] == 'F' && sig[1] == 'A' &&
+                                 sig[2] == 'C' && sig[3] == 'P')) {
+                                serial_puts("acpi ");
+                                serial_puts(sig);
+                                serial_puts("\n");
+                            }
+                        }
+                    }
+                }
                 return;
             }
         }

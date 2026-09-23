@@ -12,6 +12,7 @@ int hw_mmio_w8(int win, uint32_t off, uint32_t val);
 uint32_t hw_mmio_r16(int win, uint32_t off);
 int hw_mmio_w16(int win, uint32_t off, uint32_t val);
 int hw_dma_alloc(int pages);
+int hw_dma_free(int id);
 uint32_t hw_dma_lo(int id);
 uint32_t hw_dma_hi(int id);
 int hw_dma_w32(int id, uint32_t off, uint32_t val);

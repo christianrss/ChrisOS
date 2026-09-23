@@ -30,6 +30,16 @@ int lang_active_count(void);
 int lang_kill(int slot);
 int lang_slot_used(int slot);
 const char *lang_slot_name(int slot);
+uint32_t lang_slot_caps(int slot);
+
+#define CAP_PCI 1u
+#define CAP_PORT_IO 2u
+#define CAP_MMIO 4u
+#define CAP_DMA 8u
+#define CAP_IRQ 16u
+#define CAP_DISK_ADMIN 32u
+#define CAP_DRIVER                                                         \
+    (CAP_PCI | CAP_PORT_IO | CAP_MMIO | CAP_DMA | CAP_IRQ | CAP_DISK_ADMIN)
 uint32_t *lang_slot_pixels(int slot);
 void lang_slot_publish(int slot);
 int lang_slot_w(int slot);

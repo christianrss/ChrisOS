@@ -9,14 +9,15 @@
 #include "serial.h"
 #include "storage.h"
 
-#define HW_WIN 4
-#define HW_WIN_PAGES 16
+#define HW_WIN 8
+#define HW_WIN_PAGES 64
 #define HW_DMA 16
 #define HW_DMA_PAGES 2048
 #define HW_DISK_MAX 8
 
 typedef struct HwWin {
     int used;
+    uint32_t bytes;
     uint64_t phys;
     volatile uint8_t *virt;
 } HwWin;
@@ -86,37 +87,61 @@ int hw_bar_map(int bus, int dev, int fn, int bar) {
     if (phys == 0) {
         return -1;
     }
-    for (i = 0; i < HW_WIN; ++i) {
-        if (g_win[i].used && g_win[i].phys == phys) {
-            return i;
+    {
+        uint16_t cmd = (uint16_t)pci_read((uint8_t)bus, (uint8_t)dev,
+                                          (uint8_t)fn, 4);
+        uint32_t sz;
+        uint32_t pages;
+        pci_write((uint8_t)bus, (uint8_t)dev, (uint8_t)fn, 4,
+                  (uint32_t)(cmd & ~2u));
+        pci_write((uint8_t)bus, (uint8_t)dev, (uint8_t)fn,
+                  (uint8_t)(0x10 + bar * 4), 0xFFFFFFF0u);
+        sz = pci_read((uint8_t)bus, (uint8_t)dev, (uint8_t)fn,
+                      (uint8_t)(0x10 + bar * 4));
+        pci_write((uint8_t)bus, (uint8_t)dev, (uint8_t)fn,
+                  (uint8_t)(0x10 + bar * 4), raw);
+        pci_write((uint8_t)bus, (uint8_t)dev, (uint8_t)fn, 4, cmd);
+        sz &= ~0xFu;
+        if (sz == 0u || sz == 0xFFFFFFF0u)
+            sz = 65536u;
+        else
+            sz = (~sz) + 1u;
+        if (sz < 65536u)
+            sz = 65536u;
+        if (sz > (uint32_t)HW_WIN_PAGES * 4096u) {
+            serial_puts("hw bar capped\n");
+            sz = (uint32_t)HW_WIN_PAGES * 4096u;
         }
-    }
-    for (i = 0; i < HW_WIN; ++i) {
-        if (!g_win[i].used) {
-            break;
+        pages = sz / 4096u;
+        for (i = 0; i < HW_WIN; ++i) {
+            if (g_win[i].used && g_win[i].phys == phys)
+                return i;
         }
-    }
-    if (i == HW_WIN) {
-        return -1;
-    }
-    base = 0;
-    for (page = 0; page < HW_WIN_PAGES; ++page) {
-        void *v = map_mmio_page(phys + (uint64_t)page * 4096ull);
-        if (page == 0) {
-            base = (volatile uint8_t *)v;
+        for (i = 0; i < HW_WIN; ++i) {
+            if (!g_win[i].used)
+                break;
         }
+        if (i == HW_WIN)
+            return -1;
+        base = 0;
+        for (page = 0; page < (int)pages; ++page) {
+            void *v = map_mmio_page(phys + (uint64_t)page * 4096ull);
+            if (page == 0)
+                base = (volatile uint8_t *)v;
+        }
+        g_win[i].used = 1;
+        g_win[i].bytes = sz;
+        g_win[i].phys = phys;
+        g_win[i].virt = base;
+        return i;
     }
-    g_win[i].used = 1;
-    g_win[i].phys = phys;
-    g_win[i].virt = base;
-    return i;
 }
 
 static volatile uint8_t *win_ptr(int win, uint32_t off) {
     if (win < 0 || win >= HW_WIN || !g_win[win].used) {
         return 0;
     }
-    if (off >= (uint32_t)HW_WIN_PAGES * 4096u) {
+    if (off >= g_win[win].bytes) {
         return 0;
     }
     return g_win[win].virt + off;
@@ -124,7 +149,7 @@ static volatile uint8_t *win_ptr(int win, uint32_t off) {
 
 uint32_t hw_mmio_r32(int win, uint32_t off) {
     volatile uint8_t *p = win_ptr(win, off);
-    if (!p || (off & 3u)) {
+    if (!p || (off & 3u) || off + 4u > g_win[win].bytes) {
         return 0;
     }
     return *(volatile uint32_t *)p;
@@ -132,7 +157,7 @@ uint32_t hw_mmio_r32(int win, uint32_t off) {
 
 int hw_mmio_w32(int win, uint32_t off, uint32_t val) {
     volatile uint8_t *p = win_ptr(win, off);
-    if (!p || (off & 3u)) {
+    if (!p || (off & 3u) || off + 4u > g_win[win].bytes) {
         return -1;
     }
     *(volatile uint32_t *)p = val;
@@ -203,6 +228,17 @@ int hw_dma_alloc(int pages) {
     g_dma[i].phys = phys;
     g_dma[i].virt = virt;
     return i;
+}
+
+int hw_dma_free(int id) {
+    if (id < 0 || id >= HW_DMA || !g_dma[id].used)
+        return -1;
+    pmm_free_contig(g_dma[id].phys, (uint64_t)g_dma[id].pages);
+    g_dma[id].used = 0;
+    g_dma[id].virt = 0;
+    g_dma[id].phys = 0;
+    g_dma[id].pages = 0;
+    return 0;
 }
 
 uint32_t hw_dma_lo(int id) {
@@ -485,6 +521,11 @@ static int vg_kick_cmd(int q, int cmd, int len) {
     return 0;
 }
 
+/*
+ * Early scanout used before ChrisC is running. SYS/DRV/VIRTIOGPU.CC is the
+ * driver once CLVM can call the hardware ABI. This function stays as the
+ * bootstrap path so the desktop has a framebuffer before any guest driver.
+ */
 int virtio_gpu_boot(void) {
     int bus;
     int dev;

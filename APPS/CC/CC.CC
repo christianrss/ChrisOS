@@ -22,6 +22,7 @@ int g_op;
 int g_k;
 int g_j;
 int g_slot;
+int g_sty;
 int g_base;
 int g_c2;
 int g_skip;
@@ -1084,6 +1085,15 @@ int bi_drv() {
   if (eqname("disk_install") == 1) {
     g_bi = 230;
   }
+  if (eqname("disk_kind") == 1) {
+    g_bi = 231;
+  }
+  if (eqname("disk_flags") == 1) {
+    g_bi = 232;
+  }
+  if (eqname("disk_sectors") == 1) {
+    g_bi = 233;
+  }
   return 0;
 }
 
@@ -1418,6 +1428,7 @@ int prim() {
     return 0;
   }
   findloc();
+  g_sty = 0;
   if (g_ret < 0) {
     findg();
     g_slot = g_ret;
@@ -1425,6 +1436,8 @@ int prim() {
     g_addr = g_addr + 256;
     g_scale = 4;
     g_arr = 0;
+  } else {
+    g_sty = loadb(g_lsty + g_ret);
   }
   if (g_c == 91) {
     g_bytes = 1;
@@ -1443,7 +1456,11 @@ int prim() {
     while (g_j < g_nfld) {
       g_base = g_fldnm + g_j * 16;
       if (cmp() == 1) {
-        g_ret = loadb(g_fldoff + g_j);
+        g_k = loadb(g_fldst + g_j);
+        g_k = g_k + 1;
+        if (g_k == g_sty) {
+          g_ret = loadb(g_fldoff + g_j);
+        }
       }
       g_j = g_j + 1;
     }
@@ -2042,6 +2059,10 @@ int stmt() {
   }
   if (g_c == 46) {
     findloc();
+    g_sty = 0;
+    if (g_ret >= 0) {
+      g_sty = loadb(g_lsty + g_ret);
+    }
     g_save = g_addr;
     g_i = g_i + 1;
     rdname();
@@ -2050,7 +2071,11 @@ int stmt() {
     while (g_j < g_nfld) {
       g_base = g_fldnm + g_j * 16;
       if (cmp() == 1) {
-        g_ret = loadb(g_fldoff + g_j);
+        g_k = loadb(g_fldst + g_j);
+        g_k = g_k + 1;
+        if (g_k == g_sty) {
+          g_ret = loadb(g_fldoff + g_j);
+        }
       }
       g_j = g_j + 1;
     }
@@ -2538,6 +2563,7 @@ int main() {
   g_fldoff = malloc(64);
   g_lsty = malloc(64);
   g_ns = 0;
+  g_sty = 0;
   g_nfld = 0;
   g_nc = 0;
   g_pc = 0;

@@ -1,6 +1,6 @@
 # ChrisOS
 
-Sistema operacional hobby **x86-64** para QEMU: kernel ring-0 em higher-half, bootloader Limine, desktop com janelas, editor, shell, ChrisFS (CFS v3) em disco IDE separado, runtime CLVM/ChrisC e toolchain self-host (ChrisO → ChrisAsm → ChrisLd, KCC).
+Sistema operacional hobby **x86-64** para QEMU: kernel ring-0 em higher-half, bootloader Limine, desktop com janelas, editor, shell, ChrisFS (CFS v4, compatível com v3) e runtime CLVM/ChrisC. Há um bring-up RISC-V em `qemu virt` e drivers de bloco além do ATA.
 
 ## Requisitos
 
@@ -11,7 +11,8 @@ Sistema operacional hobby **x86-64** para QEMU: kernel ring-0 em higher-half, bo
 | GNU `ld` (`elf_x86_64`) | Link de `build/iso/boot/kernel.elf` |
 | xorriso | ISO híbrida BIOS/UEFI |
 | Limine | `third_party/limine` (copiado para staging em build) |
-| QEMU `qemu-system-x86_64` | `-M pc`, IDE + virtio-net |
+| QEMU `qemu-system-x86_64` | `-M pc`, IDE, AHCI, NVMe, virtio-blk, USB | 
+| QEMU `qemu-system-riscv64` | `make riscv` / `make run-riscv` |
 | Python 3 | `tools/cfs_send.py` (transferência host→guest) |
 
 Windows: use **Git Bash** ou **WSL** para o `makefile` (`mkdir -p`, `cp`, `ld`).
@@ -20,8 +21,11 @@ Windows: use **Git Bash** ou **WSL** para o `makefile` (`mkdir -p`, `cp`, `ld`).
 
 ```bash
 make              # build/iso + build/os.iso
-make disk.img     # build/disk.img (CFS v3, 512 MiB) se ainda não existir
+make disk.img     # build/disk.img (CFS, 512 MiB) se ainda não existir
 make run          # QEMU: disco IDE + CD-ROM
+make riscv        # kernel RISC-V em build/riscv/kernel.elf
+make run-riscv    # qemu-system-riscv64 -M virt
+make qemu-gates   # testes headless de ATA, AHCI, NVMe, virtio-blk, USB, GPU, RISC-V
 make run-stop     # encerra instâncias QEMU
 make clean        # remove build/
 ```
@@ -50,16 +54,34 @@ make send CFS_PATH=SYS/LIVE.C HOST_FILE=foo.c   # TCP :9016, guest rodando
 Limine (BIOS/UEFI)
     └── kernel.elf @ 0xffffffff80000000 (-mcmodel=kernel)
           ├── metal: GDT/TSS, IDT, PMM, paging 4K, LAPIC/IOAPIC, SMP
-          ├── gfx: framebuffer Limine 32 bpp, gfx2d, input PS/2
           ├── wm: desktop, taskbar 40px, até 32 janelas
-          ├── fs: ATA PIO → cache 16 linhas → ChrisFS v3
-          ├── lang: ChrisC → CLVM; SYS 2D/3D na janela App (320×200 hoje; até 1080p — ver fase6-gfxfast64)
+          ├── fs: BlockDevice (ATA, AHCI, NVMe, virtio-blk, UHCI MSC) → ChrisFS
+          ├── gfx: framebuffer Limine e scanout virtio-gpu (bootstrap em virtio_gpu_boot)
+          ├── lang: ChrisC → CLVM; drivers ChrisC em SYS/DRV com capabilities
           ├── net: virtio-net, UDP echo :7, protocolo CFS1 TCP :9016
           └── tools: editor, explorer, shell (cc, as, kcc, mk, runelf, reboot)
 ```
 
 - **ISO** (`build/os.iso`): bootloader + kernel apenas — sem arquivos editáveis.
-- **Disco** (`build/disk.img`): workspace persistente; montado no boot via ATA PIO.
+- **Disco** (`build/disk.img`): workspace persistente. O boot monta o primeiro ChrisFS encontrado (superbloco no LBA 0 ou partição GPT), não um índice fixo.
+
+## Estado medido
+
+| Componente | Estado |
+|------------|--------|
+| x86-64 | working — `test-qemu-ata` chega em `root ata` e `cfs mounted` |
+| RISC-V | bring-up — `test-qemu-riscv`: Sv39, timer IRQ, CLVM halt, virtio-blk e virtio-gpu detectado. Scanout de desktop no RISC-V não foi provado |
+| ATA | working |
+| AHCI | experimental — probe, capacidade e leitura/escrita de um padrão em disco de teste |
+| NVMe | experimental — o mesmo, setores de 512 bytes. Outro tamanho de LBA é recusado |
+| VirtIO-blk | experimental |
+| USB MSC/UHCI | experimental — não é uma pilha USB genérica. xHCI não está implementado |
+| VirtIO-GPU | experimental — serial `virtio-gpu ready 1920x1080` no x86-64 |
+| ChrisC self-host | bootstrap — CC2 e CC3 gerados pelo compilador convidado saíram byte-idênticos |
+| Doom | work in progress |
+| Instalador | GPT primário e de backup, ESP em `/EFI/BOOT/BOOTX64.EFI`, cópia de árvore. O boot só pelo disco instalado, sem a ISO, ainda não foi provado |
+
+O instalador recusa o disco de boot, discos RAM e o self-test não entra no registro. `BOOT/INSTALL.AUTO` no ChrisFS pede instalação no primeiro disco elegível.
 
 ---
 

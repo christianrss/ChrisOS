@@ -1,9 +1,8 @@
 /* LEARN:STOR64-S09 */
-#include "acpi.h"
 #include "ahci.h"
 #include "bdev.h"
-#include "install.h"
 #include "nvme.h"
+#include "part.h"
 #include "storage.h"
 #include "usb_msc.h"
 #include "virtio_blk.h"
@@ -16,8 +15,10 @@
 
 static AtaPio g_ata;
 static BlockDevice g_disk;
+static PartView g_part;
 static Cfs g_cfs;
 static int g_ready;
+static int g_root = -1;
 
 static int prefix_zero(const uint8_t *p, uint32_t n) {
     uint32_t i;
@@ -102,12 +103,126 @@ static void fsck_report(void) {
     serial_puts("\n");
 }
 
+static int disk_has_cfs(BlockDevice *dev) {
+    uint8_t sector[STOR_SECTOR_SIZE];
+    CfsSuper super;
+    if (!dev || bd_read(dev, CFS_SUPER_LBA, 1u, sector) != BD_OK)
+        return 0;
+    return cfs_super_decode(&super, sector) == 0;
+}
+
+static int claim_root(int index, BlockDevice *dev) {
+    g_disk = *dev;
+    g_root = index;
+    bd_set_boot(index);
+    bd_set_flags(index, BD_F_BOOT | BD_F_ROOT);
+    serial_puts("root ");
+    serial_puts(bd_name(index));
+    serial_puts("\n");
+    return 1;
+}
+
+static int discover_root(void) {
+    int i;
+    int n = bd_count();
+    for (i = 0; i < n; ++i) {
+        BlockDevice *d = bd_get(i);
+        if (bd_kind(i) == BD_RAM)
+            continue;
+        if (disk_has_cfs(d))
+            return claim_root(i, d);
+    }
+    for (i = 0; i < n; ++i) {
+        BlockDevice *d = bd_get(i);
+        uint32_t lba = 0;
+        uint32_t count = 0;
+        if (!d || bd_kind(i) == BD_RAM)
+            continue;
+        if (gpt_find_cfs(d, &lba, &count) != 0)
+            continue;
+        if (part_open(&g_part, d, lba, count) != 0)
+            continue;
+        if (!disk_has_cfs(&g_part.dev))
+            continue;
+        g_part.dev.ctx = &g_part;
+        return claim_root(i, &g_part.dev);
+    }
+    for (i = 0; i < n; ++i) {
+        BlockDevice *d = bd_get(i);
+        uint8_t sector[STOR_SECTOR_SIZE];
+        int formatted = 0;
+        int rc;
+        if (!d || !d->writable || bd_kind(i) == BD_RAM)
+            continue;
+        if (d->sector_count < STOR_DISK_SECTORS)
+            continue;
+        if (bd_read(d, 0, 1, sector) != BD_OK)
+            continue;
+        if (!prefix_zero(sector, 8u))
+            continue;
+        rc = storage_format_if_empty(d, &formatted);
+        if (rc != CFS_OK)
+            continue;
+        return claim_root(i, d);
+    }
+    return 0;
+}
+
+static void bdev_rw_tests(void) {
+    int i;
+    int n = bd_count();
+    for (i = 0; i < n; ++i) {
+        BlockDevice *d = bd_get(i);
+        uint8_t orig[STOR_SECTOR_SIZE];
+        uint8_t got[STOR_SECTOR_SIZE];
+        uint8_t pat[STOR_SECTOR_SIZE];
+        uint32_t lba;
+        uint32_t b;
+        if (!d || !d->writable || i == g_root)
+            continue;
+        if (bd_kind(i) == BD_RAM || d->sector_count < 2u)
+            continue;
+        lba = d->sector_count - 1u;
+        if (bd_read(d, lba, 1, orig) != BD_OK) {
+            serial_puts("bdev rw fail ");
+            serial_puts(bd_name(i));
+            serial_puts("\n");
+            continue;
+        }
+        for (b = 0; b < STOR_SECTOR_SIZE; ++b)
+            pat[b] = (uint8_t)(0xA5u ^ (b & 0xFFu));
+        if (bd_write(d, lba, 1, pat) != BD_OK) {
+            serial_puts("bdev rw fail ");
+            serial_puts(bd_name(i));
+            serial_puts("\n");
+            continue;
+        }
+        if (bd_read(d, lba, 1, got) != BD_OK) {
+            serial_puts("bdev rw fail ");
+            serial_puts(bd_name(i));
+            serial_puts("\n");
+            (void)bd_write(d, lba, 1, orig);
+            continue;
+        }
+        for (b = 0; b < STOR_SECTOR_SIZE; ++b) {
+            if (got[b] != pat[b])
+                break;
+        }
+        (void)bd_write(d, lba, 1, orig);
+        serial_puts(b == STOR_SECTOR_SIZE ? "bdev rw ok " : "bdev rw fail ");
+        serial_puts(bd_name(i));
+        serial_puts("\n");
+    }
+}
+
 int storage_init(void) {
     uint32_t reported = 0u;
     int formatted = 0;
     int rc;
+    BlockDevice ata;
 
     g_ready = 0;
+    g_root = -1;
     ata_pio_configure(&g_ata, STOR_DISK_SECTORS);
     rc = ata_pio_identify(&g_ata, &reported);
     if (rc != BD_OK) {
@@ -119,17 +234,19 @@ int storage_init(void) {
             serial_write_u64((uint64_t)rc);
         }
         serial_puts("\n");
-        return rc;
+    } else {
+        if (reported >= 2048u)
+            g_ata.sectors = reported;
+        ata_pio_make_device(&g_ata, &ata);
+        bd_add_kind("ata", &ata, BD_ATA);
     }
-    ata_pio_make_device(&g_ata, &g_disk);
-    bd_add("ata", &g_disk);
-    bd_set_boot(0);
-    acpi_probe();
     (void)ahci_probe();
     (void)nvme_probe();
     (void)virtio_blk_probe();
     (void)usb_msc_probe();
-    (void)install_selftest();
+    if (!discover_root()) {
+        panic("no root disk");
+    }
     rc = storage_format_if_empty(&g_disk, &formatted);
     if (rc == CFS_EFORMAT) {
         panic("cfs unknown disk, not formatting");
@@ -158,6 +275,7 @@ int storage_init(void) {
     } else {
         fsck_report();
     }
+    bdev_rw_tests();
     return CFS_OK;
 }
 

@@ -487,6 +487,8 @@ static const Builtin builtins[] = {
     {"disk_format", 226, 0, 1, 0}, {"gpu_arm", 227, 7, 1, 0},
     {"gpu_ready", 228, 0, 1, 0},
     {"disk_count", 229, 0, 1, 0}, {"disk_install", 230, 1, 1, 0},
+    {"disk_kind", 231, 1, 1, 0}, {"disk_flags", 232, 1, 1, 0},
+    {"disk_sectors", 233, 1, 1, 0},
     {"cla_load", 64, 1, 1, 0},
     {"fseek", 65, 2, 1, 0},
     {"fb_blit", 72, 3, 0, 0}, {"setpal", 73, 1, 0, 0},

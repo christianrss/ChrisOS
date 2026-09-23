@@ -29,6 +29,8 @@
 #include "proc.h"
 #include "ac97.h"
 #include "hwgate.h"
+#include "acpi.h"
+#include "install.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -81,8 +83,11 @@ void kstart(void) {
     smp_job_selftest();
 
     __asm__ volatile ("cli");
+    acpi_probe();
     storage_init();
     fs_init();
+    (void)install_selftest();
+    (void)install_auto();
     lang_init(clvm_sys_dispatch, 0);
     lang_make_cc();
     speaker_off();

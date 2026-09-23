@@ -171,7 +171,7 @@ kernel: $(KERNEL)
 
 apps: disk-base
 
-disk-base: disk-ui
+disk-base: disk-ui $(KERNEL) $(LIMINE_DIR)/BOOTX64.EFI
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/Makefile APPS/Makefile
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/CC.CC APPS/CC/CC.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/HELLO.CC APPS/CC/HELLO.CC
@@ -192,6 +192,10 @@ disk-base: disk-ui
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/CC.CLV APPS/CC/CC.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/DOCC APPS/CC/DOCC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/STRUCT.CC APPS/CC/STRUCT.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/CC/FIELDS.CC APPS/CC/FIELDS.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) BOOT/KERNEL.ELF $(KERNEL)
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) EFI/BOOT/BOOTX64.EFI $(LIMINE_DIR)/BOOTX64.EFI
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) BOOT/LIMINE.CFG iso_root/boot/limine/limine.conf
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/THREADS/COUNT.CLV APPS/THREADS/COUNT.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/HTTP.CLV APPS/NET/HTTP.CLV
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/NET/FTP.CLV APPS/NET/FTP.CLV
@@ -1161,3 +1165,5 @@ clean:
 		compiler/chrisc/*.o compiler/clvm/*.o compiler/jit/*.o \
 		compiler/chrisld/*.o compiler/chrisasm/*.o compiler/kcc/*.o \
 		os.iso disk.img disk_v2.img
+
+include scripts/qemu.mk
