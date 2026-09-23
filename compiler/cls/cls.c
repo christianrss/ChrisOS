@@ -2,8 +2,11 @@
 #include "gc/gc.h"
 
 #ifdef __freestanding__
+#include "bootinfo.h"
 #include "fs.h"
 #include "heap.h"
+#include "mm.h"
+#include "proc.h"
 #define CLS_ALLOC kmalloc
 #define CLS_FREE kfree
 #else
@@ -499,4 +502,57 @@ int cls_runtime_resolve(const char *lib, const char *name, uint16_t sym_ver,
 
 int cls_runtime_count(void) {
     return g_nlibs;
+}
+
+int cls_map_proc(int pid) {
+#ifdef __freestanding__
+    int i;
+    const struct bootinfo *boot = bootinfo_get();
+    if (pid <= 0 || !boot || boot->hhdm_offset == 0)
+        return 0;
+    for (i = 0; i < CLS_MAX_LIBS; ++i) {
+        ClsLoaded *L = &g_libs[i];
+        uint64_t base;
+        uint64_t phys;
+        uint32_t span;
+        uint32_t pages;
+        uint32_t p;
+        uint64_t data_va;
+        uint64_t data_phys;
+        uint8_t *dst;
+        uint32_t ncopy;
+        uint32_t b;
+        if (!L->used || !L->code_buf)
+            continue;
+        base = (uint64_t)(uintptr_t)L->code_buf & ~4095ull;
+        if (base < boot->hhdm_offset)
+            continue;
+        phys = base - boot->hhdm_offset;
+        span = (uint32_t)((uintptr_t)L->code_buf & 4095u) + L->img.code_size;
+        pages = (span + 4095u) / 4096u;
+        if (pages > 8u)
+            pages = 8u;
+        for (p = 0; p < pages; ++p) {
+            proc_map_user(pid, PROC_LIB_VIRT + (uint64_t)i * 0x100000ull +
+                                   (uint64_t)p * 4096ull,
+                          phys + (uint64_t)p * 4096ull, MM_PRESENT);
+        }
+        data_va = PROC_LIB_VIRT + 0x800000ull + (uint64_t)i * 4096ull;
+        if (proc_commit(pid, data_va) != 0)
+            continue;
+        data_phys = proc_page_phys(pid, data_va);
+        if (data_phys == 0 || !L->data_buf)
+            continue;
+        dst = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(data_phys);
+        ncopy = L->img.data_size;
+        if (ncopy > 4096u)
+            ncopy = 4096u;
+        for (b = 0; b < ncopy; ++b)
+            dst[b] = L->data_buf[b];
+    }
+    return 1;
+#else
+    (void)pid;
+    return 0;
+#endif
 }

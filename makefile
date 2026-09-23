@@ -45,7 +45,9 @@ GFX_3D_OBJS := \
 	kernel/gfx/gfx_slot.o \
 	kernel/gfx/shade.o \
 	kernel/gfx/tex.o \
-	kernel/gfx/voxel.o
+	kernel/gfx/voxel.o \
+	kernel/gfx/scene.o \
+	kernel/gfx/phys.o
 
 # kernel C usa -mno-sse; gfx 3D compila com SSE2 + FPU XMM (fxsave nos ISRs).
 GFX_CFLAGS_BASE := $(filter-out -mno-mmx -mno-sse -mno-sse2,$(CFLAGS))

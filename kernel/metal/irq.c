@@ -2,6 +2,7 @@
 #include "apic.h"
 #include "panic.h"
 #include "port.h"
+#include "proc.h"
 #include "syscall.h"
 
 #define PIC1_COMMAND 0x20
@@ -86,10 +87,16 @@ void irq_dispatch(struct irq_frame *frame) {
         syscall_dispatch(frame);
         return;
     }
-    if (frame->vector == 14u && (frame->cs & 3u) != 0u) {
+    if (frame->vector == 14u) {
         uint64_t cr2;
         __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-        panic_user_fault(frame, cr2);
+        if (proc_fault_demand(proc_current(), cr2)) {
+            return;
+        }
+        if ((frame->cs & 3u) != 0u) {
+            panic_user_fault(frame, cr2);
+            return;
+        }
     }
     if (frame->vector < 32) {
         panic_exception(frame->vector, frame->error, frame->rip);

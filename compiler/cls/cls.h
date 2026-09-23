@@ -73,6 +73,7 @@ int cls_runtime_load(const char *path, char *err, int err_cap);
 int cls_runtime_reload(const char *path, char *err, int err_cap);
 int cls_runtime_find(const char *name);
 ClsLoaded *cls_runtime_get(int lib_id);
+int cls_map_proc(int pid);
 int cls_runtime_resolve(const char *lib, const char *name, uint16_t sym_ver,
                         uint32_t *pc_out, int *lib_out);
 int cls_runtime_count(void);

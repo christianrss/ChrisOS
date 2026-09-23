@@ -13,6 +13,8 @@
 #include "heap.h"
 #include "math3d.h"
 #include "mesh.h"
+#include "phys.h"
+#include "scene.h"
 #include "pmm.h"
 #include "shade.h"
 #include "speaker.h"
@@ -29,6 +31,7 @@
 #include "chrismake.h"
 #include "cls/cls.h"
 #include "serial.h"
+#include "proc.h"
 #include "sock.h"
 #include "sha256.h"
 #include "aes.h"
@@ -51,6 +54,7 @@ typedef struct ClvmTh {
     int done;
     int blocked;
     int slot;
+    int proc;
     int mtx_addr;
     int cnd_addr;
     ClvmVm *parent;
@@ -118,11 +122,16 @@ void clvm_threads_tick(void) {
         ClvmTh *t = &g_th[i];
         if (!t->used || t->done || t->blocked || !t->vm)
             continue;
+        if (t->proc > 0)
+            proc_switch(t->proc);
         r = clvm_step(t->vm, 8192u);
+        proc_switch(PROC_KERNEL);
         if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT) {
             t->done = 1;
             if (t->parent && t->parent->join_wait == i)
                 clvm_vm_wake(t->parent, 0);
+            if (t->proc > 0)
+                proc_unblock(t->proc);
         }
     }
 }
@@ -1237,6 +1246,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         g_th[i].slot = slot;
         g_th[i].mtx_addr = 0;
         g_th[i].cnd_addr = 0;
+        g_th[i].proc = proc_current();
         g_th[i].parent = vm;
         g_th[i].vm = child;
         return clvm_vm_push64(vm, i) ? 0 : -1;
@@ -1250,6 +1260,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!g_th[a].done) {
             vm->join_wait = (int32_t)a;
             vm->state = CLVM_WAITING;
+            proc_block(proc_current(), PROC_ST_BLOCK_JOIN);
             if (!clvm_vm_push64(vm, a) || !clvm_vm_push64(vm, 63))
                 return -1;
             return 0;
@@ -1417,7 +1428,16 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             n = 200;
         if (n < 0 || !vm->memory || (uint64_t)addr + (uint64_t)n > vm->mem_size)
             return clvm_vm_push64(vm, -1) ? 0 : -1;
+        sock_bind_proc((int)fd, proc_current());
         rc = sock_recv((int)fd, tmp, (int)n);
+        if (rc == 0) {
+            vm->state = CLVM_WAITING;
+            proc_block(proc_current(), PROC_ST_BLOCK_SOCK);
+            if (!clvm_vm_push64(vm, fd) || !clvm_vm_push64(vm, addr) ||
+                !clvm_vm_push64(vm, n) || !clvm_vm_push64(vm, 144))
+                return -1;
+            return 0;
+        }
         if (rc > 0) {
             for (i = 0; i < rc; ++i)
                 vm->memory[addr + i] = tmp[i];
@@ -1561,7 +1581,14 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         if (!drv_allowed(vm))
             return clvm_vm_push64(vm, -1) ? 0 : -1;
-        return clvm_vm_push64(vm, ac97_take_event((int)irq)) ? 0 : -1;
+        if (!ac97_take_event((int)irq)) {
+            vm->state = CLVM_WAITING;
+            proc_block(proc_current(), PROC_ST_BLOCK_IRQ);
+            if (!clvm_vm_push64(vm, irq) || !clvm_vm_push64(vm, 174))
+                return -1;
+            return 0;
+        }
+        return clvm_vm_push64(vm, 1) ? 0 : -1;
     }
     case 175: {
         int64_t bus, dev, fn, off;
@@ -2222,6 +2249,70 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     }
     case 112:
         return clvm_vm_push(vm, (int32_t)input_get_layout()) ? 0 : -1;
+    case 180: {
+        int64_t inc;
+        if (!clvm_vm_pop64(vm, &inc))
+            return -1;
+        if (inc < 0)
+            inc = 0;
+        return clvm_vm_push64(vm, (int64_t)proc_sbrk(proc_current(),
+                                                     (uint64_t)inc))
+                   ? 0
+                   : -1;
+    }
+    case 190: {
+        int64_t mesh, x, y, z, yaw, color;
+        if (!clvm_vm_pop64(vm, &color) || !clvm_vm_pop64(vm, &yaw) ||
+            !clvm_vm_pop64(vm, &z) || !clvm_vm_pop64(vm, &y) ||
+            !clvm_vm_pop64(vm, &x) || !clvm_vm_pop64(vm, &mesh))
+            return -1;
+        return clvm_vm_push64(vm, scene_add((int)mesh, (int)x, (int)y, (int)z,
+                                            (int)yaw, (int)color))
+                   ? 0
+                   : -1;
+    }
+    case 191: {
+        int64_t camx, camz, yaw;
+        if (!clvm_vm_pop64(vm, &yaw) || !clvm_vm_pop64(vm, &camz) ||
+            !clvm_vm_pop64(vm, &camx))
+            return -1;
+        if (ctx && ctx->pixels)
+            scene_draw(ctx->pixels, ctx->w, ctx->h, (int)camx, (int)camz,
+                       (int)yaw);
+        return clvm_vm_push64(vm, scene_visible((int)camx, (int)camz, (int)yaw))
+                   ? 0
+                   : -1;
+    }
+    case 192: {
+        int64_t x, y, w, h;
+        if (!clvm_vm_pop64(vm, &h) || !clvm_vm_pop64(vm, &w) ||
+            !clvm_vm_pop64(vm, &y) || !clvm_vm_pop64(vm, &x))
+            return -1;
+        return clvm_vm_push64(vm, phys_add((int)x, (int)y, (int)w, (int)h))
+                   ? 0
+                   : -1;
+    }
+    case 193:
+        phys_step();
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    case 194: {
+        int64_t t, x, y, z, yaw;
+        if (!clvm_vm_pop64(vm, &yaw) || !clvm_vm_pop64(vm, &z) ||
+            !clvm_vm_pop64(vm, &y) || !clvm_vm_pop64(vm, &x) ||
+            !clvm_vm_pop64(vm, &t))
+            return -1;
+        return clvm_vm_push64(vm, anim_key((int)t, (int)x, (int)y, (int)z,
+                                           (int)yaw))
+                   ? 0
+                   : -1;
+    }
+    case 195: {
+        int64_t node, t;
+        if (!clvm_vm_pop64(vm, &t) || !clvm_vm_pop64(vm, &node))
+            return -1;
+        anim_apply((int)node, (int)t);
+        return clvm_vm_push64(vm, 0) ? 0 : -1;
+    }
     default:
         return -1;
     }

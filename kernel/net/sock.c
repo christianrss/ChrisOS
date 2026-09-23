@@ -3,6 +3,7 @@
 #include "net.h"
 #include "pit.h"
 #include "port.h"
+#include "proc.h"
 
 #define SOCK_MAX 16
 #define SOCK_RX 2048
@@ -29,6 +30,7 @@ typedef struct Sock {
     int last_len;
     uint32_t last_tick;
     uint8_t have_mac;
+    int owner;
 } Sock;
 
 static Sock g_sk[SOCK_MAX];
@@ -58,6 +60,7 @@ static int alloc_sk(void) {
             g_sk[i].rx_len = 0;
             g_sk[i].last_len = 0;
             g_sk[i].parent = 0;
+            g_sk[i].owner = 0;
             return i;
         }
     }
@@ -320,8 +323,16 @@ int sock_on_tcp(const uint8_t *frame, uint32_t n) {
             g_sk[fd].rx[g_sk[fd].rx_len++] = frame[pay_off + (uint32_t)i];
         }
         xmit(&g_sk[fd], 0x10u, 0, 0);
+        if (g_sk[fd].owner > 0)
+            proc_unblock(g_sk[fd].owner);
     }
     return 1;
+}
+
+void sock_bind_proc(int fd, int pid) {
+    if (fd < 1 || fd >= SOCK_MAX)
+        return;
+    g_sk[fd].owner = pid;
 }
 
 int sock_on_udp(const uint8_t *frame, uint32_t n) {
@@ -358,6 +369,8 @@ int sock_on_udp(const uint8_t *frame, uint32_t n) {
                 g_sk[i].rx[k] = frame[off + (uint32_t)k];
             }
             g_sk[i].rx_len = c;
+            if (g_sk[i].owner > 0)
+                proc_unblock(g_sk[i].owner);
             return 1;
         }
     }

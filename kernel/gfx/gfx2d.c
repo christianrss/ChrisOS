@@ -183,9 +183,7 @@ void gfx2d_tilemap(uint32_t *pixels, int w, int h, const uint8_t *data,
         return;
     if (mapw <= 0 || maph <= 0 || tw <= 0 || th <= 0)
         return;
-    if (mapw > 256 || maph > 256 || tw > 64 || th > 64)
-        return;
-    if ((int64_t)mapw * (int64_t)maph * (int64_t)tw * (int64_t)th > GFX2D_MAX_AREA)
+    if (mapw > 512 || maph > 512 || tw > 256 || th > 256)
         return;
     if (!area_ok(tw, th))
         return;
@@ -207,6 +205,29 @@ void gfx2d_tilemap(uint32_t *pixels, int w, int h, const uint8_t *data,
             src = atlas + tile * tw * th;
             gfx2d_sprite(pixels, w, h, src, ox + tx * tw, oy + ty * th,
                          tw, th, -1);
+        }
+    }
+}
+
+void gfx2d_layer(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw,
+                 int sh, int camx, int camy) {
+    int y;
+    int x;
+    if (!dst || !src || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0)
+        return;
+    for (y = 0; y < dh; ++y) {
+        int sy = y + camy;
+        if (sy < 0 || sy >= sh)
+            continue;
+        for (x = 0; x < dw; ++x) {
+            int sx = x + camx;
+            uint32_t c;
+            if (sx < 0 || sx >= sw)
+                continue;
+            c = src[sy * sw + sx];
+            if ((c >> 24) == 0)
+                continue;
+            dst[y * dw + x] = c;
         }
     }
 }

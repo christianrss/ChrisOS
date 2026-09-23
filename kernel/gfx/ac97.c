@@ -5,6 +5,7 @@
 #include "pci.h"
 #include "pmm.h"
 #include "port.h"
+#include "proc.h"
 #include "serial.h"
 
 #define PCM_RING 2048
@@ -45,6 +46,7 @@ static void ac97_on_irq(struct irq_frame *frame) {
     st = inw((uint16_t)(g_nabm + 0x16u));
     outw((uint16_t)(g_nabm + 0x16u), st);
     g_event = 1;
+    proc_unblock_why(PROC_ST_BLOCK_IRQ);
     ac97_fill();
     outb((uint8_t)(g_nabm + 0x15u), 0);
     outb((uint8_t)(g_nabm + 0x1Bu), 0x11u);

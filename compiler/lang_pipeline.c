@@ -22,6 +22,8 @@
 #include "heap.h"
 #include "gc/gc.h"
 #include "proc.h"
+#include "mm.h"
+#include "bootinfo.h"
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
 #include "serial.h"
@@ -72,6 +74,7 @@ typedef struct LangSlot {
     int front_w;
     int front_h;
     int proc_id;
+    int user_ram;
     uint8_t checkpoint[256];
     int checkpoint_n;
     uint32_t checkpoint_off;
@@ -573,10 +576,45 @@ void lang_init(ClvmSysFn sys, void *user) {
 #define CLVM_SLOT_RAM_DEFAULT ((uint64_t)CLVM_MEMORY_SIZE)
 
 static void lang_free_slot_ram(int i) {
+    if (slots[i].user_ram) {
+        slots[i].heap_ram = 0;
+        slots[i].heap_ram_sz = 0;
+        slots[i].user_ram = 0;
+        return;
+    }
     if (slots[i].heap_ram) {
         kfree(slots[i].heap_ram);
         slots[i].heap_ram = 0;
         slots[i].heap_ram_sz = 0;
+    }
+}
+
+static void lang_map_surface(int i) {
+    const struct bootinfo *boot;
+    uint64_t virt;
+    uint64_t phys;
+    int bytes;
+    int pages;
+    int p;
+    if (slots[i].proc_id <= 0 || slots[i].gfx.pixels == 0)
+        return;
+    boot = bootinfo_get();
+    if (!boot || boot->hhdm_offset == 0)
+        return;
+    virt = (uint64_t)(uintptr_t)slots[i].gfx.pixels & ~4095ull;
+    if (virt < boot->hhdm_offset)
+        return;
+    phys = virt - boot->hhdm_offset;
+    bytes = slots[i].gfx.w * slots[i].gfx.h * 4;
+    if (bytes < 1)
+        return;
+    pages = (bytes + 4095) / 4096;
+    if (pages > 64)
+        pages = 64;
+    for (p = 0; p < pages; ++p) {
+        proc_map_user(slots[i].proc_id,
+                      PROC_FB_VIRT + (uint64_t)p * 4096ull,
+                      phys + (uint64_t)p * 4096ull, MM_PRESENT | MM_WRITE);
     }
 }
 
@@ -604,7 +642,34 @@ static void lang_attach_slot_ram(int i, const ClvmImage *image) {
     uint64_t cap;
     uint64_t want;
     uint8_t *p;
+    int prev;
     uint64_t n;
+    if (slots[i].proc_id > 0) {
+        if (slots[i].user_ram && slots[i].heap_ram) {
+            clvm_vm_set_memory(&slots[i].vm, slots[i].heap_ram,
+                               slots[i].heap_ram_sz);
+            return;
+        }
+        lang_free_slot_ram(i);
+        want = image && image->mem_hint ? (uint64_t)image->mem_hint
+                                         : CLVM_SLOT_RAM_DEFAULT;
+        if (want < CLVM_MEMORY_SIZE)
+            want = CLVM_MEMORY_SIZE;
+        want = proc_set_vm(slots[i].proc_id, want);
+        if (want == 0)
+            return;
+        p = proc_vm_ptr(slots[i].proc_id);
+        slots[i].heap_ram = p;
+        slots[i].heap_ram_sz = want;
+        slots[i].user_ram = 1;
+        prev = proc_current();
+        proc_switch(slots[i].proc_id);
+        mem_zero_fast(p, 4096ull);
+        proc_switch(prev);
+        clvm_vm_set_memory(&slots[i].vm, p, want);
+        cls_map_proc(slots[i].proc_id);
+        return;
+    }
 
     lang_free_slot_ram(i);
     cap = heap_free_bytes();
@@ -985,8 +1050,15 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
     slots[i].vm.on_safepoint = lang_safepoint;
+    slots[i].proc_id = proc_create(name);
+    if (slots[i].proc_id < 0)
+        slots[i].proc_id = 0;
+    lang_map_surface(i);
     lang_attach_slot_ram(i, &image);
     if (!slots[i].heap_ram) {
+        if (slots[i].proc_id > 0)
+            proc_destroy(slots[i].proc_id);
+        slots[i].proc_id = 0;
         status(e, "run: heap ram failed");
         serial_puts("run: heap ram failed\n");
         return 0;
@@ -1022,7 +1094,6 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     scopy(slots[i].name, LANG_NAME_MAX, name);
     slots[i].task_id = -1;
     slots[i].used = 1;
-    slots[i].proc_id = proc_create(name);
     slots[i].debug_on = g_want_debug;
     slots[i].paused = g_want_debug;
     slots[i].step_one = 0;
@@ -1106,14 +1177,18 @@ int lang_hot_reload(const char *name) {
     born = slots[i].vm.mem_owned ? slots[i].vm.memory : 0;
     slots[i].vm.on_safepoint = lang_safepoint;
     lang_attach_slot_ram(i, &image);
-    if (born && born != slots[i].heap_ram)
+    if (born && born != slots[i].heap_ram && !slots[i].user_ram)
         kfree(born);
     if (slots[i].checkpoint_n > 0 && slots[i].vm.memory &&
         (uint64_t)slots[i].checkpoint_off + (uint64_t)slots[i].checkpoint_n <=
             slots[i].vm.mem_size) {
+        int prev = proc_current();
+        if (slots[i].user_ram)
+            proc_switch(slots[i].proc_id);
         for (k = 0; k < slots[i].checkpoint_n; ++k)
             slots[i].vm.memory[slots[i].checkpoint_off + (uint32_t)k] =
                 slots[i].checkpoint[k];
+        proc_switch(prev);
     }
     lang_load_map(i, name);
     serial_puts("run: hot reload ");
@@ -1375,6 +1450,10 @@ int lang_splash_start(const char *name) {
     gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
     slots[i].vm.on_safepoint = lang_safepoint;
+    slots[i].proc_id = proc_create(name);
+    if (slots[i].proc_id < 0)
+        slots[i].proc_id = 0;
+    lang_map_surface(i);
     lang_attach_slot_ram(i, &image);
     lang_load_map(i, name);
     slots[i].use_jit = 0;
@@ -1385,7 +1464,6 @@ int lang_splash_start(const char *name) {
     scopy(slots[i].name, LANG_NAME_MAX, name);
     slots[i].task_id = -1;
     slots[i].used = 1;
-    slots[i].proc_id = proc_create(name);
     return 1;
 }
 
@@ -1417,19 +1495,25 @@ void lang_splash_stop(void) {
 }
 
 void lang_tick(uint32_t now) {
+    int n;
     int i;
+    static int rr;
 
     bench_frame_tick();
     clvm_threads_tick();
-    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+    for (n = 0; n < LANG_VM_SLOTS; ++n) {
+        i = (rr + n) % LANG_VM_SLOTS;
         if (slots[i].used) {
             ClvmStepResult r;
             int b;
             int game;
             int slices;
             int max_slices;
+            int entered;
             uint32_t budget;
             if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
+                continue;
+            if (slots[i].proc_id > 0 && !proc_runnable(slots[i].proc_id))
                 continue;
             clvm_vm_wake(&slots[i].vm, now);
             if (slots[i].debug_on) {
@@ -1443,6 +1527,11 @@ void lang_tick(uint32_t now) {
                 }
                 if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
                     continue;
+            }
+            entered = 0;
+            if (slots[i].proc_id > 0 && proc_alive(slots[i].proc_id)) {
+                proc_switch(slots[i].proc_id);
+                entered = 1;
             }
             game = slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull);
             if (slots[i].debug_on && slots[i].step_line) {
@@ -1496,6 +1585,8 @@ void lang_tick(uint32_t now) {
                     clvm_vm_wake(&slots[i].vm, now);
                 }
             }
+            if (entered)
+                proc_switch(PROC_KERNEL);
     if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT || slots[i].dying) {
                 if (r == CLVM_STEP_FAULT) {
                     proc_record_fault(slots[i].proc_id, 0, 0,
@@ -1544,6 +1635,7 @@ void lang_tick(uint32_t now) {
             }
         }
     }
+    rr = (rr + 1) % LANG_VM_SLOTS;
 }
 
 int lang_active_count(void) {
@@ -1970,12 +2062,21 @@ int32_t lang_debug_mem(uint32_t addr) {
     int s;
     for (s = 0; s < LANG_VM_SLOTS; ++s) {
         if (slots[s].used && slots[s].debug_on) {
-            const uint8_t *m = slots[s].vm.memory;
-            if (!m || (uint64_t)addr + 4u > slots[s].vm.mem_size)
+            int prev = proc_current();
+            int32_t v;
+            const uint8_t *m;
+            if (slots[s].user_ram)
+                proc_switch(slots[s].proc_id);
+            m = slots[s].vm.memory;
+            if (!m || (uint64_t)addr + 4u > slots[s].vm.mem_size) {
+                proc_switch(prev);
                 return 0;
-            return (int32_t)((uint32_t)m[addr] | ((uint32_t)m[addr + 1] << 8) |
-                             ((uint32_t)m[addr + 2] << 16) |
-                             ((uint32_t)m[addr + 3] << 24));
+            }
+            v = (int32_t)((uint32_t)m[addr] | ((uint32_t)m[addr + 1] << 8) |
+                          ((uint32_t)m[addr + 2] << 16) |
+                          ((uint32_t)m[addr + 3] << 24));
+            proc_switch(prev);
+            return v;
         }
     }
     return 0;
