@@ -1,0 +1,4 @@
+{
+  "name": "ChrisOS",
+  "install": "bash .cursor/install.sh"
+}
