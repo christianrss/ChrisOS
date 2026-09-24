@@ -90,7 +90,9 @@ void syscall_dispatch(struct irq_frame *frame) {
     }
 
     if (nr == SYS_WRITE) {
-        uint8_t buf[80];
+        /* +1 so the NUL terminator at buf[n] is in bounds for the maximum
+         * accepted length (n == 80); previously buf[80] overflowed the stack. */
+        uint8_t buf[81];
         uint32_t n = (uint32_t)frame->rdx;
 
         if (frame->rdi != 1 || n > 80u) {
