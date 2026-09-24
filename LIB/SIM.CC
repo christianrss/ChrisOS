@@ -27,6 +27,7 @@ void sim_move(float *x, float *y, float *z, float *vx, float *vy, float *vz) {
     float nx;
     float ny;
     float nz;
+    int step;
     *vy = *vy - 0.045;
     nx = *x + *vx;
     if (sim_blocked(nx, *y, *z))
@@ -50,6 +51,12 @@ void sim_move(float *x, float *y, float *z, float *vx, float *vy, float *vz) {
     if (*y < 1.0) {
         *y = 1.0;
         *vy = 0.0;
+    }
+    step = 0;
+    while (step < 12 && sim_blocked(*x, *y, *z)) {
+        *y = *y + 1.0;
+        *vy = 0.0;
+        step = step + 1;
     }
     *vx = *vx * 0.72;
     *vz = *vz * 0.72;

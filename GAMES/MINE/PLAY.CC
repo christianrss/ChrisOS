@@ -224,19 +224,15 @@ void play_step() {
     my = mouse_y();
     dx = mx - g_pmx;
     dy = my - g_pmy;
-    if (dx > 48)
-        dx = 48;
-    if (dx < -48)
-        dx = -48;
-    if (dy > 48)
-        dy = 48;
-    if (dy < -48)
-        dy = -48;
+    if (dx > 60 || dx < -60)
+        dx = 0;
+    if (dy > 60 || dy < -60)
+        dy = 0;
     if (g_look && g_mode == 1) {
-        g_act[0].yaw = g_act[0].yaw + (float)dx * 0.15;
-        g_act[0].pitch = g_act[0].pitch + (float)dy * 0.12;
+        g_act[0].yaw = g_act[0].yaw + (float)dx * 0.10;
+        g_act[0].pitch = g_act[0].pitch + (float)dy * 0.10;
     }
-    if (mx < 12 || mx > 788 || dx == 0) {
+    if (mx < 12 || mx > 788) {
         if (key(75))
             g_act[0].yaw = g_act[0].yaw - 2.0;
         if (key(77))
@@ -248,10 +244,10 @@ void play_step() {
         if (key(80))
             g_act[0].pitch = g_act[0].pitch + 1.5;
     }
-    if (g_act[0].pitch > 70.0)
-        g_act[0].pitch = 70.0;
-    if (g_act[0].pitch < -70.0)
-        g_act[0].pitch = -70.0;
+    if (g_act[0].pitch > 50.0)
+        g_act[0].pitch = 50.0;
+    if (g_act[0].pitch < -50.0)
+        g_act[0].pitch = -50.0;
     g_pmx = mx;
     g_pmy = my;
     g_look = 1;

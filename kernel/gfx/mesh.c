@@ -147,7 +147,6 @@ int mesh_draw_f(ClvmVm *vm, int32_t addr, int32_t vertices, int32_t triangles,
         return -1;
     math3d_set_screen(w, h);
     zbuf_set_size(w, h);
-    zbuf_clear();
     math3d_view(&view);
     mat4f_rotate_y(&rot, yaw);
     mat4f_translate(&trans, ox, oy, oz);
