@@ -111,7 +111,9 @@ test-qemu-install: $(ISO) $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(BUILD_DIR)/install-src.img EFI/BOOT/BOOTX64.EFI $(LIMINE_DIR)/BOOTX64.EFI
 	$(HOST_BIN)/cfs_put_file $(BUILD_DIR)/install-src.img BOOT/LIMINE.CFG iso_root/boot/limine/limine.conf
 	printf 'install\n' > $(BUILD_DIR)/install-auto.txt
+	printf 'ahci\n' > $(BUILD_DIR)/install-target-name.txt
 	$(HOST_BIN)/cfs_put_file $(BUILD_DIR)/install-src.img BOOT/INSTALL.AUTO $(BUILD_DIR)/install-auto.txt
+	$(HOST_BIN)/cfs_put_file $(BUILD_DIR)/install-src.img BOOT/INSTALL.TARGET $(BUILD_DIR)/install-target-name.txt
 	dd if=/dev/zero of=$(BUILD_DIR)/install-target.img bs=1M count=560 status=none
 	rm -f $(BUILD_DIR)/qemu-test.txt
 	$(QEMU_GATE) --timeout 300 \

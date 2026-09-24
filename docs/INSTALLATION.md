@@ -39,11 +39,18 @@ next boot does not install again.
 
 ## Selection
 
-`install_disk(index)` refuses an index `bd_installable` rejects.
-`install_auto` scans from index 0 and installs the first installable
-disk. There is no prompt, no serial number, and no dry run. The RAM
-selftest disk is a fixed size derived from `STOR_DISK_SECTORS`, and it is
-skipped when `BOOT/INSTALL.AUTO` is present.
+`install_disk(index)` refuses an index `bd_installable` rejects. That
+already excludes the boot disk, the root disk, RAM disks, and partitions.
+
+`install_auto` runs only when `BOOT/INSTALL.AUTO` exists. It reads
+`BOOT/INSTALL.TARGET` and installs the installable disk whose name
+matches that file. A missing name prints the disk list and does not
+write. Two installable disks with the same name are refused. `BOOT/INSTALL.DRY`
+prints the selection and returns without writing.
+
+The QEMU install gate writes `BOOT/INSTALL.TARGET` containing `ahci`.
+Disks still have no model or serial string in `BlockDevice`. The name
+and the sector count are what the log shows.
 
 ## Not installed
 
