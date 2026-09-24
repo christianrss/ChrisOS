@@ -504,6 +504,8 @@ static const Builtin builtins[] = {
     {"fb_blit", 72, 3, 0, 0}, {"setpal", 73, 1, 0, 0},
     {"mouse_x", 80, 0, 1, 0}, {"mouse_y", 81, 0, 1, 0},
     {"mouse_btn", 82, 0, 1, 0}, {"ev_key", 83, 0, 1, 0},
+    {"mouse_dx", 240, 0, 1, 0}, {"mouse_dy", 241, 0, 1, 0},
+    {"mouse_cap", 242, 0, 1, 0}, {"mouse_rel", 243, 0, 1, 0},
     {"ev_text", 84, 0, 1, 0}, {"fillrgb", 85, 5, 0, 0},
     {"text", 86, 4, 0, 0}, {"glyph", 87, 4, 0, 0},
     {"surf_place", 88, 4, 0, 0}, {"surf_move", 89, 2, 0, 0},

@@ -241,27 +241,33 @@ void play_step() {
         g_pmx = mx;
         g_pmy = my;
     }
-    dx = mx - g_pmx;
-    dy = my - g_pmy;
+    if (g_mode == 1)
+        mouse_cap();
+    if (key(1))
+        mouse_rel();
+    /* Positive pitch looks down (math3d f.y = -sin(pitch)).
+     * mouse_dy is screen-space, positive down, so pitch increases. */
+    dx = mouse_dx();
+    dy = mouse_dy();
     if (dx > 60 || dx < -60)
         dx = 0;
     if (dy > 60 || dy < -60)
         dy = 0;
     if (g_look && g_mode == 1) {
         g_act[0].yaw = g_act[0].yaw + (float)dx * 0.10;
-        g_act[0].pitch = g_act[0].pitch - (float)dy * 0.10;
+        g_act[0].pitch = g_act[0].pitch + (float)dy * 0.10;
     }
     if (mx < 12 || mx > 788) {
-        if (key(75))
+        if (key(203))
             g_act[0].yaw = g_act[0].yaw - 2.0;
-        if (key(77))
+        if (key(205))
             g_act[0].yaw = g_act[0].yaw + 2.0;
     }
     if (my < 12 || my > 588) {
-        if (key(72))
-            g_act[0].pitch = g_act[0].pitch + 1.5;
-        if (key(80))
+        if (key(200))
             g_act[0].pitch = g_act[0].pitch - 1.5;
+        if (key(208))
+            g_act[0].pitch = g_act[0].pitch + 1.5;
     }
     if (g_act[0].pitch > 50.0)
         g_act[0].pitch = 50.0;
