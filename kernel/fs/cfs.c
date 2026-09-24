@@ -403,9 +403,16 @@ static int bitmap_get(Cfs *fs, uint32_t index, int *used) {
 }
 
 static int block_alloc(Cfs *fs, uint32_t *lba) {
-    uint32_t i;
+    uint32_t n;
+    uint32_t start;
     int used, rc;
-    for (i = 0; i < CFS_DATA_SECTORS; i++) {
+    start = fs->alloc_hint;
+    if (start >= CFS_DATA_SECTORS)
+        start = 0u;
+    for (n = 0; n < CFS_DATA_SECTORS; n++) {
+        uint32_t i = start + n;
+        if (i >= CFS_DATA_SECTORS)
+            i -= CFS_DATA_SECTORS;
         rc = bitmap_get(fs, i, &used);
         if (rc != CFS_OK) return rc;
         if (!used) {
@@ -417,6 +424,7 @@ static int block_alloc(Cfs *fs, uint32_t *lba) {
                 (void)bitmap_set(fs, i, 0);
                 return rc;
             }
+            fs->alloc_hint = i + 1u;
             *lba = CFS_DATA_LBA + i;
             return CFS_OK;
         }
@@ -425,8 +433,12 @@ static int block_alloc(Cfs *fs, uint32_t *lba) {
 }
 
 static int block_free(Cfs *fs, uint32_t lba) {
+    uint32_t index;
     if (!data_lba_valid(lba)) return CFS_ECORRUPT;
-    return bitmap_set(fs, lba - CFS_DATA_LBA, 0);
+    index = lba - CFS_DATA_LBA;
+    if (index < fs->alloc_hint)
+        fs->alloc_hint = index;
+    return bitmap_set(fs, index, 0);
 }
 
 static int ptr_block_get(Cfs *fs, uint32_t lba, uint32_t index, uint32_t *out) {

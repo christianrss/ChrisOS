@@ -108,6 +108,11 @@ static int esp_put_file(BlockDevice *disk, uint32_t esp_lba, uint32_t data,
             g_chunk[s] = 0;
         if (esp_put_cluster(disk, esp_lba, data, *cluster, g_chunk) != 0)
             return -1;
+        if (((*cluster) & 255u) == 0u) {
+            serial_puts("install esp off ");
+            serial_write_u64(off);
+            serial_puts("\n");
+        }
         g_fat[*cluster] =
             (off + 2048u >= size) ? 0xFFFFu : (uint16_t)(*cluster + 1u);
         *cluster += 1u;
@@ -471,6 +476,9 @@ static int install_device(BlockDevice *disk, const char *label, int copy_os) {
             return -1;
         }
         serial_puts("install tree copied\n");
+        /* The marker is an instruction to this boot, not part of the
+         * installed system. Leaving it made the next boot try again. */
+        (void)cfs_unlink(&g_fs, "BOOT/INSTALL.AUTO");
     } else {
         cfs_mkdir(&g_fs, "BOOT");
         cfs_mkdir(&g_fs, "INSTALL");

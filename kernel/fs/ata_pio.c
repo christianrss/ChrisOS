@@ -47,16 +47,19 @@ static void ata_program(const AtaPio *a, uint32_t lba,
 static void ata_soft_reset_port(uint16_t ctrl);
 static int ata_wait_not_busy(const AtaPio *a);
 
-static int ata_dma_wait(uint16_t bm) {
+static int ata_dma_wait(const AtaPio *a) {
     uint32_t i;
-    int saw_idle = 0;
+    uint16_t bm = a->bm;
+    /* The status bit is cleared before the engine starts. A transfer can
+     * finish before the first poll, which is common when other CPUs keep
+     * the BSP off the port. Requiring the bit to be observed low first
+     * turned every one of those completions into a full timeout. */
     for (i = 0; i < 200000u; ++i) {
         uint8_t st = inb((uint16_t)(bm + 2u));
-        /* A stuck interrupt bit must not count as completion. The bit has
-           to fall, then rise, after the command is started. */
-        if ((st & 0x04u) == 0 && !g_ide_irq)
-            saw_idle = 1;
-        if (saw_idle && (g_ide_irq || (st & 0x04u))) {
+        uint8_t drv = inb((uint16_t)(a->io + ATA_REG_STATUS));
+        if (g_ide_irq || (st & 0x04u)) {
+            if (drv & ATA_SR_BSY)
+                continue;
             if (st & 0x02u)
                 return BD_EIO;
             return BD_OK;
@@ -132,7 +135,7 @@ static int ata_dma_xfer(AtaPio *a, uint32_t lba, uint8_t count,
     g_ide_irq = 0;
     ata_program(a, lba, count, write ? ATA_CMD_WRITE_DMA : ATA_CMD_READ_DMA);
     outb((uint16_t)(a->bm + 0u), (uint8_t)(cmd | 0x01u));
-    rc = ata_dma_wait(a->bm);
+    rc = ata_dma_wait(a);
     outb((uint16_t)(a->bm + 0u), 0);
     if (rc == BD_OK && !write) {
         uint32_t i;

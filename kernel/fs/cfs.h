@@ -70,6 +70,10 @@ typedef struct Cfs {
     Jnl jnl;
     uint8_t jnl_active;
     uint8_t jnl_data;
+    /* Next bitmap index to try. block_alloc used to rescan from zero, so
+     * copying a multi-megabyte file was quadratic and the install gate
+     * never left the BOOT tree. */
+    uint32_t alloc_hint;
 } Cfs;
 
 typedef int (*CfsListFn)(void *ctx, const char *name,

@@ -98,6 +98,7 @@ void kstart(void) {
     lang_make_cc();
 
     __asm__ volatile ("sti");
+    smp_release_ap_irqs();
     desktop_init();
     desktop_boot_apps();
     gfx_present();

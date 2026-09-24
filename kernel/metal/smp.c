@@ -112,8 +112,8 @@ static void ap_entry(struct limine_mp_info *info) {
         g_lapic_known[index] = 1u;
     }
     __sync_fetch_and_add(&cpu_online_count, 1u);
-    apic_enable_local();
-    __asm__ volatile ("sti");
+    /* IF stays clear until the BSP finishes install. Enabling the LAPIC and
+     * unmasking an AP during the ATA copy kept that copy from finishing. */
     job_worker_forever(index);
 }
 
