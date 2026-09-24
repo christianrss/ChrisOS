@@ -7,8 +7,8 @@ int g_buf;
 int g_cap;
 int g_len;
 int g_cur;
-char g_path[96];
-char g_dir[96];
+char g_path[512];
+char g_dir[512];
 char g_err[160];
 char g_ent[64];
 char g_show[80];
@@ -35,8 +35,8 @@ int g_hscroll;
 int g_tscroll;
 int g_thscroll;
 int g_want_quit;
-int g_line_starts[2048];
-int g_line_states[2048];
+int g_line_starts[8192];
+int g_line_states[8192];
 int g_line_count;
 int g_line_index_dirty;
 int g_kw_len;
@@ -83,12 +83,17 @@ void buf_init() {
   g_err_line = 0;
 }
 
-void str_set(int dst, int src) {
+void copy_cap(int dst, int src, int cap) {
   int i;
+  int c;
   i = 0;
-  while (loadb(src + i) != 0) {
-    storeb(dst + i, loadb(src + i));
-    i = i + 1;
+  c = 1;
+  while (i < cap - 1 && c != 0) {
+    c = loadb(src + i);
+    if (c != 0) {
+      storeb(dst + i, c);
+      i = i + 1;
+    }
   }
   storeb(dst + i, 0);
 }
@@ -107,32 +112,16 @@ int name_len(int s) {
 }
 
 void status_set(int s) {
-  str_set(g_status, s);
+  copy_cap(g_status, s, 80);
   g_view_gen = g_view_gen + 1;
 }
 
 void path_set(int p) {
-  int i;
-  i = 0;
-  while (loadb(p + i) != 0) {
-    if (i < 95) {
-      storeb(g_path + i, loadb(p + i));
-    }
-    i = i + 1;
-  }
-  storeb(g_path + i, 0);
+  copy_cap(g_path, p, 512);
 }
 
 void dir_set(int p) {
-  int i;
-  i = 0;
-  while (loadb(p + i) != 0) {
-    if (i < 95) {
-      storeb(g_dir + i, loadb(p + i));
-    }
-    i = i + 1;
-  }
-  storeb(g_dir + i, 0);
+  copy_cap(g_dir, p, 512);
   g_scroll = 0;
   g_hscroll = 0;
 }
@@ -220,23 +209,34 @@ int is_textish(int s) {
   return 0;
 }
 
-void join_path(int dst, int dir, int name) {
+void join_path(int dst, int dir, int name, int cap) {
   int i;
   int j;
+  int c;
   i = 0;
-  while (loadb(dir + i) != 0) {
-    storeb(dst + i, loadb(dir + i));
-    i = i + 1;
+  c = 1;
+  while (i < cap - 1 && c != 0) {
+    c = loadb(dir + i);
+    if (c != 0) {
+      storeb(dst + i, c);
+      i = i + 1;
+    }
   }
   if (i > 0) {
-    storeb(dst + i, 47);
-    i = i + 1;
+    if (i < cap - 1) {
+      storeb(dst + i, 47);
+      i = i + 1;
+    }
   }
   j = 0;
-  while (loadb(name + j) != 0) {
-    storeb(dst + i, loadb(name + j));
-    i = i + 1;
-    j = j + 1;
+  c = 1;
+  while (i < cap - 1 && c != 0) {
+    c = loadb(name + j);
+    if (c != 0) {
+      storeb(dst + i, c);
+      i = i + 1;
+      j = j + 1;
+    }
   }
   storeb(dst + i, 0);
 }
@@ -554,7 +554,7 @@ void do_make() {
 
 void do_go() {
   int st;
-  char out[96];
+  char out[512];
   int i;
   int dot;
   if (g_dirty) {
@@ -572,14 +572,22 @@ void do_go() {
   }
   i = 0;
   dot = -1;
-  while (loadb(g_path + i) != 0) {
+  while (i < 511) {
+    if (loadb(g_path + i) == 0) {
+      break;
+    }
     storeb(out + i, loadb(g_path + i));
     if (loadb(g_path + i) == 46) {
       dot = i;
     }
     i = i + 1;
   }
+  storeb(out + i, 0);
   if (dot < 0) {
+    status_set("no ext");
+    return;
+  }
+  if (dot + 4 >= 512) {
     status_set("no ext");
     return;
   }
@@ -656,8 +664,8 @@ void browse_saveas() {
 }
 
 void browse_pick(int name) {
-  char full[160];
-  join_path(full, g_dir, name);
+  char full[512];
+  join_path(full, g_dir, name, 512);
   if (g_saveas == 0) {
     if (is_textish(name)) {
       path_set(full);
@@ -746,7 +754,7 @@ void rebuild_line_index() {
     if (c == 10) {
       in_str = 0;
       in_lc = 0;
-      if (g_line_count < 2048) {
+      if (g_line_count < 8192) {
         g_line_starts[g_line_count] = i + 1;
         g_line_states[g_line_count] = in_blk * 2;
         g_line_count = g_line_count + 1;
@@ -1525,7 +1533,7 @@ void run_search_cmd() {
     g_mode = 0;
     return;
   }
-  str_set(g_find, g_cmd);
+  copy_cap(g_find, g_cmd, 64);
   g_mode = 0;
   find_next();
 }

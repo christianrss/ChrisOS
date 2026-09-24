@@ -567,25 +567,71 @@ static int same(const char *a, const char *b) {
     return a[i] == 0 && b[i] == 0;
 }
 
-static int fail(Compiler *c, int line, int col, const char *m) {
+static void line_origin(Compiler *c, int line, int *file_id, int *orig) {
     int i;
-    int file_id = 0;
-    int orig = line;
+    int fid = 0;
+    int o = line;
     for (i = 0; i < c->nmap; ++i) {
         if (c->map[i].unit_line <= line) {
-            file_id = c->map[i].file_id;
-            orig = c->map[i].orig_line + (line - c->map[i].unit_line);
+            fid = c->map[i].file_id;
+            o = c->map[i].orig_line + (line - c->map[i].unit_line);
         }
     }
-    c->result->diag.line = orig;
-    c->result->diag.column = col;
-    if (file_id >= 0 && file_id < c->nfiles) {
-        text(c->result->diag.file, sizeof(c->result->diag.file),
-             c->files[file_id]);
-    } else {
-        c->result->diag.file[0] = 0;
+    if (file_id) {
+        *file_id = fid;
     }
-    text(c->result->diag.message, sizeof(c->result->diag.message), m);
+    if (orig) {
+        *orig = o;
+    }
+}
+
+int chrisc_diag_push(ChrisResult *result, int severity, int code,
+                     const char *file, int line, int column, int end_line,
+                     int end_column, const char *message) {
+    ChrisDiagnostic *d;
+    if (!result || result->diag_n < 0 || result->diag_n >= CHRIS_DIAG_MAX) {
+        return 0;
+    }
+    d = &result->diags[result->diag_n++];
+    d->severity = severity;
+    d->code = code;
+    d->line = line;
+    d->column = column;
+    d->end_line = end_line;
+    d->end_column = end_column;
+    text(d->file, sizeof(d->file), file ? file : "");
+    text(d->message, sizeof(d->message), message ? message : "");
+    return 1;
+}
+
+static void clear_diag(ChrisResult *result) {
+    result->diag.line = result->diag.column = 0;
+    result->diag.file[0] = 0;
+    result->diag.message[0] = 0;
+    result->diag_n = 0;
+    result->nfiles = 0;
+}
+
+static void set_diag(ChrisResult *result, int line, int col, const char *file,
+                     const char *message) {
+    result->diag.line = line;
+    result->diag.column = col;
+    text(result->diag.file, sizeof(result->diag.file), file ? file : "");
+    text(result->diag.message, sizeof(result->diag.message),
+         message ? message : "");
+    chrisc_diag_push(result, CHRIS_SEV_ERROR, 0, file, line, col, line, col,
+                     message);
+}
+
+static int fail(Compiler *c, int line, int col, const char *m) {
+    int file_id = 0;
+    int orig = line;
+    const char *file = "";
+    line_origin(c, line, &file_id, &orig);
+    if (file_id >= 0 && file_id < c->nfiles) {
+        file = c->files[file_id];
+    }
+    set_diag(c->result, orig, col, file, m);
     return 0;
 }
 
@@ -8742,9 +8788,15 @@ static int gen_stmt(Compiler *c, int id) {
 
     if (c->result && c->result->map_n < CHRIS_MAP_MAX) {
         int mi = c->result->map_n++;
+        int fid = 0;
+        int orig = n->line;
+        line_origin(c, n->line, &fid, &orig);
+        if (fid < 0) {
+            fid = 0;
+        }
         c->result->map[mi].pc = (uint32_t)c->pc;
-        c->result->map[mi].line = (uint16_t)n->line;
-        c->result->map[mi].file_id = 0;
+        c->result->map[mi].line = (uint16_t)orig;
+        c->result->map[mi].file_id = (uint16_t)fid;
     }
 
     if (n->kind == N_BLOCK) {
@@ -9346,6 +9398,12 @@ static int chrisc_emit(Compiler *c, ChrisResult *result) {
     }
     result->code_size = c->pc;
     result->variables = (unsigned)c->nsyms;
+    result->nfiles = 0;
+    for (i = 0; i < c->nfiles && result->nfiles < CHRIS_FILE_MAX; ++i) {
+        text(result->file_path[result->nfiles], sizeof(result->file_path[0]),
+             c->files[i]);
+        result->nfiles++;
+    }
     result->abi_major = c->abi_major ? c->abi_major : 1;
     result->abi_minor = c->abi_minor;
     result->nexports = 0;
@@ -9423,9 +9481,7 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
     result->entry = 0;
     result->variables = 0;
     result->map_n = 0;
-    result->diag.line = result->diag.column = 0;
-    result->diag.file[0] = 0;
-    result->diag.message[0] = 0;
+    clear_diag(result);
     {
         size_t ulen = 0;
         int unit_line = 1;
@@ -9490,12 +9546,9 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
             progress(progress_user, 0, 1, paths[0]);
         n = read(user, paths[0], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
-            text(result->diag.file, sizeof(result->diag.file),
-                 paths[0] ? paths[0] : "");
-            result->diag.line = 1;
-            result->diag.column = 1;
-            text(result->diag.message, sizeof(result->diag.message),
-                 "cannot read source file");
+            result->diag_n = 0;
+            set_diag(result, 1, 1, paths[0] ? paths[0] : "",
+                     "cannot read source file");
             return 0;
         }
         g_tu[n] = 0;
@@ -9546,9 +9599,7 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
     result->entry = 0;
     result->variables = 0;
     result->map_n = 0;
-    result->diag.line = result->diag.column = 0;
-    result->diag.file[0] = 0;
-    result->diag.message[0] = 0;
+    clear_diag(result);
     for (i = 0; i < npaths; ++i) {
         int n;
         size_t ulen = 0;
@@ -9560,12 +9611,8 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
             progress(progress_user, i, npaths, paths[i]);
         n = read(user, paths[i], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
-            text(result->diag.file, sizeof(result->diag.file),
-                 paths[i] ? paths[i] : "");
-            result->diag.line = 1;
-            result->diag.column = 1;
-            text(result->diag.message, sizeof(result->diag.message),
-                 "cannot read source file");
+            set_diag(result, 1, 1, paths[i] ? paths[i] : "",
+                     "cannot read source file");
             return 0;
         }
         g_tu[n] = 0;

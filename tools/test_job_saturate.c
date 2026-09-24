@@ -5,6 +5,7 @@
 volatile uint32_t cpu_online_count = 1u;
 
 void mm_tlb_poll(void) {}
+void apic_enable_local(void) {}
 
 void panic(const char *message) {
     fprintf(stderr, "PANIC: %s\n", message ? message : "");

@@ -64,6 +64,8 @@ void lang_splash_frame(uint32_t now);
 void lang_splash_stop(void);
 void lang_debug_enable(int on);
 void lang_debug_step(void);
+void lang_debug_step_over(void);
+void lang_debug_step_out(void);
 void lang_debug_continue(void);
 int lang_debug_paused(void);
 uint32_t lang_debug_pc(void);
