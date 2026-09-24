@@ -94,6 +94,8 @@ docs/*
 # Stability campaign deliverables are tracked (see prompt); other docs are local.
 !docs/STABILITY_AUDIT.md
 !docs/STABILITY_REPORT.md
+!docs/LOCKING.md
+!docs/RESOURCE_OWNERSHIP.md
 backup/
 tools/gen_fase*.py
 tools/write_learn_book.py

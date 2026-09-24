@@ -1,7 +1,10 @@
 # ChrisOS Stability Audit
 
-Living tracker for the stabilization campaign. Baseline HEAD of `feat/os2`:
-`2550b9cab06c3ee2e81a292691031935ec5613df` (confirmed current; no later commits).
+Living tracker for the stabilization campaign. Previously analyzed HEAD
+`2550b9cab06c3ee2e81a292691031935ec5613df`. Confirmed `feat/os2` HEAD before
+this branch: `92ec452178d7e3e7ae34546504a16e3f565e0c05` (phase-1 squash of the
+ChrisC float-pointer fixes and SYS_WRITE, one commit after `2550b9c`).
+Work continues on `cursor/stability-campaign-7c6f`.
 
 Severity: **P0** memory/FS corruption, isolation break, arbitrary execution,
 unpredictable panic, or broadly wrong behavior. **P1** core feature broken or
@@ -99,30 +102,151 @@ Status: `FIXED` (with regression test), `OPEN` (confirmed, not yet fixed),
 - **Verification:** By inspection + reasoning; kernel rebuilds clean under
   `-Wall -Wextra -Werror`. Automated regression requires a QEMU user-process
   write test (see QEMU-GATES OPEN) which is not yet in the gates.
-- **Residual risk:** Broader `copy_from_user`/`copy_to_user` per-page
-  validation and overflow audit remain OPEN (see USERCOPY-01).
+- **Residual risk:** No automated SYS_WRITE regression (SYS-01-TEST). User
+  copy itself is covered by USERCOPY-01.
 
 ---
 
-## OPEN (confirmed in code, not yet fixed)
+### PMM-HEAP-01 — physical and heap allocators unsynchronized (P0)
 
-These were confirmed by code inspection during the audit and are documented so
-they are not lost. They are **not** fixed in this pass. Ordered roughly by the
-campaign phases.
+- **Subsystem:** PMM, heap, SMP.
+- **Symptom:** Two CPUs could observe the same free bit and receive the same physical page, or split the same heap block.
+- **Root cause:** `pmm_alloc` / `kmalloc` mutated the bitmap, cursor, and arena list with no lock. `pmm_foreach_free_run` callbacks re-enter the allocator.
+- **Fix:** IRQ-safe recursive PMM spinlock (same CPU may re-enter). Heap lock is non-recursive and is taken before PMM when the heap grows. Lock order is heap → PMM; PMM never takes the heap lock.
+- **Regression test:** `host-pmm-heap-smp-test` (4 threads, per-CPU signatures, duplicate check, contiguous alloc, cross-CPU free, ASan/UBSan via `host-sanitize`).
+- **Residual risk:** Host stress is not the kernel's interrupt path. A double-free still panics by design and is not an automated "detect and return" test.
 
-| ID | Sev | Subsystem | Confirmed location | Summary |
-| --- | --- | --- | --- | --- |
-| KTHREAD-01 | P0 | kthread/SMP | `kernel/metal/kthread.c:20-23` (`g_cur`, `g_run`, `g_saved_rsp` globals) | Global current-thread / saved-RSP shared across CPUs; two CPUs in `kt_run()` overwrite each other's context. Needs per-CPU context. |
-| JIT-01 | P0 | JIT context | `compiler/jit/jit.c:19-20` (`g_jit_vm`, `g_jit_user` globals) | JIT syscall trampoline context is global; one VM can clobber another's. Needs per-execution/CPU/VM context. |
-| JIT-02 | P0 | JIT lifetime | `compiler/jit/jit_compile.c` (global `g_nat`/`g_psite`/`g_ptgt`), `jit_free` | Executable mappings must be unmapped + TLB-invalidated before physical pages return to the PMM; compilation state is global. |
-| CLVM-ISO-01 | P0 | CLVM sync objects | `kernel/lang/clvm_sys.c:96,109` (`th_wake_mutex`/`th_wake_cond` keyed on guest addr only) | Two apps with the same guest offset share mutex/cond identity; must key by `(VM/slot, guest_address)`. |
-| USERCOPY-01 | P0 | syscalls/user mem | `kernel/metal/syscall.c` `copy_from_user`/`copy_to_user` | Needs per-address-space page-presence validation and `uaddr + n` overflow checks. |
-| ELF-01 | P0 | ELF loader | `kernel/metal/elf.c` (`g_elf_pid`, partial rollback) | Malformed/partial loads leave mappings/CR3; needs transactional cleanup + overflow-safe validation. |
-| PMM-HEAP-01 | P0 | PMM/heap/SMP | `kernel/metal/pmm.c`, `heap.c` | Allocator concurrency correctness under multiple CPUs must be audited/locked; needs multicore stress test. |
-| FD-OWN-01 | P1 | native/CLVM FDs | `g_ufile[]`, `g_fds[]` | FD tables lack per-process/VM ownership validation. |
-| INPUT-FOCUS-01 | P1 | input | `input_key_down()` global `g_keys[]`; extended-scancode `E0` stripped | Background apps still see keys; extended keys collide with keypad; needs focus ownership + distinct extended representation. |
-| GFX3D-CTX-01 | P1 | 3D graphics | `math3d`/`zbuf`/`shade`/`voxel` globals | Multiple 3D apps contaminate shared camera/zbuf/texture state; needs per-app `Gfx3DContext` or an enforced single-context invariant. |
-| MINE-PITCH-01 | P1 | camera convention | `kernel/gfx/math3d.c` (`f.y = -sp`) vs `PLAY.CC` dy inversion | Pitch convention inconsistent across mouse/arrows/`cam()`/renderers; pick one and apply everywhere. |
-| GATES-01 | P2 | build/test gates | `makefile` | Orphan `test*` targets exist outside gates; QEMU gates lack a 1/4-CPU matrix and treat `-timeout` non-zero exit as success. Needs a marker-scanning QEMU wrapper. |
+### KTHREAD-01 — one global saved RSP for every CPU (P0)
 
-See `docs/STABILITY_REPORT.md` for the campaign report and scope.
+- **Subsystem:** kthread.
+- **Symptom:** Two CPUs inside `kt_run` could restore each other's stack.
+- **Root cause:** `g_cur`, `g_run`, and `g_saved_rsp` were process-wide globals.
+- **Fix:** Current/run pointers are per CPU (`g_cur_cpu`, `g_run_cpu`). Saved RSP lives on the thread. Slot allocation takes `g_slot_lock`. `kmalloc` failure returns -1 and does not run on the caller stack. Join drains the job queue only when no AP is online; with APs it waits.
+- **Regression test:** `host-kthread-smp-test` (4 worker CPUs, 24 threads, stack canary, recursion, TLS).
+- **Residual risk:** Host workers are pthreads calling `job_worker_once`. Kernel AP startup is not executed here (no QEMU).
+
+### JOB-01 — a full queue panicked the SMP selftest (P1)
+
+- **Subsystem:** job queue.
+- **Root cause:** `smp_job_selftest` treated one failed `job_submit` as fatal even when the queue was only temporarily full.
+- **Fix:** The selftest retries with `job_worker_once`. A full queue still returns 0 to the caller.
+- **Regression test:** `host-job-saturate-test`.
+
+### MM-01 — no unmap, user page tables leaked, TLB was local-only (P0)
+
+- **Subsystem:** virtual memory.
+- **Root cause:** Kernel mappings are shared (high half copied into every PML4). `invlpg` on the writer does not refresh other CPUs. Process teardown freed neither intermediate user tables nor the PML4. ELF/user frames were not unmapped before `pmm_free`.
+- **Fix:** `unmap_4k`, `mm_unmap_cr3`, `mm_translate`, `mm_free_user_space`. `mm_tlb_shootdown` waits until every online CPU acks via `mm_tlb_poll` (workers and the desktop idle loop). User processes stay BSP-only: `proc_switch` panics off the BSP.
+- **Regression test:** freestanding compile of `mm.c` / `proc.c`. No QEMU shootdown run in this environment.
+- **Residual risk:** A CPU that stops polling (long job without `mm_tlb_poll`) trips `tlb shootdown timeout`. JIT compile scratch stays global and is serialized by `g_jit_compile_lock` instead of a per-compile context.
+
+### ELF-01 — loader left a live process and could map into the kernel (P0)
+
+- **Subsystem:** ELF loader.
+- **Root cause:** `g_elf_pid` plus `elf_zero_user` falling back to `map_4k` on the kernel CR3. Errors returned without `proc_destroy` or restoring the previous process. `filesz`/`vaddr`/`phoff` used wrapping additions. Pages were not recorded, so destroy could not free them.
+- **Fix:** Validate every segment before `proc_create` (overflow-safe spans, `filesz <= memsz`, non-zero `memsz`, W^X rejected, overlap, entry inside an executable segment, load window). Map with `proc_map_owned`. On failure, destroy the process and switch back. `mm_map_cr3` returns an error if a page-table page cannot be allocated.
+- **Regression test:** `host-elf-malformed-test` (truncated header, bad magic, phoff/vaddr/offset overflow, filesz>memsz, zero memsz, outside window, overlap, unsupported PH, W+X, entry not executable, mid-load OOM accounting, one successful load).
+- **Residual risk:** The host stub does not model real page tables. More than 32 program headers is rejected.
+
+### USERCOPY-01 — user copy trusted a virtual window (P0)
+
+- **Subsystem:** syscalls.
+- **Fix:** `copy_from_user` / `copy_to_user` reject a wrapping length, reject addresses at or above the lower non-canonical half, and copy through `mm_translate` of the current process CR3 plus the HHDM. Writes require a user-writable leaf. Native `g_ufile` entries store `owner` and are closed from `proc_destroy`.
+- **Residual risk:** No dedicated host test. `SYS_WRITE` overflow (SYS-01) is still inspection-only. Syscalls from an AP return an error (BSP-only invariant).
+
+### FD-OWN-01 — file descriptors were a global table (P1)
+
+- **Subsystem:** native FDs and CLVM FDs.
+- **Fix:** Native ops check `owner == proc_current()`. CLVM read/write/close check `g_fds[fd].slot` against the calling VM. `fd_free` returns -1 when a dirty flush does not write the full size, and `fclose` pushes that result.
+- **Residual risk:** No two-app host test of the CLVM FD table (the check is in `clvm_sys.c`). Native FD ownership has no host harness.
+
+### CLVM-ISO-01 — mutex identity was a guest address (P0)
+
+- **Subsystem:** CLVM threads.
+- **Fix:** `clvm_sync_same(slot, addr)` in `kernel/lang/clvm_sync.h`. Wake helpers pass the calling slot.
+- **Regression test:** `host-clvm-sync-test`.
+
+### JIT-01 / JIT-02 — trampoline context and executable lifetime (P0)
+
+- **Subsystem:** JIT.
+- **Fix:** Syscall trampoline context is `g_jit_ctx[smp_current_cpu()]`. `jit_compile_image` holds `g_jit_compile_lock` around the global scratch buffers. `jit_free` unmaps, shootdowns, returns the VA to a freelist, then `pmm_free_contig`. `jit_seal` maps without per-page shootdown and shootdowns once.
+- **Residual risk:** Compile scratch is still global (serialized, not per-compile). The VA freelist reuses only equal sizes. No new interpreter-vs-JIT differential stress beyond the existing host JIT tests. `host-jit-test` passed after the link change; `host-jit-vm-test` was not re-run in this session.
+
+### INPUT-FOCUS-01 — global keys and E0 stripped (P1)
+
+- **Subsystem:** input, CLVM `key()`.
+- **Root cause:** Make codes were stored after dropping the E0 prefix, so arrows collided with the keypad. `key()` read `g_keys` with no focus check. Absolute tablet position was the only pointer stream.
+- **Fix:** Extended makes use index `128+code` (`INPUT_SCAN_UP/LEFT/RIGHT/DOWN`). `key()`, `mouse_x/y`, and buttons return empty when the slot's task exists and is not focused. Capture is per task; repeating `mouse_cap` for the same owner does not clear deltas. ESC releases capture. Closing a slot releases it. Deltas come from PS/2 packets or from successive absolute positions only while a capture is held. `mouse_dx`/`mouse_dy` share one snapshot.
+- **Regression test:** `test_keystate` (keypad vs arrows, shift/ctrl/alt/AltGr, layout, PS/2 sign, ESC, absolute capture). `host-input-test` still passes.
+- **Residual risk:** Focus gating lives in the CLVM syscall path and is not executed by the host key test. Autorepeat is covered as a second make leaving the key down.
+
+### MINE-PITCH-01 — look sign fought math3d (P1)
+
+- **Subsystem:** Mine camera.
+- **Convention:** positive pitch looks down (`math3d` `f.y = -sp`). Screen Y grows downward, so a positive `mouse_dy` increases pitch. Up arrow decreases pitch.
+- **Fix:** `PLAY.CC` uses captured `mouse_dx`/`mouse_dy` and extended arrow codes. `WORLD.CC` arrows use the same codes. `MINE.CLV` and `WORLD.CLV` were rebuilt. `LIB/SIM.CC` was not modified.
+- **Regression test:** `test_math3d_view` (pitch +30 looks down, pitch -30 looks up, world +Y projects above the horizon).
+- **Residual risk:** No QEMU frame of Mine. Collision, gravity, jump, and ground are still only the language-level `test_chrisc_move` path.
+
+### NET-01 — any caller could use any socket (P1)
+
+- **Subsystem:** network.
+- **Root cause:** `Sock.owner` was stored and then ignored. `sock_recv` rewrote it to the current process, so a recv stole the socket.
+- **Fix:** `slot` identifies a CLVM app (`-1` means native). Native ops require `owner == proc_current()`. CLVM syscalls pass `vm_sync_slot`. Accepted connections copy both. `sock_close_slot` runs when an app slot closes. `sock_close_proc` runs from `proc_destroy`. The recv path no longer rebinds ownership.
+- **Regression test:** `host-sock-owner-test`.
+- **Residual risk:** No packet-level host test. IRQ receive still keys by the TCP tuple, which is required for demux.
+
+### AC97-01 — DMA leak and unlocked ring (P1)
+
+- **Subsystem:** AC97.
+- **Fix:** If the second DMA page fails, the first is freed. The ring and event sequence use an IRQ-safe spinlock; the event flag is a sequence counter so a second IRQ is not lost behind a boolean.
+- **Residual risk:** `proc_unblock_why(PROC_ST_BLOCK_IRQ)` still wakes every IRQ-blocked process. No host test (port I/O).
+
+### GATES-01 — QEMU failures were ignored (P2)
+
+- **Subsystem:** build.
+- **Fix:** `tools/qemu_gate.py` requires every `--expect` marker and rejects panic, unexpected exception, double fault, general protection, heap corruption, and PMM corruption. Exit 124 (timeout while the kernel keeps running) is a pass only when those checks hold. `QEMU_SMP` defaults to 4. `full-gates` also runs ATA at 1 CPU. `test-qemu-install` is in `qemu-gates`. Disk images are recreated each run. `tools/check_test_gates.py` fails `host-gates` if a `test_*` or `host-*-test` target is unreachable. `host-stress` and `host-sanitize` exist.
+- **Residual risk:** QEMU is not installed in this environment, and `third_party/limine` is absent, so no QEMU gate was executed. A 2-CPU target is not a separate rule.
+
+---
+
+## OPEN
+
+| ID | Sev | Subsystem | Summary |
+| --- | --- | --- | --- |
+| GFX3D-CTX-01 | P1 | 3D / voxel | Camera, z-buffer, texture, shade, and the voxel world are still process-wide. Two 3D apps can still contaminate each other. No `Gfx3DContext` and no enforced single-world lock. |
+| FS-LOCK-01 | P1 | CFS / fs | Filesystem operations are not serialized by a sleepable lock or a single worker. A spinlock must not be held across disk polling; that hierarchy is not implemented. |
+| AC97-WAKE-01 | P2 | AC97 | IRQ completion still wakes every `PROC_ST_BLOCK_IRQ` waiter. |
+| SYS-01-TEST | P2 | syscalls | The 81-byte `SYS_WRITE` buffer has no automated regression. |
+| PROC-LEAK-01 | P1 | processes | `proc_create` failure destroys the address space in code, but there is no create/run/destroy PMM counter test on hardware. |
+| TLB-POLL-01 | P2 | MM | Shootdown panics if an online CPU is not in `mm_tlb_poll`. |
+| LIB-AUDIT-01 | P2 | `LIB/` | No new C-equivalent audit of STDIO/STRING/MATH and the rest. |
+| DOOM-RERUN-01 | P2 | Doom | Doom host suite was not re-run after the mouse builtins. |
+| FUZZ-01 | P2 | parsers | No fuzz/property tests for ChrisC, CLVM, ELF, CFS, BMP, or packets. |
+| DRV-TIMEOUT-01 | P1 | storage | ATA/AHCI/NVMe/VirtIO/USB poll loops were not re-audited for a finite timeout in this pass. |
+| QEMU-RUN-01 | P1 | gates | Gate wrapper exists. The matrix was not executed (no QEMU, no Limine blobs). |
+| TOOLKIT-01 | P1 | window manager | Repeated open/close vs heap/PMM accounting is not tested. |
+| GLOB-AUDIT-01 | P3 | kernel globals | Classification below covers the globals this pass touched. A full `static g_*` inventory is not finished. |
+
+## Global state touched in this pass
+
+| Symbol | Class |
+| --- | --- |
+| PMM bitmap, `pmm_cursor`, used/free counts | globally shared, PMM lock |
+| heap arenas | globally shared, heap lock then PMM lock |
+| `g_cur_cpu`, `g_run_cpu`, `KT.saved_rsp` | CPU-local / thread-local |
+| `g_th[]` | globally shared, `g_slot_lock` |
+| job queue | globally shared, queue spinlock |
+| kernel PML4 high half, JIT VA window | globally shared; unmap + TLB shootdown |
+| user PML4 low half, `g_current` | process-local; BSP-only invariant |
+| `g_ufile[].owner` | process-local |
+| `g_fds[].slot` | VM-local |
+| CLVM mutex/cond wait | VM-local `(slot, guest address)` |
+| `g_jit_ctx[]` | CPU-local |
+| `g_nat` / patch arrays | globally shared, JIT compile lock |
+| `g_keys[256]`, capture task, mouse deltas | device-local; CLVM reads gated by focus |
+| `Sock.owner` + `Sock.slot` | process-local or VM-local |
+| AC97 ring | device-local, IRQ-safe spinlock |
+| math3d camera, zbuf, voxel world | bug if two 3D apps run (GFX3D-CTX-01) |
+
+See `docs/LOCKING.md`, `docs/RESOURCE_OWNERSHIP.md`, and `docs/STABILITY_REPORT.md`.
