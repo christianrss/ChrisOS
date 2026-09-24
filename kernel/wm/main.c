@@ -3,6 +3,7 @@
 #include "lang_pipeline.h"
 #include "pit.h"
 #include "clvm_sys.h"
+#include "mm.h"
 #include "net.h"
 
 __attribute__((noreturn)) void desktop_run(void) {
@@ -16,8 +17,10 @@ __attribute__((noreturn)) void desktop_run(void) {
         gfx_present();
 
         while (ticks == last_tick) {
+            mm_tlb_poll();
             __asm__ volatile ("hlt");
         }
+        mm_tlb_poll();
         last_tick = ticks;
     }
 }

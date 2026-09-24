@@ -6,6 +6,7 @@
 #include "mm.h"
 #include "pmm.h"
 #include "serial.h"
+#include "smp.h"
 
 /*
  * Kernel/Limine live in the 1GiB at 0xffffffff80000000 (PDPT[2]), together
@@ -16,8 +17,62 @@
 #define JIT_VIRT_LIMIT (JIT_VIRT_BASE + 8192ull * PMM_PAGE)
 
 static uint64_t g_jit_virt_next = JIT_VIRT_BASE;
-static ClvmVm *g_jit_vm;
-static void *g_jit_user;
+
+#define JIT_VA_SLOTS 128u
+
+typedef struct JitVa {
+    uint64_t virt;
+    uint32_t pages;
+    int used;
+} JitVa;
+
+static JitVa g_jit_va[JIT_VA_SLOTS];
+
+typedef struct JitSysCtx {
+    ClvmVm *vm;
+    void *user;
+} JitSysCtx;
+
+/* Per CPU. One global would let VM A on CPU 0 replace the trampoline
+ * context VM B is using on CPU 1. */
+static JitSysCtx g_jit_ctx[SMP_CPU_CAP];
+
+static uint64_t jit_va_alloc(uint32_t pages) {
+    uint32_t i;
+    uint64_t virt;
+
+    for (i = 0; i < JIT_VA_SLOTS; ++i) {
+        if (g_jit_va[i].virt != 0 && !g_jit_va[i].used &&
+            g_jit_va[i].pages == pages) {
+            g_jit_va[i].used = 1;
+            return g_jit_va[i].virt;
+        }
+    }
+    if (g_jit_virt_next + (uint64_t)pages * PMM_PAGE > JIT_VIRT_LIMIT) {
+        return 0;
+    }
+    virt = g_jit_virt_next;
+    g_jit_virt_next += (uint64_t)pages * PMM_PAGE;
+    for (i = 0; i < JIT_VA_SLOTS; ++i) {
+        if (g_jit_va[i].virt == 0) {
+            g_jit_va[i].virt = virt;
+            g_jit_va[i].pages = pages;
+            g_jit_va[i].used = 1;
+            break;
+        }
+    }
+    return virt;
+}
+
+static void jit_va_free(uint64_t virt) {
+    uint32_t i;
+    for (i = 0; i < JIT_VA_SLOTS; ++i) {
+        if (g_jit_va[i].virt == virt) {
+            g_jit_va[i].used = 0;
+            return;
+        }
+    }
+}
 
 int jit_alloc(JitBuf *buf) {
     uint64_t virt;
@@ -39,14 +94,13 @@ int jit_alloc(JitBuf *buf) {
     serial_puts("jit: alloc phys=");
     serial_write_hex(buf->phys);
     serial_puts("\n");
-    if (g_jit_virt_next + (uint64_t)buf->pages * PMM_PAGE > JIT_VIRT_LIMIT) {
+    virt = jit_va_alloc(buf->pages);
+    if (virt == 0) {
         pmm_free_contig(buf->phys, buf->pages);
         buf->phys = 0;
         serial_puts("jit: alloc virt exhausted\n");
         return -1;
     }
-    virt = g_jit_virt_next;
-    g_jit_virt_next += (uint64_t)buf->pages * PMM_PAGE;
     buf->w = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(buf->phys);
     buf->x = (uint8_t *)(uintptr_t)virt;
     buf->used = 0;
@@ -81,10 +135,11 @@ void jit_seal(JitBuf *buf) {
     serial_puts("\n");
     virt = (uint64_t)(uintptr_t)buf->x;
     for (i = 0; i < buf->pages; ++i) {
-        map_4k(virt + (uint64_t)i * PMM_PAGE,
-               buf->phys + (uint64_t)i * PMM_PAGE,
-               MM_PRESENT);
+        map_4k_nosync(virt + (uint64_t)i * PMM_PAGE,
+                      buf->phys + (uint64_t)i * PMM_PAGE,
+                      MM_PRESENT);
     }
+    mm_tlb_shootdown();
     {
         uint32_t eax, ebx, ecx, edx;
         eax = 0;
@@ -100,10 +155,23 @@ void jit_seal(JitBuf *buf) {
 }
 
 void jit_free(JitBuf *buf) {
+    uint32_t i;
+    uint32_t pages;
+    uint64_t virt;
+
     if (buf == NULL || buf->phys == 0) {
         return;
     }
-    pmm_free_contig(buf->phys, buf->pages ? buf->pages : 1u);
+    pages = buf->pages ? buf->pages : 1u;
+    if (buf->x != NULL) {
+        virt = (uint64_t)(uintptr_t)buf->x;
+        for (i = 0; i < pages; ++i) {
+            unmap_4k(virt + (uint64_t)i * PMM_PAGE);
+        }
+        mm_tlb_shootdown();
+        jit_va_free(virt);
+    }
+    pmm_free_contig(buf->phys, pages);
     buf->phys = 0;
     buf->w = NULL;
     buf->x = NULL;
@@ -112,13 +180,23 @@ void jit_free(JitBuf *buf) {
 }
 
 void jit_set_sys_context(ClvmVm *vm, void *user) {
-    g_jit_vm = vm;
-    g_jit_user = user;
+    uint32_t cpu = smp_current_cpu();
+    if (cpu >= SMP_CPU_CAP) {
+        cpu = 0u;
+    }
+    g_jit_ctx[cpu].vm = vm;
+    g_jit_ctx[cpu].user = user;
 }
 
 int jit_sys_trampoline(int32_t id) {
-    if (g_jit_vm == NULL) {
+    uint32_t cpu = smp_current_cpu();
+    JitSysCtx *ctx;
+    if (cpu >= SMP_CPU_CAP) {
+        cpu = 0u;
+    }
+    ctx = &g_jit_ctx[cpu];
+    if (ctx->vm == NULL) {
         return -1;
     }
-    return clvm_sys_dispatch(g_jit_vm, id, g_jit_user);
+    return clvm_sys_dispatch(ctx->vm, id, ctx->user);
 }

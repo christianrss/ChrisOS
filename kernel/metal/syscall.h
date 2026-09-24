@@ -21,5 +21,6 @@ void panic_user_fault(struct irq_frame *frame, uint64_t cr2);
 
 int user_exited(void);
 int user_exit_code(void);
+void syscall_close_owner(int pid);
 
 #endif

@@ -11,10 +11,14 @@
 #define ELF_DATA2LSB 1u
 #define ELF_TYPE_EXEC 2u
 #define ELF_MACHINE_X86_64 62u
+#define PT_NULL 0u
 #define PT_LOAD 1u
+#define PF_X 1u
+#define PF_W 2u
 
 #define USER_LOAD_LO 0x400000ull
 #define USER_LOAD_HI 0x500000ull
+#define ELF_MAX_PH 32
 
 static uint32_t elf_u32(const uint8_t *p) {
     return (uint32_t)p[0] |
@@ -54,22 +58,17 @@ static int elf_check_header(const uint8_t *file, uint32_t nbytes) {
     return 0;
 }
 
-static int g_elf_pid;
-
-static void elf_zero_user(uint64_t virt, uint64_t phys, uint64_t page_flags) {
-    uint64_t *words;
-    uint64_t index;
-
-    words = (uint64_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
-    for (index = 0; index < PMM_PAGE / sizeof(uint64_t); ++index) {
-        words[index] = 0;
+static int span_fits(uint64_t addr, uint64_t len, uint64_t limit) {
+    if (len > limit) {
+        return -1;
     }
-    if (proc_map_user(g_elf_pid, virt, phys, page_flags) != 0) {
-        map_4k(virt, phys, page_flags);
+    if (addr > limit - len) {
+        return -1;
     }
+    return 0;
 }
 
-static int elf_map_segment(const uint8_t *file, uint32_t nbytes,
+static int elf_map_segment(int pid, const uint8_t *file, uint32_t nbytes,
                            uint64_t vaddr, uint64_t offset,
                            uint64_t filesz, uint64_t memsz, uint32_t flags) {
     uint64_t page_flags;
@@ -77,21 +76,13 @@ static int elf_map_segment(const uint8_t *file, uint32_t nbytes,
     uint64_t page_end;
     uint64_t virt;
     uint64_t phys;
-    uint64_t copy_len;
-    uint8_t *dst;
 
-    if (vaddr < USER_LOAD_LO || vaddr + memsz > USER_LOAD_HI) {
-        return -1;
-    }
-    if (offset + filesz > (uint64_t)nbytes) {
-        return -1;
-    }
-
+    (void)nbytes;
     page_flags = MM_PRESENT | MM_USER;
-    if ((flags & 2u) != 0) {
+    if ((flags & PF_W) != 0) {
         page_flags |= MM_WRITE;
     }
-    if ((flags & 1u) == 0) {
+    if ((flags & PF_X) == 0) {
         page_flags |= MM_NX;
     }
 
@@ -100,16 +91,27 @@ static int elf_map_segment(const uint8_t *file, uint32_t nbytes,
 
     for (virt = page_start; virt < page_end; virt += PMM_PAGE) {
         uint64_t page_off;
+        uint64_t copy_len;
+        uint8_t *dst;
         phys = pmm_alloc();
         if (phys == 0) {
             return -1;
         }
-        elf_zero_user(virt, phys, page_flags);
-        if (virt + PMM_PAGE <= vaddr || virt >= vaddr + filesz) {
+        dst = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
+        {
+            uint64_t i;
+            for (i = 0; i < PMM_PAGE; ++i) {
+                dst[i] = 0;
+            }
+        }
+        if (proc_map_owned(pid, virt, phys, page_flags) != 0) {
+            pmm_free(phys);
+            return -1;
+        }
+        if (filesz == 0 || virt + PMM_PAGE <= vaddr || virt >= vaddr + filesz) {
             continue;
         }
         page_off = virt < vaddr ? 0 : virt - vaddr;
-        dst = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
         if (virt < vaddr) {
             dst += (uint32_t)(vaddr - virt);
         }
@@ -127,9 +129,64 @@ static int elf_map_segment(const uint8_t *file, uint32_t nbytes,
             }
         }
     }
-
-    syscall_set_user_map(USER_LOAD_LO, USER_LOAD_HI);
     return 0;
+}
+
+typedef struct ElfSeg {
+    uint64_t vaddr;
+    uint64_t offset;
+    uint64_t filesz;
+    uint64_t memsz;
+    uint32_t flags;
+} ElfSeg;
+
+static int segs_overlap(const ElfSeg *a, const ElfSeg *b) {
+    uint64_t a_end = a->vaddr + a->memsz;
+    uint64_t b_end = b->vaddr + b->memsz;
+    if (a->vaddr >= b_end || b->vaddr >= a_end) {
+        return 0;
+    }
+    return 1;
+}
+
+static int elf_check_segment(const uint8_t *file, uint32_t nbytes, const ElfSeg *seg) {
+    uint64_t page_start;
+    uint64_t page_end;
+    (void)file;
+    if (seg->memsz == 0) {
+        return -1;
+    }
+    if (seg->filesz > seg->memsz) {
+        return -1;
+    }
+    if ((seg->flags & PF_X) != 0 && (seg->flags & PF_W) != 0) {
+        return -1;
+    }
+    if (seg->vaddr > UINT64_MAX - seg->memsz) {
+        return -1;
+    }
+    if (seg->filesz > 0 && span_fits(seg->offset, seg->filesz, nbytes) != 0) {
+        return -1;
+    }
+    if ((seg->vaddr & (PMM_PAGE - 1ull)) != (seg->offset & (PMM_PAGE - 1ull))) {
+        return -1;
+    }
+    page_start = seg->vaddr & ~(PMM_PAGE - 1ull);
+    if (seg->memsz > UINT64_MAX - (PMM_PAGE - 1ull) - seg->vaddr) {
+        return -1;
+    }
+    page_end = (seg->vaddr + seg->memsz + PMM_PAGE - 1ull) & ~(PMM_PAGE - 1ull);
+    if (page_start < USER_LOAD_LO || page_end > USER_LOAD_HI || page_end < page_start) {
+        return -1;
+    }
+    return 0;
+}
+
+static void elf_abort(int pid, int prev) {
+    proc_destroy(pid);
+    if (prev >= 0 && prev != pid) {
+        proc_switch(prev);
+    }
 }
 
 int elf_load(const uint8_t *file, uint32_t nbytes, uint64_t *entry_out) {
@@ -138,6 +195,11 @@ int elf_load(const uint8_t *file, uint32_t nbytes, uint64_t *entry_out) {
     uint16_t phentsize;
     uint16_t index;
     uint64_t entry;
+    ElfSeg segs[ELF_MAX_PH];
+    int nseg = 0;
+    int exec_hit = 0;
+    int pid;
+    int prev;
 
     if (!file || !entry_out) {
         return -1;
@@ -151,39 +213,70 @@ int elf_load(const uint8_t *file, uint32_t nbytes, uint64_t *entry_out) {
     phentsize = elf_u16(file + 54);
     phnum = elf_u16(file + 56);
 
-    if (phentsize < 56u || phnum == 0u || phoff + (uint64_t)phentsize * phnum > nbytes) {
+    if (phentsize < 56u || phnum == 0u || phnum > ELF_MAX_PH) {
+        return -1;
+    }
+    if (span_fits(phoff, (uint64_t)phentsize * (uint64_t)phnum, nbytes) != 0) {
         return -1;
     }
     if (entry < USER_LOAD_LO || entry >= USER_LOAD_HI) {
         return -1;
     }
 
-    g_elf_pid = proc_create("elf");
-    if (g_elf_pid < 0) {
-        return -1;
-    }
-    proc_switch(g_elf_pid);
-
     for (index = 0; index < phnum; ++index) {
         const uint8_t *ph = file + phoff + (uint64_t)index * (uint64_t)phentsize;
         uint32_t type = elf_u32(ph);
-        uint32_t flags = elf_u32(ph + 4);
-        uint64_t offset = elf_u64(ph + 8);
-        uint64_t vaddr = elf_u64(ph + 16);
-        uint64_t filesz = elf_u64(ph + 32);
-        uint64_t memsz = elf_u64(ph + 40);
+        ElfSeg seg;
 
+        if (type == PT_NULL) {
+            continue;
+        }
         if (type != PT_LOAD) {
-            if (type == 0u) {
-                continue;
-            }
             return -1;
         }
-        if (elf_map_segment(file, nbytes, vaddr, offset, filesz, memsz, flags) != 0) {
+        seg.flags = elf_u32(ph + 4);
+        seg.offset = elf_u64(ph + 8);
+        seg.vaddr = elf_u64(ph + 16);
+        seg.filesz = elf_u64(ph + 32);
+        seg.memsz = elf_u64(ph + 40);
+        if (elf_check_segment(file, nbytes, &seg) != 0) {
+            return -1;
+        }
+        {
+            int s;
+            for (s = 0; s < nseg; ++s) {
+                if (segs_overlap(&segs[s], &seg)) {
+                    return -1;
+                }
+            }
+        }
+        if ((seg.flags & PF_X) != 0 && entry >= seg.vaddr &&
+            seg.memsz > entry - seg.vaddr) {
+            exec_hit = 1;
+        }
+        segs[nseg++] = seg;
+    }
+    if (nseg == 0 || !exec_hit) {
+        return -1;
+    }
+
+    prev = proc_current();
+    pid = proc_create("elf");
+    if (pid < 0) {
+        return -1;
+    }
+    proc_switch(pid);
+
+    for (index = 0; index < (uint16_t)nseg; ++index) {
+        ElfSeg *seg = &segs[index];
+        if (elf_map_segment(pid, file, nbytes, seg->vaddr, seg->offset,
+                            seg->filesz, seg->memsz, seg->flags) != 0) {
+            elf_abort(pid, prev);
             return -1;
         }
     }
 
+    syscall_set_user_map(USER_LOAD_LO, USER_LOAD_HI);
     *entry_out = entry;
     return 0;
 }

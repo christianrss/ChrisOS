@@ -1,6 +1,7 @@
 #include "jit_compile.h"
 
 #include "jit_emit.h"
+#include "spin.h"
 #include "jit_runtime.h"
 #include "gc/gc.h"
 #include "serial.h"
@@ -29,6 +30,8 @@ static uint32_t g_nat[JIT_MAX_PCS];
 static uint32_t g_psite[JIT_MAX_PATCH];
 static uint32_t g_ptgt[JIT_MAX_PATCH];
 static uint32_t g_npatch;
+/* Compile scratch is process-global. One compilation at a time. */
+static Spinlock g_jit_compile_lock;
 static uint32_t g_fault_ba;
 static uint32_t g_call_ovf;
 
@@ -810,7 +813,8 @@ static int emit_cmp_eax_imm8(JitBuf *j, int8_t v) {
     return jit_emit_cmp_r32_imm8(j, 0, v);
 }
 
-int jit_compile_image(const ClvmImage *image, JitBuf *buf, JitFn *fn_out) {
+static int jit_compile_image_locked(const ClvmImage *image, JitBuf *buf,
+                                    JitFn *fn_out) {
     uint32_t fault, slice, halt, yield, dispatch, after_h, skip;
     uint32_t pc;
     uint32_t i;
@@ -1024,4 +1028,12 @@ fail:
     serial_puts("jit: native emit failed\n");
     jit_free(buf);
     return -1;
+}
+
+int jit_compile_image(const ClvmImage *image, JitBuf *buf, JitFn *fn_out) {
+    int rc;
+    spin_lock(&g_jit_compile_lock);
+    rc = jit_compile_image_locked(image, buf, fn_out);
+    spin_unlock(&g_jit_compile_lock);
+    return rc;
 }

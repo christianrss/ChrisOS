@@ -31,6 +31,9 @@ int proc_current(void);
 void proc_switch(int pid);
 uint64_t proc_cr3(int pid);
 int proc_map_user(int pid, uint64_t virt, uint64_t phys, uint64_t flags);
+/* Map a frame and record it so proc_destroy can free it. On failure the
+ * frame is not owned by the process and the caller must pmm_free it. */
+int proc_map_owned(int pid, uint64_t virt, uint64_t phys, uint64_t flags);
 void proc_on_tick(void);
 int proc_slice_due(void);
 void proc_slice_ack(void);
