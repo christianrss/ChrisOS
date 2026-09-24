@@ -1,4 +1,18 @@
+int ground_y_at(int x, int z) {
+    int y;
+    y = 60;
+    while (y > 0) {
+        if (sim_solid(voxel_get(x, y, z)))
+            return y;
+        y = y - 1;
+    }
+    return 7;
+}
+
 void spawn_player(float x, float y, float z) {
+    int gy;
+    gy = ground_y_at((int)x, (int)z);
+    y = (float)gy + 1.15;
     g_act[0].x = x;
     g_act[0].y = y;
     g_act[0].z = z;
@@ -7,6 +21,7 @@ void spawn_player(float x, float y, float z) {
     g_act[0].vz = 0.0;
     g_act[0].yaw = 0.0;
     g_act[0].pitch = 0.0;
+    g_look = 0;
     g_act[0].kind = 7;
     g_act[0].bits.alive = 1;
     g_act[0].bits.bow = 1;
@@ -21,7 +36,7 @@ void boot_actors() {
         g_act[i].bits.alive = 0;
         i = i + 1;
     }
-    spawn_player(72.0, 8.2, 80.0);
+    spawn_player(72.0, 0.0, 80.0);
     g_act[1].kind = 1;
     g_act[1].x = 82.0;
     g_act[1].y = 8.2;
@@ -222,6 +237,10 @@ void play_step() {
     int id;
     mx = mouse_x();
     my = mouse_y();
+    if (g_look == 0) {
+        g_pmx = mx;
+        g_pmy = my;
+    }
     dx = mx - g_pmx;
     dy = my - g_pmy;
     if (dx > 60 || dx < -60)
@@ -230,7 +249,7 @@ void play_step() {
         dy = 0;
     if (g_look && g_mode == 1) {
         g_act[0].yaw = g_act[0].yaw + (float)dx * 0.10;
-        g_act[0].pitch = g_act[0].pitch + (float)dy * 0.10;
+        g_act[0].pitch = g_act[0].pitch - (float)dy * 0.10;
     }
     if (mx < 12 || mx > 788) {
         if (key(75))
@@ -240,9 +259,9 @@ void play_step() {
     }
     if (my < 12 || my > 588) {
         if (key(72))
-            g_act[0].pitch = g_act[0].pitch - 1.5;
-        if (key(80))
             g_act[0].pitch = g_act[0].pitch + 1.5;
+        if (key(80))
+            g_act[0].pitch = g_act[0].pitch - 1.5;
     }
     if (g_act[0].pitch > 50.0)
         g_act[0].pitch = 50.0;

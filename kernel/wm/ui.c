@@ -134,6 +134,7 @@ void ui_paint_desktop(void) {
     int dw = g_gfx.width;
     int dh = g_gfx.height;
     int gap = 16;
+    int col_w = 96;
     int i;
     int col = 0;
     int row = 0;
@@ -146,16 +147,16 @@ void ui_paint_desktop(void) {
                       wall->w, wall->h);
     }
     for (i = 0; i < 8; ++i) {
-        int ix = gap + col * 80;
+        int ix = gap + col * col_w;
         int iy = gap + row * 72;
         if (iy + 72 > dh - UI_TASKBAR_HEIGHT - 8) {
             col++;
             row = 0;
-            ix = gap + col * 80;
+            ix = gap + col * col_w;
             iy = gap;
         }
         blit_icon_id(icon_id_for(caps[i]), ix, iy, 48, 48);
-        ui_label(ix, iy + 52, 72, 16, caps[i], CHRIS_TITLE_TEXT);
+        ui_label(ix, iy + 52, col_w - 4, 16, caps[i], CHRIS_TITLE_TEXT);
         row++;
     }
 }

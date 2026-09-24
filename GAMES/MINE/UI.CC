@@ -56,6 +56,7 @@ void ui_menu() {
             boot_actors();
         }
         g_mode = 1;
+        g_look = 0;
     }
     if (hit_btn(280, 248, 220, 32)) {
         if (g_built == 0) {
@@ -64,6 +65,7 @@ void ui_menu() {
         }
         save_read();
         g_mode = 1;
+        g_look = 0;
     }
     if (hit_btn(280, 296, 220, 32))
         g_mode = 9;
@@ -158,6 +160,7 @@ void ui_hud() {
     }
     num(fps());
     text(720, 16, g_num, 0x00F3EEE4);
+    text(640, 16, "mk5", 0x00808080);
     if (g_rain) {
         i = 0;
         while (i < 24) {

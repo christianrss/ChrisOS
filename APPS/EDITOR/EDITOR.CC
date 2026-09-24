@@ -1899,28 +1899,28 @@ int syn_color(int at, int in_str, int in_line_cmt, int in_blk) {
   int c;
   g_kw_len = 0;
   if (in_line_cmt) {
-    return 0x00605048;
+    return 0x00989888;
   }
   if (in_blk) {
-    return 0x00605048;
+    return 0x00989888;
   }
   if (in_str) {
-    return 0x00804818;
+    return 0x00E0B060;
   }
   c = loadb(g_buf + at);
   if (c == 35) {
-    return 0x00504068;
+    return 0x00B0A0E0;
   }
   if (c >= 48) {
     if (c <= 57) {
-      return 0x00603818;
+      return 0x00D0B080;
     }
   }
   g_kw_len = kw_len_at(at);
   if (g_kw_len > 0) {
-    return 0x00305068;
+    return 0x00A0D8F0;
   }
-  return 0x001C1814;
+  return 0x00E8DCC8;
 }
 
 void draw_gutter_num(int x, int y, int num) {
@@ -2095,26 +2095,26 @@ void draw_text_view() {
                 if (i + 1 < g_len) {
                   if (loadb(g_buf + i + 1) == 47) {
                     in_lc = 1;
-                    color = 0x00608070;
+                    color = 0x00989888;
                   }
                   if (loadb(g_buf + i + 1) == 42) {
                     in_blk = 1;
-                    color = 0x00608070;
+                    color = 0x00989888;
                   }
                 }
               }
               if (c == 34) {
                 in_str = 1;
-                color = 0x00E0A060;
+                color = 0x00E0B060;
               }
             } else {
               if (c == 34) {
-                color = 0x00E0A060;
+                color = 0x00E0B060;
                 in_str = 0;
               }
             }
           } else {
-            color = 0x00608070;
+            color = 0x00989888;
             if (c == 42) {
               if (i + 1 < g_len) {
                 if (loadb(g_buf + i + 1) == 47) {
@@ -2124,7 +2124,7 @@ void draw_text_view() {
             }
           }
           if (kl > 0) {
-            color = 0x0060C8E0;
+            color = 0x00A0D8F0;
             skip = kl - 1;
           }
           is_cur = 0;

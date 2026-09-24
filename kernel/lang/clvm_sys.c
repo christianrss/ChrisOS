@@ -904,25 +904,69 @@ static int push_ok(ClvmVm *vm, int ok) {
     return clvm_vm_push(vm, ok ? 0 : -1) ? 0 : -1;
 }
 
+#define APP_GAME_CHROME 20
+
+static int ctx_is_hd_game(const ClvmGfxCtx *ctx) {
+    return ctx->w >= 640 && ctx->h >= 480 && ctx->w <= 1024 && ctx->h <= 768;
+}
+
 static int game_ptr_local(ClvmGfxCtx *ctx, int mx, int my, int *ox, int *oy) {
     Task *t;
     int bw;
     int bh;
     int x;
     int y;
-    if (!ctx || ctx->w < 640 || ctx->h < 480)
+    int cx;
+    int cy;
+
+    if (!ctx || ctx->w < 64 || ctx->h < 64)
         return 0;
     t = task_of_ctx(ctx);
     if (!t)
         return 0;
+
+    /*
+     * HD CLV games (Mine, etc.): map screen coords into the viewport using the
+     * same client rect as app_window blit (below the in-window title bar).
+     */
+    if (ctx_is_hd_game(ctx)) {
+        bw = t->frame.width;
+        bh = t->frame.body_height - APP_GAME_CHROME;
+        if (bw < 1)
+            bw = 1;
+        if (bh < 1)
+            bh = ctx->h;
+        cx = t->frame.x;
+        cy = t->frame.y + APP_GAME_CHROME;
+        x = mx - cx;
+        y = my - cy;
+        if (bw != ctx->w)
+            x = (int)(((int64_t)x * ctx->w) / bw);
+        if (bh != ctx->h)
+            y = (int)(((int64_t)y * ctx->h) / bh);
+        if (x < 0)
+            x = 0;
+        if (y < 0)
+            y = 0;
+        if (x >= ctx->w)
+            x = ctx->w - 1;
+        if (y >= ctx->h)
+            y = ctx->h - 1;
+        *ox = x;
+        *oy = y;
+        return 1;
+    }
+
+    /* CLVM UI apps: viewport fills the task frame; keep screen coords. */
+    if (t->frame.width == ctx->w && t->frame.body_height == ctx->h)
+        return 0;
+
     bw = t->frame.width;
     bh = t->frame.body_height - TASK_TITLE_HEIGHT;
     if (bw < 1)
         bw = 1;
     if (bh < 1)
         bh = 1;
-    if (t->frame.x == 0 && t->frame.y == 0 && bw == ctx->w && bh == ctx->h)
-        return 0;
     x = mx - t->frame.x;
     y = my - (t->frame.y + TASK_TITLE_HEIGHT);
     if (bw != ctx->w)

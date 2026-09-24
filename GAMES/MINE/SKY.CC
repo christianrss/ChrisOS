@@ -31,7 +31,6 @@ void sky_frame() {
     wave = (float)ticks();
     wave = wave % 100.0;
     tex_ofs(wave / 100.0, 0.04);
-    draw_mob(70.0 + sun.re * 6.0, 18.0 + sun.im * 4.0, 70.0, 0.0, 14);
 }
 
 void sky_flip() {

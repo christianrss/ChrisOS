@@ -366,6 +366,7 @@ int voxel_world_draw(uint32_t *pixels, int w, int h) {
         return -1;
     math3d_set_screen(w, h);
     zbuf_set_size(w, h);
+    zbuf_clear();
     math3d_view(&view);
     math3d_cam_get(&cam, 0, 0);
     x0 = (int)cam.x - 48;

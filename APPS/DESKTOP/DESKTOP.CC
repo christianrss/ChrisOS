@@ -16,6 +16,7 @@ void main() {
   int n;
   int ix;
   int iy;
+  int col_w;
   dw = disp_w();
   dh = disp_h();
   if (dw < 320) {
@@ -26,6 +27,7 @@ void main() {
   }
   bar_h = 40;
   gap = 16;
+  col_w = 96;
   viewport(dw, dh);
   surf_place(0, 0, dw, dh);
   g_desk_prev = 0;
@@ -39,12 +41,12 @@ void main() {
     col = 0;
     row = 0;
     while (i < n) {
-      ix = gap + col * 80;
+      ix = gap + col * col_w;
       iy = gap + row * 72;
       if (iy + 72 > dh - bar_h - 8) {
         col = col + 1;
         row = 0;
-        ix = gap + col * 80;
+        ix = gap + col * col_w;
         iy = gap;
       }
       x = ix;
@@ -79,7 +81,7 @@ void main() {
       }
       if (i == 7) {
         fillrgb(x, y, 48, 48, 0xC4842A);
-        text(x, y + 52, "Mine", 0x00E8F0FF);
+        text(x, y + 52, "Mine Chris", 0x00E8F0FF);
       }
       if (mb) {
         if (g_desk_prev == 0) {

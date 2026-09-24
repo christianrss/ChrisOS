@@ -43,9 +43,6 @@ void paint_world() {
         }
         i = i + 1;
     }
-    anim_apply(g_scene, ticks() % 16);
-    scene_draw((int)g_act[0].x, (int)g_act[0].z, (int)g_act[0].yaw);
-    phys_step();
 }
 
 void boot_gfx() {
