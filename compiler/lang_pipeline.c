@@ -23,6 +23,8 @@
 #include "gc/gc.h"
 #include "proc.h"
 #include "mm.h"
+#include "debug/cdbg.h"
+#include "debug/dbg_session.h"
 
 static int path_is_driver(const char *name);
 #include "bootinfo.h"
@@ -63,8 +65,11 @@ typedef struct LangSlot {
     int nbreak;
     uint32_t map_pc[CHRIS_MAP_MAX];
     uint16_t map_line[CHRIS_MAP_MAX];
+    uint16_t map_file[CHRIS_MAP_MAX];
     int map_n;
     int step_line;
+    int step_mode;
+    int step_depth;
     uint16_t last_line;
     int ev_key_q[LANG_EVQ];
     int ev_text_q[LANG_EVQ];
@@ -320,6 +325,32 @@ static void clv_to_map(const char *clv, char mapn[LANG_NAME_MAX]) {
     }
 }
 
+static void clv_to_cdbg(const char *clv, char outn[LANG_NAME_MAX]) {
+    int k = 0;
+    int dot;
+    if (!clv || !outn) {
+        if (outn) {
+            outn[0] = 0;
+        }
+        return;
+    }
+    while (clv[k] && k + 1 < LANG_NAME_MAX) {
+        outn[k] = clv[k];
+        ++k;
+    }
+    outn[k] = 0;
+    dot = last_dot_at(outn);
+    if (dot >= 0 && dot + 5 < LANG_NAME_MAX) {
+        int upper_ext = outn[dot + 1] >= 'A' && outn[dot + 1] <= 'Z';
+        outn[dot] = '.';
+        outn[dot + 1] = (char)(upper_ext ? 'C' : 'c');
+        outn[dot + 2] = (char)(upper_ext ? 'D' : 'd');
+        outn[dot + 3] = (char)(upper_ext ? 'B' : 'b');
+        outn[dot + 4] = (char)(upper_ext ? 'G' : 'g');
+        outn[dot + 5] = 0;
+    }
+}
+
 static int basename_start(const char *s) {
     int n = slen(s);
     int i;
@@ -562,6 +593,8 @@ void lang_init(ClvmSysFn sys, void *user) {
         slots[i].nbreak = 0;
         slots[i].map_n = 0;
         slots[i].step_line = 0;
+        slots[i].step_mode = DBG_STEP_NONE;
+        slots[i].step_depth = 0;
         slots[i].last_line = 0;
         slots[i].dying = 0;
         slots[i].front_pixels = 0;
@@ -737,6 +770,10 @@ static void lang_load_map(int slot, const char *clv) {
     while (i < n && slots[slot].map_n < CHRIS_MAP_MAX) {
         unsigned pc = 0;
         unsigned line = 0;
+        unsigned file = 0;
+        uint32_t parsed_pc = 0;
+        uint16_t parsed_line = 0;
+        uint16_t parsed_file = 0;
         while (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\r')
             i++;
         if (buf[i] == 'F' && buf[i + 1] == ' ') {
@@ -767,29 +804,20 @@ static void lang_load_map(int slot, const char *clv) {
                 i++;
             continue;
         }
-        if (buf[i] == '0' && (buf[i + 1] == 'x' || buf[i + 1] == 'X'))
-            i += 2;
-        while ((buf[i] >= '0' && buf[i] <= '9') ||
-               (buf[i] >= 'a' && buf[i] <= 'f') ||
-               (buf[i] >= 'A' && buf[i] <= 'F')) {
-            unsigned v = (unsigned)buf[i];
-            if (v >= '0' && v <= '9')
-                v -= '0';
-            else if (v >= 'a')
-                v = v - 'a' + 10;
-            else
-                v = v - 'A' + 10;
-            pc = (pc << 4) | v;
-            i++;
+        if (!cdbg_parse_map_line(buf + i, &parsed_pc, &parsed_line,
+                                 &parsed_file)) {
+            while (buf[i] && buf[i] != '\n')
+                i++;
+            if (buf[i] == '\n')
+                i++;
+            continue;
         }
-        while (buf[i] == ' ')
-            i++;
-        while (buf[i] >= '0' && buf[i] <= '9') {
-            line = line * 10u + (unsigned)(buf[i] - '0');
-            i++;
-        }
+        pc = parsed_pc;
+        line = parsed_line;
+        file = parsed_file;
         slots[slot].map_pc[slots[slot].map_n] = pc;
         slots[slot].map_line[slots[slot].map_n] = (uint16_t)line;
+        slots[slot].map_file[slots[slot].map_n] = (uint16_t)file;
         slots[slot].map_n++;
         while (buf[i] && buf[i] != '\n')
             i++;
@@ -1103,6 +1131,8 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     slots[i].step_one = 0;
     slots[i].nbreak = 0;
     slots[i].step_line = 0;
+    slots[i].step_mode = DBG_STEP_NONE;
+    slots[i].step_depth = 0;
     slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
     slot_ev_reset(i);
     slots[i].dying = 0;
@@ -1709,6 +1739,7 @@ void lang_tick(uint32_t now) {
                         slots[i].paused = 1;
                         slots[i].step_one = 0;
                         slots[i].step_line = 0;
+                        slots[i].step_mode = DBG_STEP_NONE;
                         break;
                     }
                 }
@@ -1723,16 +1754,26 @@ void lang_tick(uint32_t now) {
             game = slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull);
             if (slots[i].debug_on && slots[i].step_line) {
                 int k;
+                int mode = slots[i].step_mode;
+                int limit;
                 uint16_t start = slots[i].last_line;
+                int depth0 = slots[i].step_depth;
+                if (mode == DBG_STEP_NONE)
+                    mode = DBG_STEP_IN;
+                limit = mode == DBG_STEP_IN ? 512 : 8192;
                 r = CLVM_STEP_SLICE;
-                for (k = 0; k < 512; ++k) {
+                for (k = 0; k < limit; ++k) {
                     r = clvm_step(&slots[i].vm, 1);
                     if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
                         break;
-                    if (lang_line_at(&slots[i], slots[i].vm.pc) != start)
+                    if (dbg_step_should_pause(
+                            mode, (int)start, depth0,
+                            (int)lang_line_at(&slots[i], slots[i].vm.pc),
+                            (int)slots[i].vm.csp))
                         break;
                 }
                 slots[i].step_line = 0;
+                slots[i].step_mode = DBG_STEP_NONE;
                 slots[i].paused = 1;
                 slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
             } else if (slots[i].debug_on && slots[i].step_one) {
@@ -2104,6 +2145,20 @@ void lang_write_map(const char *clv_path, const ChrisResult *r) {
             while (d--)
                 tmp[t++] = dec[d];
         }
+        tmp[t++] = ' ';
+        {
+            unsigned x = r->map[i].file_id;
+            char dec[8];
+            int d = 0;
+            if (x == 0)
+                dec[d++] = '0';
+            while (x && d < 8) {
+                dec[d++] = (char)('0' + (x % 10));
+                x /= 10;
+            }
+            while (d--)
+                tmp[t++] = dec[d];
+        }
         tmp[t++] = '\n';
         tmp[t] = 0;
         {
@@ -2137,22 +2192,52 @@ void lang_write_map(const char *clv_path, const ChrisResult *r) {
     buf[n] = 0;
     if (n > 0)
         (void)fs_write(mapn, buf, n);
+    {
+        char dbgn[LANG_NAME_MAX];
+        int cap = cdbg_bound(r);
+        uint8_t *blob;
+        int wrote;
+        clv_to_cdbg(clv_path, dbgn);
+        if (dbgn[0] && cap > 0) {
+            blob = (uint8_t *)kmalloc((size_t)cap);
+            if (blob) {
+                wrote = cdbg_from_result(blob, cap, r, 0, 0, 0);
+                if (wrote > 0)
+                    (void)fs_write(dbgn, blob, wrote);
+                kfree(blob);
+            }
+        }
+    }
 }
 
 void lang_debug_enable(int on) {
     g_want_debug = on;
 }
 
-void lang_debug_step(void) {
+static void lang_begin_step(int mode) {
     int i;
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         if (slots[i].used && slots[i].debug_on) {
             slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
+            slots[i].step_mode = mode;
+            slots[i].step_depth = (int)slots[i].vm.csp;
             slots[i].step_line = 1;
             slots[i].step_one = 0;
             slots[i].paused = 0;
         }
     }
+}
+
+void lang_debug_step(void) {
+    lang_begin_step(DBG_STEP_IN);
+}
+
+void lang_debug_step_over(void) {
+    lang_begin_step(DBG_STEP_OVER);
+}
+
+void lang_debug_step_out(void) {
+    lang_begin_step(DBG_STEP_OUT);
 }
 
 void lang_debug_continue(void) {
@@ -2161,6 +2246,8 @@ void lang_debug_continue(void) {
         if (slots[i].used && slots[i].debug_on) {
             slots[i].paused = 0;
             slots[i].step_one = 0;
+            slots[i].step_line = 0;
+            slots[i].step_mode = DBG_STEP_NONE;
         }
     }
 }
