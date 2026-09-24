@@ -16,6 +16,8 @@ Who frees a resource when an app or process dies.
 | Kthread stack | the `KT` slot | `kthread_join` frees the stack after the thread is done |
 | CLVM mutex/cond wait | `(slot, guest address)` | slot teardown must drop waiters; identity no longer collides across VMs |
 | AC97 DMA pages | the device | `ac97_init` frees the first page if the second allocation fails. No unload path. |
+| ATA DMA bounce and PRDT | the ATA driver (`g_ata_dma_phys`) | boot lifetime. The IDE port is single-owner, so the bounce is not shared across callers |
+| CFS readahead buffer | kernel, only while `g_cfs_lock` is held | not freed; not used from an interrupt |
 | Device queues | the driver | not changed |
 | Camera, light, texture binding | `ClvmGfxCtx.view3d` | loaded at syscall entry, saved on return. A context that has never run starts from the default camera `(0, 1.5, 5)`, light, and texture slot 1. Screen size stays the viewport |
 | Voxel world | one global world, `g_voxel_owner` | `voxel_claim` rejects a second slot. `clvm_sys_close_slot` releases it. There is not a world per app |
