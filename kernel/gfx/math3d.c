@@ -218,6 +218,28 @@ void math3d_cam_get(Vec3f *pos, float *yaw, float *pitch) {
         *pitch = g_cam_pitch;
 }
 
+void math3d_state_save(Gfx3DView *out) {
+    if (!out) {
+        return;
+    }
+    out->pos = g_cam_pos;
+    out->yaw = g_cam_yaw;
+    out->pitch = g_cam_pitch;
+    out->screen_w = g_sw;
+    out->screen_h = g_sh;
+}
+
+void math3d_state_load(const Gfx3DView *in) {
+    if (!in) {
+        return;
+    }
+    g_cam_pos = in->pos;
+    g_cam_yaw = in->yaw;
+    g_cam_pitch = in->pitch;
+    g_sw = in->screen_w > 0 ? in->screen_w : 1;
+    g_sh = in->screen_h > 0 ? in->screen_h : 1;
+}
+
 void math3d_view(Mat4f *o) {
     float cy = gfx_cosf(g_cam_yaw);
     float sy = gfx_sinf(g_cam_yaw);

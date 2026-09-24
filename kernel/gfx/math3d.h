@@ -36,7 +36,17 @@ void mat4f_translate(Mat4f *o, float x, float y, float z);
 void mat4f_transform(const Mat4f *m, const Vec3f *in, Vec3f *out);
 void mat4f_transform_dir(const Mat4f *m, const Vec3f *in, Vec3f *out);
 
+typedef struct Gfx3DView {
+    Vec3f pos;
+    float yaw;
+    float pitch;
+    int screen_w;
+    int screen_h;
+} Gfx3DView;
+
 void math3d_cam_set(float x, float y, float z, float yaw, float pitch);
+void math3d_state_save(Gfx3DView *out);
+void math3d_state_load(const Gfx3DView *in);
 void math3d_cam_reset(void);
 void math3d_cam_get(Vec3f *pos, float *yaw, float *pitch);
 void math3d_view(Mat4f *o);

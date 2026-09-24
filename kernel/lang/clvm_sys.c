@@ -579,8 +579,23 @@ static int sys_fseek(ClvmVm *vm, void *user, int32_t fd, int32_t off) {
     return clvm_vm_push(vm, (int32_t)g_fds[fd].pos) ? 0 : -1;
 }
 
+static void gfx3d_ctx_cleanup(Gfx3DCtx **held) {
+    if (held && *held) {
+        gfx3d_ctx_save(*held);
+    }
+}
+
+static int voxel_for(ClvmGfxCtx *ctx) {
+    int slot = lang_find_slot_by_gfx(ctx);
+    if (slot < 0) {
+        return 0;
+    }
+    return voxel_claim(slot);
+}
+
 void clvm_sys_close_slot(int slot_id) {
     int i;
+    voxel_release(slot_id);
     input_capture_release_task(lang_slot_task(slot_id));
     sock_close_slot(slot_id);
     for (i = 0; i < CLVM_FD_MAX; ++i) {
@@ -1034,6 +1049,9 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     pix = ctx->pixels;
     gw = ctx->w;
     gh = ctx->h;
+    gfx3d_ctx_load(&ctx->view3d);
+    Gfx3DCtx *_view_guard __attribute__((cleanup(gfx3d_ctx_cleanup), unused)) =
+        &ctx->view3d;
     {
         int tr = g_sys_n % SYS_TRACE;
         g_sys_trace[tr].id = id;
@@ -1205,18 +1223,20 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
             !pop_i32(vm, &a))
             return -1;
-        if (voxel_set(a, b, c, d) != 0)
+        if (voxel_for(ctx) != 0 || voxel_set(a, b, c, d) != 0)
             return -1;
         return 0;
     case 37:
         if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
+        if (voxel_for(ctx) != 0)
+            return clvm_vm_push(vm, 0) ? 0 : -1;
         if (!clvm_vm_push(vm, voxel_get(a, b, c)))
             return -1;
         return 0;
     case 38:
         gfx_zbuf_prepare(ctx, gw, gh);
-        if (voxel_world_draw(pix, gw, gh) != 0)
+        if (voxel_for(ctx) != 0 || voxel_world_draw(pix, gw, gh) != 0)
             return -1;
         return 0;
     case 39:
@@ -1742,6 +1762,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         if (!ac97_take_event((int)irq)) {
             vm->state = CLVM_WAITING;
+            ac97_arm_waiter(proc_current());
             proc_block(proc_current(), PROC_ST_BLOCK_IRQ);
             if (!clvm_vm_push64(vm, irq) || !clvm_vm_push64(vm, 174))
                 return -1;

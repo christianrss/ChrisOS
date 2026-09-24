@@ -53,6 +53,24 @@ void tex_init(void) {
     g_ready = 1;
 }
 
+void tex_state_save(TexState *out) {
+    if (!out) {
+        return;
+    }
+    out->slot = g_slot;
+    out->du = g_ofs_u;
+    out->dv = g_ofs_v;
+}
+
+void tex_state_load(const TexState *in) {
+    if (!in) {
+        return;
+    }
+    g_slot = in->slot;
+    g_ofs_u = in->du;
+    g_ofs_v = in->dv;
+}
+
 void tex_set_slot(int slot) {
     tex_init();
     if (slot < 0)
