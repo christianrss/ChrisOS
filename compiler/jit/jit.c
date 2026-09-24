@@ -168,7 +168,7 @@ void jit_free(JitBuf *buf) {
         for (i = 0; i < pages; ++i) {
             unmap_4k(virt + (uint64_t)i * PMM_PAGE);
         }
-        mm_tlb_shootdown();
+        mm_tlb_shootdown_range(virt, (uint64_t)pages * PMM_PAGE);
         jit_va_free(virt);
     }
     pmm_free_contig(buf->phys, pages);

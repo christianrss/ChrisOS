@@ -28,8 +28,10 @@ edge. The heap lock is not recursive.
 generation before taking the lock so a CPU waiting for the lock can still ack
 a shootdown. `map_4k` / `mm_map_cr3` may allocate page-table pages, so MM →
 PMM is allowed. `mm_tlb_shootdown` holds `mm_lock` while it waits for
-`mm_tlb_seen[cpu]`. Every online CPU must call `mm_tlb_poll` (job workers and
-the desktop idle loop do).
+`mm_tlb_seen[cpu]`. It also sends LAPIC IPI vector 0xF0 to the other online
+CPUs. That handler calls `mm_tlb_poll` and `apic_eoi` and does not take
+`mm_lock`. `mm_tlb_poll` remains the ack path when the IPI has not been
+enabled yet. APs enable their LAPIC and set IF before `job_worker_forever`.
 
 User address spaces are BSP-only. `proc_switch` panics if
 `smp_current_cpu() != 0`. Kernel high-half mappings are shared, so JIT unmap

@@ -1,9 +1,10 @@
 #include "mm.h"
+#include "apic.h"
+#include "smp.h"
 #include "bootinfo.h"
 #include "panic.h"
 #include "pmm.h"
 #include "serial.h"
-#include "smp.h"
 #include "spin.h"
 
 #define MM_PS        (1ull << 7)
@@ -182,6 +183,25 @@ void mm_tlb_shootdown(void) {
     mm_tlb_gen = gen;
     mm_tlb_seen[self] = gen;
     online = cpu_online_count;
+    if (online > 1u) {
+        uint32_t i;
+        uint32_t n = online;
+        if (n > SMP_CPU_CAP) {
+            n = SMP_CPU_CAP;
+        }
+        for (i = 0u; i < n; i++) {
+            int known = 0;
+            uint32_t lapic;
+            if (i == self) {
+                continue;
+            }
+            lapic = smp_lapic_of(i, &known);
+            if (!known) {
+                continue;
+            }
+            (void)apic_ipi(lapic, 0xF0u);
+        }
+    }
     if (online < 1u) {
         online = 1u;
     }
@@ -205,6 +225,29 @@ void mm_tlb_shootdown(void) {
         __asm__ volatile ("pause");
     }
     mm_leave();
+}
+
+void mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes) {
+    uint64_t page;
+    uint64_t last;
+
+    if (!mm_ready || bytes == 0u) {
+        mm_tlb_shootdown();
+        return;
+    }
+    if (virt > ~0ull - (bytes - 1ull)) {
+        bytes = ~0ull - virt;
+    }
+    page = virt & ~(PMM_PAGE - 1ull);
+    last = (virt + bytes - 1ull) & ~(PMM_PAGE - 1ull);
+    for (;;) {
+        __asm__ volatile ("invlpg (%0)" : : "r"(page) : "memory");
+        if (page == last || page > ~0ull - PMM_PAGE) {
+            break;
+        }
+        page += PMM_PAGE;
+    }
+    mm_tlb_shootdown();
 }
 
 void unmap_4k(uint64_t virt) {

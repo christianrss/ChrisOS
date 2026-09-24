@@ -24,8 +24,12 @@ void unmap_4k(uint64_t virt);
 /* Clear one leaf in a specific address space. Does not free the frame. */
 void mm_unmap_cr3(uint64_t cr3_phys, uint64_t virt);
 void mm_flush_tlb(void);
-/* Block until every online CPU has reloaded CR3 after the latest unmap. */
+/* Block until every online CPU has reloaded CR3 after the latest unmap.
+ * Remote CPUs are poked with a LAPIC IPI (vector 0xF0). mm_tlb_poll remains
+ * the ack path for a CPU that has not enabled its LAPIC yet. */
 void mm_tlb_shootdown(void);
+/* invlpg [virt, virt+bytes) on this CPU, then the same IPI shootdown. */
+void mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes);
 /* Called from idle/worker paths so a CPU acknowledges a shootdown. */
 void mm_tlb_poll(void);
 void *map_mmio_page(uint64_t phys);
