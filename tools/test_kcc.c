@@ -77,11 +77,19 @@ int main(void) {
         fprintf(stderr, "level0 missing kstart or outb symbol\n");
         return 1;
     }
-    /* call outb is still a defined symbol with a zero displacement.
-     * A relocation count other than zero would be a different feature. */
-    if (img.nrel != 0u) {
-        fprintf(stderr, "level0 unexpectedly has relocations\n");
-        return 1;
+    {
+        uint32_t i;
+        int outb_undef = 0;
+        for (i = 0; i < img.nsym; i++) {
+            if (strcmp(img.sym[i].name, "outb") == 0 &&
+                img.sym[i].binding == CHRISO_BIND_UNDEF) {
+                outb_undef = 1;
+            }
+        }
+        if (!outb_undef || img.nrel < 2u || img.rel[0].type != R_X86_64_PLT32) {
+            fprintf(stderr, "level0 call was not a relocation\n");
+            return 1;
+        }
     }
     src = read_file(serial_path);
     if (!src) {

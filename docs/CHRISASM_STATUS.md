@@ -12,24 +12,30 @@ An unknown mnemonic returns success.
 No `r8`–`r15`. No `eax`/`ebx`/`ecx`/`edx`/`esi`/`edi`/`r8d`–`r15d`.
 No `ax`/`bx`/`cx`/`dx`. No `al`/`bl`/`cl`/`dl`.
 
+An unknown mnemonic fails the assemble. `call symbol` emits `e8` and an
+`R_X86_64_PLT32` relocation to an undefined symbol. A later label with
+the same name defines that symbol. `push` and `pop` accept `rax`–`rdi`
+and `r8`–`r15`. A full text buffer fails instead of dropping bytes.
+
 ## Instructions that emit bytes
 
 | Mnemonic | Encoding |
 | --- | --- |
 | `ret` | `c3` |
 | `syscall` | `0f 05` |
-| `push rax` | `50` |
-| `pop rax` | `58` |
+| `push reg` | `50+r`, or `41 50+r` for `r8`–`r15` |
+| `pop reg` | `58+r`, or `41 58+r` for `r8`–`r15` |
 | `mov reg, imm64` | `48 b8+r` plus imm64 |
 | `mov reg, reg` | `48 89 /r` |
-| `call symbol` | `e8` plus disp32 of zero |
+| `call symbol` | `e8` plus a `R_X86_64_PLT32` relocation, addend -4 |
 
 `call` stores the symbol as a defined text symbol at the displacement.
 It does not emit a relocation.
 
 ## Accepted and ignored
 
-`.text`. Blank lines, `#` comments, `;` comments. Any other mnemonic.
+`.text` and `global`. Blank lines, `#` comments, and `;` comments.
+Any other mnemonic fails.
 
 ## Not implemented
 
