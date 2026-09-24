@@ -1,4 +1,5 @@
 #include "job.h"
+#include "apic.h"
 #include "mm.h"
 #include "panic.h"
 #include "serial.h"
@@ -65,8 +66,20 @@ void job_worker_once(uint32_t cpu_index) {
     }
 }
 
+static volatile uint32_t g_ap_irq_enable;
+
+void smp_release_ap_irqs(void) {
+    g_ap_irq_enable = 1u;
+}
+
 void job_worker_forever(uint32_t cpu_index) {
+    int irqs = 0;
     for (;;) {
+        if (!irqs && g_ap_irq_enable) {
+            apic_enable_local();
+            __asm__ volatile ("sti");
+            irqs = 1;
+        }
         job_worker_once(cpu_index);
         __asm__ volatile ("pause");
     }

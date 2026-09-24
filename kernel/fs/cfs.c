@@ -345,6 +345,10 @@ static void jnl_serial_mount(uint32_t state, uint32_t replayed) {
 #endif
 }
 
+/* Contiguous file reads. Touched only while g_cfs_lock is held. */
+#define CFS_READAHEAD 16u
+static uint8_t g_cfs_ra[CFS_READAHEAD * 512u];
+
 static int data_lba_valid(uint32_t lba) {
     return lba >= CFS_DATA_LBA &&
            lba < CFS_DATA_LBA + CFS_DATA_SECTORS;
@@ -399,9 +403,16 @@ static int bitmap_get(Cfs *fs, uint32_t index, int *used) {
 }
 
 static int block_alloc(Cfs *fs, uint32_t *lba) {
-    uint32_t i;
+    uint32_t n;
+    uint32_t start;
     int used, rc;
-    for (i = 0; i < CFS_DATA_SECTORS; i++) {
+    start = fs->alloc_hint;
+    if (start >= CFS_DATA_SECTORS)
+        start = 0u;
+    for (n = 0; n < CFS_DATA_SECTORS; n++) {
+        uint32_t i = start + n;
+        if (i >= CFS_DATA_SECTORS)
+            i -= CFS_DATA_SECTORS;
         rc = bitmap_get(fs, i, &used);
         if (rc != CFS_OK) return rc;
         if (!used) {
@@ -413,6 +424,7 @@ static int block_alloc(Cfs *fs, uint32_t *lba) {
                 (void)bitmap_set(fs, i, 0);
                 return rc;
             }
+            fs->alloc_hint = i + 1u;
             *lba = CFS_DATA_LBA + i;
             return CFS_OK;
         }
@@ -421,8 +433,12 @@ static int block_alloc(Cfs *fs, uint32_t *lba) {
 }
 
 static int block_free(Cfs *fs, uint32_t lba) {
+    uint32_t index;
     if (!data_lba_valid(lba)) return CFS_ECORRUPT;
-    return bitmap_set(fs, lba - CFS_DATA_LBA, 0);
+    index = lba - CFS_DATA_LBA;
+    if (index < fs->alloc_hint)
+        fs->alloc_hint = index;
+    return bitmap_set(fs, index, 0);
 }
 
 static int ptr_block_get(Cfs *fs, uint32_t lba, uint32_t index, uint32_t *out) {
@@ -1323,6 +1339,32 @@ int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
         uint32_t take = amount - done;
         uint32_t lba;
         uint32_t available = STOR_SECTOR_SIZE - sector_off;
+        uint32_t run;
+        uint32_t bi;
+        if (sector_off == 0u && take >= STOR_SECTOR_SIZE) {
+            rc = file_lba(fs, &inode, block, &lba, 0);
+            if (rc != CFS_OK) return rc;
+            if (!data_lba_valid(lba)) return CFS_ECORRUPT;
+            run = 1u;
+            while (run < CFS_READAHEAD &&
+                   done + (run + 1u) * STOR_SECTOR_SIZE <= amount) {
+                uint32_t next = 0;
+                int nrc = file_lba(fs, &inode, block + run, &next, 0);
+                if (nrc != CFS_OK || !data_lba_valid(next) || next != lba + run)
+                    break;
+                run++;
+            }
+            if (run > 1u) {
+                if (bd_read(fs->dev, lba, run, g_cfs_ra) != BD_OK)
+                    return CFS_EIO;
+                for (bi = 0; bi < run; bi++)
+                    cache_drop_lba(fs, lba + bi);
+                bytes_copy(dst + done, g_cfs_ra, run * STOR_SECTOR_SIZE);
+                done += run * STOR_SECTOR_SIZE;
+                block += run;
+                continue;
+            }
+        }
         if (take > available) take = available;
         rc = file_lba(fs, &inode, block, &lba, 0);
         if (rc != CFS_OK) return rc;

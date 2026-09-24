@@ -1,5 +1,6 @@
 #include "irq.h"
 #include "apic.h"
+#include "mm.h"
 #include "panic.h"
 #include "port.h"
 #include "proc.h"
@@ -102,6 +103,13 @@ void irq_dispatch(struct irq_frame *frame) {
     }
     if (frame->vector < 32) {
         panic_exception(frame->vector, frame->error, frame->rip);
+    }
+    /* TLB shootdown IPI. Above the PIC range, so it must be acknowledged
+     * on the LAPIC before the generic high-vector return. */
+    if (frame->vector == 0xF0u) {
+        mm_tlb_poll();
+        apic_eoi();
+        return;
     }
     if (frame->vector >= 48) {
         return;

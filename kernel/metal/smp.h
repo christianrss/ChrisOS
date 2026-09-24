@@ -16,5 +16,8 @@ uint32_t smp_cpu_count(void);
 /* Index of the CPU executing this call. 0 until SMP bookkeeping is live.
  * Stable for the life of the CPU; not a shared global. */
 uint32_t smp_current_cpu(void);
+/* LAPIC id recorded at boot for this cpu index. Returns 0 and *known=0
+ * when the slot was never published. */
+uint32_t smp_lapic_of(uint32_t cpu, int *known);
 
 #endif

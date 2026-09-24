@@ -2,6 +2,7 @@
 #include <limine.h>
 #include <stdint.h>
 
+#include "apic.h"
 #include "bootinfo.h"
 #include "idt.h"
 #include "job.h"
@@ -18,6 +19,8 @@ uint64_t kernel_cr3;
 static uint64_t g_ap_stacks[SMP_MAX_APS];
 static uint32_t g_ap_index_by_lapic[256];
 static uint32_t g_cpu_by_lapic[256];
+static uint32_t g_lapic_of_cpu[SMP_CPU_CAP];
+static uint8_t g_lapic_known[SMP_CPU_CAP];
 static int g_cpu_ready;
 
 static void ap_entry(struct limine_mp_info *info);
@@ -104,7 +107,13 @@ static void ap_entry(struct limine_mp_info *info) {
     if (lapic_id == 0u) {
         lapic_id = lapic_id_read();
     }
+    if (index < SMP_CPU_CAP) {
+        g_lapic_of_cpu[index] = lapic_id;
+        g_lapic_known[index] = 1u;
+    }
     __sync_fetch_and_add(&cpu_online_count, 1u);
+    /* IF stays clear until the BSP finishes install. Enabling the LAPIC and
+     * unmasking an AP during the ATA copy kept that copy from finishing. */
     job_worker_forever(index);
 }
 
@@ -129,6 +138,8 @@ void smp_init(void) {
         g_cpu_by_lapic[i] = 0u;
     }
     g_cpu_by_lapic[mp->bsp_lapic_id & 0xffu] = 0u;
+    g_lapic_of_cpu[0] = mp->bsp_lapic_id;
+    g_lapic_known[0] = 1u;
     g_cpu_ready = 1;
 
     for (i = 0; i < mp->cpu_count; i++) {
@@ -156,6 +167,10 @@ void smp_init(void) {
         }
         g_ap_index_by_lapic[info->lapic_id & 0xffu] = next;
         g_cpu_by_lapic[info->lapic_id & 0xffu] = next;
+        if (next < SMP_CPU_CAP) {
+            g_lapic_of_cpu[next] = info->lapic_id;
+            g_lapic_known[next] = 1u;
+        }
         g_ap_stacks[next] = alloc_ap_stack(next);
         info->extra_argument = (uint64_t)next;
         __asm__ volatile ("" ::: "memory");
@@ -172,6 +187,20 @@ void smp_init(void) {
     serial_puts("cpu_online_count=");
     serial_write_u64(cpu_online_count);
     serial_puts(" (BSP+AP)\n");
+    apic_enable_local();
+}
+
+uint32_t smp_lapic_of(uint32_t cpu, int *known) {
+    if (cpu >= SMP_CPU_CAP || !g_lapic_known[cpu]) {
+        if (known) {
+            *known = 0;
+        }
+        return 0u;
+    }
+    if (known) {
+        *known = 1;
+    }
+    return g_lapic_of_cpu[cpu];
 }
 
 uint32_t smp_current_cpu(void) {

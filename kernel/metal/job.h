@@ -11,6 +11,8 @@ void job_init(void);
 int job_submit(JobFn fn, void *arg);
 void job_worker_once(uint32_t cpu_index);
 void job_worker_forever(uint32_t cpu_index);
+/* APs enable the LAPIC and set IF on their next loop. */
+void smp_release_ap_irqs(void);
 void job_wait_idle(void);
 uint32_t job_completed(void);
 void smp_job_selftest(void);

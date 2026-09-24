@@ -10,6 +10,8 @@
 
 static uint8_t g_sec[512];
 static uint8_t g_chunk[2048];
+/* Tree copies journal once per write. 32 KiB keeps that off the per-cluster path. */
+static uint8_t g_iobuf[32768];
 static uint8_t g_entries[128 * 128];
 static uint16_t g_fat[16384];
 static Cfs g_fs;
@@ -94,6 +96,9 @@ static int esp_put_file(BlockDevice *disk, uint32_t esp_lba, uint32_t data,
     first = *cluster;
     if (first + slots >= 16000u)
         return -1;
+    serial_puts("install esp ");
+    serial_puts(path);
+    serial_puts("\n");
     while (off < size) {
         int n = fs_read_at(path, off, g_chunk, 2048);
         uint32_t s;
@@ -103,6 +108,11 @@ static int esp_put_file(BlockDevice *disk, uint32_t esp_lba, uint32_t data,
             g_chunk[s] = 0;
         if (esp_put_cluster(disk, esp_lba, data, *cluster, g_chunk) != 0)
             return -1;
+        if (((*cluster) & 255u) == 0u) {
+            serial_puts("install esp off ");
+            serial_write_u64(off);
+            serial_puts("\n");
+        }
         g_fat[*cluster] =
             (off + 2048u >= size) ? 0xFFFFu : (uint16_t)(*cluster + 1u);
         *cluster += 1u;
@@ -300,10 +310,14 @@ static int write_gpt_backup(BlockDevice *disk, uint32_t sectors) {
 static int copy_file(Cfs *dst, const char *path, uint32_t size) {
     uint32_t off = 0;
     while (off < size) {
-        int n = fs_read_at(path, off, g_chunk, 2048);
+        uint32_t want = size - off;
+        int n;
+        if (want > sizeof(g_iobuf))
+            want = (uint32_t)sizeof(g_iobuf);
+        n = fs_read_at(path, off, g_iobuf, (int)want);
         if (n <= 0)
             return -1;
-        if (cfs_write_at(dst, path, off, g_chunk, (uint32_t)n) < 0)
+        if (cfs_write_at(dst, path, off, g_iobuf, (uint32_t)n) < 0)
             return -1;
         off += (uint32_t)n;
     }
@@ -356,6 +370,9 @@ static int copy_tree(Cfs *dst) {
                                  "SRC", "BIN"};
     int i;
     for (i = 0; i < 7; ++i) {
+        serial_puts("install copy ");
+        serial_puts(dirs[i]);
+        serial_puts("\n");
         if (copy_dir(dst, dirs[i]) != 0)
             return -1;
     }
@@ -459,6 +476,9 @@ static int install_device(BlockDevice *disk, const char *label, int copy_os) {
             return -1;
         }
         serial_puts("install tree copied\n");
+        /* The marker is an instruction to this boot, not part of the
+         * installed system. Leaving it made the next boot try again. */
+        (void)cfs_unlink(&g_fs, "BOOT/INSTALL.AUTO");
     } else {
         cfs_mkdir(&g_fs, "BOOT");
         cfs_mkdir(&g_fs, "INSTALL");
@@ -517,6 +537,15 @@ int install_selftest(void) {
     uint64_t bytes = 70000ull * 512ull;
     BlockDevice bd;
     uint8_t sig[512];
+    uint32_t auto_size = 0;
+    uint16_t auto_type = 0;
+    /* INSTALL.AUTO is an explicit install. The RAM selftest rewrites the
+     * same boot files first and, on an ATA root, does not finish before the
+     * real target is touched. The no-ATA boot has no marker and still runs it. */
+    if (fs_stat("BOOT/INSTALL.AUTO", &auto_size, &auto_type) == 0) {
+        serial_puts("install selftest deferred\n");
+        return 0;
+    }
     if (require_boot_files() != 0) {
         serial_puts("install selftest skip\n");
         return 0;
