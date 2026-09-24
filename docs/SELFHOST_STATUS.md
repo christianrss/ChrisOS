@@ -1,12 +1,16 @@
 # Self-host status
 
-Recorded at the start of the developer-toolkit campaign. A level is PROVEN
-only when an automated gate shows it. A capability that merely exists in a
-running system is not PROVEN.
+A level is PROVEN only when an automated gate shows it. A capability that
+merely exists in a running system is not PROVEN.
 
-Requested base: `dc662538477d7322312a2d54c983207b5b6259d7`.
-Work base: `1e81ca46d41c136f2a842d0a43ee8d1fee0b4268` on
-`cursor/foundation-campaign-7c6f` (foundation fixes kept).
+Developer-toolkit campaign base: `1e81ca46d41c136f2a842d0a43ee8d1fee0b4268`.
+Native-toolchain campaign starts at `894aed92e48e764e2627ecfc2514684f50809f59`
+on `cursor/native-toolchain-7c6f`. `origin/feat/os2` is
+`07e115fc4852bd0f7243997ad2120d3b9c21ba8a`, a squash of the foundation tree
+already contained here. Later commits were kept.
+
+SH4 and SH5 are still NOT PROVEN. Calling host-built compiler code from
+inside ChrisOS does not count. The audit is `docs/NATIVE_TOOLCHAIN_AUDIT.md`.
 
 | Level | Meaning | Status | Gate |
 | --- | --- | --- | --- |

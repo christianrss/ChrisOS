@@ -105,6 +105,17 @@ docs/*
 !docs/SELFHOST_STATUS.md
 !docs/CHRISC_SELFHOST_CONFORMANCE.md
 !docs/NATIVE_TOOLCHAIN_GAP.md
+!docs/NATIVE_TOOLCHAIN_AUDIT.md
+!docs/CHRIS_KERNEL_C_PROFILE.md
+!docs/KCC_STATUS.md
+!docs/CHRISASM_STATUS.md
+!docs/CHRISO_FORMAT.md
+!docs/CHRISLD_STATUS.md
+!docs/KERNEL_SELFHOST_PLAN.md
+!docs/REAL_HARDWARE_PLAN.md
+!docs/HARDWARE_COMPATIBILITY.md
+!docs/INSTALLATION.md
+!docs/HARDWARE_BRINGUP.md
 backup/
 tools/gen_fase*.py
 tools/write_learn_book.py

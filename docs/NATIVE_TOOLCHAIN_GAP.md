@@ -1,5 +1,10 @@
 # Native toolchain gap
 
+The full gap report for this stage is `docs/NATIVE_TOOLCHAIN_AUDIT.md`.
+This file stays as the short summary from the developer-toolkit campaign.
+Levels in `docs/SELFHOST_STATUS.md` are unchanged: SH0 is the only proven
+level.
+
 KCC, ChrisAsm, ChrisO, and ChrisLd are a bootstrap sketch. They are enough
 for a few hand-sized programs. They are not enough to compile
 `kernel/metal/*.c` or to link `BIN/KERNEL.ELF` from real objects.
