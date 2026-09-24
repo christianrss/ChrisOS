@@ -1,0 +1,52 @@
+struct Flags {
+    unsigned ground : 1;
+    unsigned water : 1;
+    unsigned bow : 1;
+    unsigned alive : 1;
+};
+
+struct Actor {
+    float x;
+    float y;
+    float z;
+    float vx;
+    float vy;
+    float vz;
+    float yaw;
+    float pitch;
+    int kind;
+    int state;
+    int timer;
+    struct Flags bits;
+};
+
+struct Actor g_act[16];
+struct Actor g_snap;
+int g_phase;
+int g_built;
+int g_mode;
+int g_hand;
+int g_inv[16];
+int g_wood;
+int g_pearl;
+int g_arrows;
+int g_bias;
+int g_rain;
+int g_charge;
+int g_charging;
+int g_toast;
+int g_note;
+int g_look;
+int g_pmx;
+int g_pmy;
+int g_scene;
+int g_phys;
+int g_break;
+float g_v[24];
+float g_mat[16];
+char g_sav[48];
+char g_spr[64];
+char g_tile[32];
+char g_pal[768];
+char g_pcm[64];
+char g_num[8];

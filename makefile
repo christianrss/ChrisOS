@@ -64,7 +64,8 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/net/virtio_net.o kernel/net/net.o kernel/net/sock.o \
 	kernel/crypto/sha256.o kernel/crypto/rng.o kernel/crypto/aes.o kernel/crypto/x25519.o \
 	kernel/gfx/ac97.o kernel/gfx/hwgate.o \
-	kernel/gfx/graphics.o kernel/gfx/font.o kernel/gfx/input.o \
+	kernel/gfx/graphics.o kernel/gfx/font.o kernel/gfx/icons_tab.o kernel/gfx/icons_bin.o \
+	kernel/gfx/input.o \
 	kernel/gfx/speaker.o kernel/gfx/gfx2d.o \
 	kernel/wm/task.o kernel/wm/ui.o kernel/wm/desktop.o kernel/wm/main.o \
 	kernel/wm/boot_splash.o \
@@ -343,6 +344,15 @@ test_chrisc_string: tools/test_chrisc_string.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
 		-o $(HOST_BIN)/test_chrisc_string
 	$(HOST_BIN)/test_chrisc_string
+
+test_chrisc_lang: tools/test_chrisc_lang.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_lang.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_lang
+	$(HOST_BIN)/test_chrisc_lang
 
 test_chrisc_c17: tools/test_chrisc_c17.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
@@ -683,6 +693,8 @@ disk-lib: $(DISK_IMG) host-cfs-put-file
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/BODY.CC LIB/BODY.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/CLIP.CC LIB/CLIP.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/ANIM.CC LIB/ANIM.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/SIM.CC LIB/SIM.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/HIT.CC LIB/HIT.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/CAT.CC SRC/CAT.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) SRC/HELLO.TXT SRC/HELLO.TXT
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/PHYS.CC GAMES/PHYS.CC
@@ -702,6 +714,7 @@ disk-ui: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/mk_clv APPS/TASKMGR/TASKMGR.LST
 	$(HOST_BIN)/mk_clv APPS/BALL/BALL.LST
 	$(HOST_BIN)/mk_clv APPS/PREFS/PREFS.LST
+	$(HOST_BIN)/mk_clv GAMES/MINE/MINE.LST
 	$(HOST_BIN)/mk_clv LIB/WIN.LST --cls LIB/WIN
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.H LIB/WIN.H
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/WIN.CC LIB/WIN.CC
@@ -754,6 +767,19 @@ disk-ui: $(DISK_IMG) host-cfs-put-file host-mk-clv
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.CC APPS/PREFS/PREFS.CC
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.LST APPS/PREFS/PREFS.LST
 	$(HOST_BIN)/cfs_put_file $(DISK_IMG) APPS/PREFS/PREFS.CLV APPS/PREFS/PREFS.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/MINE.CC GAMES/MINE/MINE.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/MINE.LST GAMES/MINE/MINE.LST
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/MINE.CLV GAMES/MINE/MINE.CLV
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/STATE.CC GAMES/MINE/STATE.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/CUBE.CC GAMES/MINE/CUBE.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/GEN.CC GAMES/MINE/GEN.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/AI.CC GAMES/MINE/AI.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/SKY.CC GAMES/MINE/SKY.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/SAVE.CC GAMES/MINE/SAVE.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/PLAY.CC GAMES/MINE/PLAY.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) GAMES/MINE/UI.CC GAMES/MINE/UI.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/SIM.CC LIB/SIM.CC
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) LIB/HIT.CC LIB/HIT.CC
 
 disk-apps: disk-ui
 	$(HOST_BIN)/mk_clv GAMES/DOOM/DOOM.LST
@@ -882,7 +908,7 @@ test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
 		-o $(HOST_BIN)/test_native_link
 	$(HOST_BIN)/test_native_link
 
-host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_editor_vi test_chrisc_string test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
+host-gfx3d: test_sse_init test_math3d test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_editor_vi test_chrisc_string test_chrisc_lang test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
@@ -1002,6 +1028,16 @@ $(OBJ_DIR)/kernel/metal/%.o: kernel/metal/%.c
 $(OBJ_DIR)/kernel/gfx/%.o: kernel/gfx/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
+
+kernel/gfx/font.c kernel/gfx/icons_tab.c build/icons/icons.S: tools/gen_ui_assets.py $(wildcard assets/*.png)
+	python3 tools/gen_ui_assets.py
+
+$(OBJ_DIR)/kernel/gfx/icons_bin.o: build/icons/icons.S
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c build/icons/icons.S -o $@
+
+$(OBJ_DIR)/kernel/gfx/icons_tab.o: kernel/gfx/icons_tab.c
+$(OBJ_DIR)/kernel/gfx/font.o: kernel/gfx/font.c
 
 $(OBJ_DIR)/kernel/wm/%.o: kernel/wm/%.c
 	@mkdir -p $(dir $@)

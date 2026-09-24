@@ -3,6 +3,7 @@
 #include "panic.h"
 #include "port.h"
 #include "proc.h"
+#include "serial.h"
 #include "syscall.h"
 
 #define PIC1_COMMAND 0x20
@@ -12,6 +13,7 @@
 #define PIC_EOI      0x20
 
 static irq_handler handlers[16];
+static uint32_t irq_hits[16];
 
 void pic_init(void) {
     unsigned int index;
@@ -106,6 +108,14 @@ void irq_dispatch(struct irq_frame *frame) {
     }
 
     irq = (uint8_t)(frame->vector - 32);
+    /* IRQ 0 is the 60 Hz timer. Counting it out would stop the desktop. */
+    if (irq > 0 && irq < 16 && ++irq_hits[irq] == 10000u) {
+        /* A line that never drops livelocks the boot before the desktop. */
+        pic_set_mask(irq, true);
+        serial_puts("irq storm ");
+        serial_write_u64(irq);
+        serial_puts("\n");
+    }
     if (handlers[irq] != 0) {
         handlers[irq](frame);
     }

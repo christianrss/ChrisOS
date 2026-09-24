@@ -182,6 +182,77 @@ void gfx_blit_scaled(const uint32_t *src, int sw, int sh,
     }
 }
 
+void gfx_blit_rgba(const uint32_t *src, int sw, int sh,
+                   int dx, int dy, int dw, int dh) {
+    int x;
+    int y;
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+
+    if (!src || !g_gfx.back || sw < 1 || sh < 1 || dw < 1 || dh < 1) {
+        return;
+    }
+    x0 = dx < 0 ? 0 : dx;
+    y0 = dy < 0 ? 0 : dy;
+    x1 = dx + dw;
+    y1 = dy + dh;
+    if (x1 > g_gfx.width) {
+        x1 = g_gfx.width;
+    }
+    if (y1 > g_gfx.height) {
+        y1 = g_gfx.height;
+    }
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+    gfx_mark_dirty(x0, y0, x1 - x0, y1 - y0);
+    for (y = y0; y < y1; ++y) {
+        int sy = ((y - dy) * sh) / dh;
+        if (sy < 0) {
+            sy = 0;
+        }
+        if (sy >= sh) {
+            sy = sh - 1;
+        }
+        for (x = x0; x < x1; ++x) {
+            uint32_t pix;
+            uint32_t a;
+            int sx = ((x - dx) * sw) / dw;
+            if (sx < 0) {
+                sx = 0;
+            }
+            if (sx >= sw) {
+                sx = sw - 1;
+            }
+            pix = src[sy * sw + sx];
+            a = pix >> 24;
+            if (a == 0) {
+                continue;
+            }
+            if (a == 255u) {
+                g_gfx.back[y * g_gfx.width + x] = pix & 0x00FFFFFFu;
+                continue;
+            }
+            {
+                uint32_t dst = g_gfx.back[y * g_gfx.width + x];
+                uint32_t inv = 255u - a;
+                uint32_t sr = (pix >> 16) & 0xFFu;
+                uint32_t sg = (pix >> 8) & 0xFFu;
+                uint32_t sb = pix & 0xFFu;
+                uint32_t dr = (dst >> 16) & 0xFFu;
+                uint32_t dg = (dst >> 8) & 0xFFu;
+                uint32_t db = dst & 0xFFu;
+                uint32_t r = (sr * a + dr * inv) / 255u;
+                uint32_t g = (sg * a + dg * inv) / 255u;
+                uint32_t b = (sb * a + db * inv) / 255u;
+                g_gfx.back[y * g_gfx.width + x] = (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+}
+
 void gfx_fill_circle(int cx, int cy, int radius, uint32_t color) {
     int x;
     int y;

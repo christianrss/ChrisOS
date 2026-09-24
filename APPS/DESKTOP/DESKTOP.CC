@@ -33,8 +33,8 @@ void main() {
     mb = mouse_btn();
     mx = mouse_x();
     my = mouse_y();
-    fillrgb(0, 0, dw, dh, 0x0014283C);
-    n = 7;
+    fillrgb(0, 0, dw, dh, 0x00181014);
+    n = 8;
     i = 0;
     col = 0;
     row = 0;
@@ -77,6 +77,10 @@ void main() {
         fillrgb(x, y, 48, 48, 0x406080);
         text(x, y + 52, "Prefs", 0x00E8F0FF);
       }
+      if (i == 7) {
+        fillrgb(x, y, 48, 48, 0xC4842A);
+        text(x, y + 52, "Mine", 0x00E8F0FF);
+      }
       if (mb) {
         if (g_desk_prev == 0) {
           if (mx >= x) {
@@ -103,6 +107,9 @@ void main() {
                   }
                   if (i == 6) {
                     app_launch("APPS/PREFS/PREFS.CLV");
+                  }
+                  if (i == 7) {
+                    app_launch("GAMES/MINE/MINE.CLV");
                   }
                 }
               }

@@ -10,6 +10,9 @@ typedef struct Vblk {
     uint32_t coff;
     int nwin;
     uint32_t noff;
+    int isr_win;
+    uint32_t isr_off;
+    int isr_ok;
     int q;
     int cmd;
     int data;
@@ -55,8 +58,11 @@ static int kick(Vblk *b, int write, uint32_t lba, uint32_t bytes) {
     hw_mmio_w16(b->nwin, b->noff, 0);
     for (spins = 0; spins < 2000; ++spins) {
         uint32_t used = hw_dma_r32(b->q, 2048);
-        if ((used >> 16) == idx && (hw_dma_r32(b->cmd, 32) & 0xFFu) == 0u)
+        if ((used >> 16) == idx && (hw_dma_r32(b->cmd, 32) & 0xFFu) == 0u) {
+            if (b->isr_ok)
+                (void)hw_mmio_r8(b->isr_win, b->isr_off);
             return 0;
+        }
     }
     /* Disk writes finish on QEMU's iothread. serial_putc exits TCG long
        enough for that thread to post status 0. */
@@ -64,9 +70,14 @@ static int kick(Vblk *b, int write, uint32_t lba, uint32_t bytes) {
         uint32_t used;
         serial_putc(0);
         used = hw_dma_r32(b->q, 2048);
-        if ((used >> 16) == idx && (hw_dma_r32(b->cmd, 32) & 0xFFu) == 0u)
+        if ((used >> 16) == idx && (hw_dma_r32(b->cmd, 32) & 0xFFu) == 0u) {
+            if (b->isr_ok)
+                (void)hw_mmio_r8(b->isr_win, b->isr_off);
             return 0;
+        }
     }
+    if (b->isr_ok)
+        (void)hw_mmio_r8(b->isr_win, b->isr_off);
     serial_puts("vblk timeout used=");
     serial_write_u64(hw_dma_r32(b->q, 2048));
     serial_puts(" len=");
@@ -133,6 +144,8 @@ int virtio_blk_probe(void) {
                 int cwin = -1;
                 int nwin = -1;
                 int dwin = -1;
+                int iwin = -1;
+                uint32_t ioff = 0;
                 uint32_t coff = 0;
                 uint32_t noff = 0;
                 uint32_t doff = 0;
@@ -177,6 +190,10 @@ int virtio_blk_probe(void) {
                             dwin = win;
                             doff = cfg;
                         }
+                        if (typ == 3 && win >= 0) {
+                            iwin = win;
+                            ioff = cfg;
+                        }
                     }
                     off = next;
                 }
@@ -220,6 +237,9 @@ int virtio_blk_probe(void) {
                 g_blk.coff = coff;
                 g_blk.nwin = nwin;
                 g_blk.noff = noff + (uint32_t)qnote * mult;
+                g_blk.isr_win = iwin;
+                g_blk.isr_off = ioff;
+                g_blk.isr_ok = iwin >= 0;
                 hw_mmio_w8(cwin, coff + 20, 15);
                 cap_lo = hw_mmio_r32(dwin, doff);
                 cap_hi = hw_mmio_r32(dwin, doff + 4u);

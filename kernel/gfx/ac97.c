@@ -47,6 +47,10 @@ static void ac97_on_irq(struct irq_frame *frame) {
     outw((uint16_t)(g_nabm + 0x16u), st);
     g_event = 1;
     proc_unblock_why(PROC_ST_BLOCK_IRQ);
+    if (g_n <= 0) {
+        outb((uint8_t)(g_nabm + 0x1Bu), 0);
+        return;
+    }
     ac97_fill();
     outb((uint8_t)(g_nabm + 0x15u), 0);
     outb((uint8_t)(g_nabm + 0x1Bu), 0x11u);
@@ -74,6 +78,11 @@ int ac97_write(const int16_t *samples, int n) {
         g_w = (g_w + 1) % PCM_RING;
         g_n++;
         put++;
+    }
+    if (put > 0) {
+        ac97_fill();
+        outb((uint8_t)(g_nabm + 0x15u), 0);
+        outb((uint8_t)(g_nabm + 0x1Bu), 0x11u);
     }
     return put;
 }
@@ -109,7 +118,8 @@ int ac97_init(void) {
         irq_set_handler(irq, ac97_on_irq);
         pic_set_mask(irq, false);
     }
-    outb((uint8_t)(nabm + 0x1Bu), 0x11u);
+    /* Do not start the engine here. An empty buffer completes at once and
+       the IRQ never lets the desktop loop run. Playback starts on write. */
     g_ready = 1;
     serial_puts("ac97: ready\n");
     return 1;

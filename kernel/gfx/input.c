@@ -39,6 +39,7 @@ static IrqMouseState g_mouse;
 static uint32_t g_seen_left_press;
 static int g_screen_width;
 static int g_screen_height;
+static int g_abs;
 static uint8_t g_mouse_packet[3];
 static unsigned int g_mouse_packet_index;
 
@@ -183,6 +184,7 @@ void input_init(int screen_width, int screen_height) {
     g_mouse.left_press_sequence = 0;
     g_seen_left_press = 0;
     g_mouse_packet_index = 0;
+    g_abs = 0;
     g_extended = false;
     g_left_shift = false;
     g_right_shift = false;
@@ -385,7 +387,54 @@ static void apply_mouse_packet(void) {
     ++g_mouse.version;
 }
 
+void input_use_absolute(int on) {
+    g_abs = on ? 1 : 0;
+}
+
+void input_pointer_absolute(int x, int y, int xmax, int ymax, int buttons) {
+    bool left = (buttons & 1) != 0;
+    int sx;
+    int sy;
+
+    if (xmax < 1) {
+        xmax = 1;
+    }
+    if (ymax < 1) {
+        ymax = 1;
+    }
+    if (x < 0) {
+        x = 0;
+    }
+    if (y < 0) {
+        y = 0;
+    }
+    if (x > xmax) {
+        x = xmax;
+    }
+    if (y > ymax) {
+        y = ymax;
+    }
+    sx = (int)(((uint32_t)x * (uint32_t)(g_screen_width - 1)) / (uint32_t)xmax);
+    sy = (int)(((uint32_t)y * (uint32_t)(g_screen_height - 1)) / (uint32_t)ymax);
+    g_abs = 1;
+    ++g_mouse.version;
+    compiler_barrier();
+    g_mouse.x = clamp_int(sx, 0, g_screen_width - 1);
+    g_mouse.y = clamp_int(sy, 0, g_screen_height - 1);
+    if (left && !g_mouse.left_down) {
+        ++g_mouse.left_press_sequence;
+    }
+    g_mouse.left_down = left;
+    g_mouse.right_down = (buttons & 2) != 0;
+    g_mouse.middle_down = (buttons & 4) != 0;
+    compiler_barrier();
+    ++g_mouse.version;
+}
+
 void input_mouse_irq_byte(uint8_t byte) {
+    if (g_abs) {
+        return;
+    }
     if (g_mouse_packet_index == 0 && (byte & 0x08u) == 0) {
         return;
     }

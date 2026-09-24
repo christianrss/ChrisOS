@@ -366,6 +366,9 @@ static int native_op(uint8_t op) {
     case CL_OP_UDIV:
     case CL_OP_UMOD:
     case CL_OP_ULT:
+    case CL_OP_ULE:
+    case CL_OP_UGT:
+    case CL_OP_UGE:
         return 1;
     default:
         return 0;
@@ -615,7 +618,13 @@ static int emit_insn(JitBuf *j, const uint8_t *code, uint32_t pc, uint32_t size,
         return emit_push_rax(j, fault);
     }
     case CL_OP_ULT:
-        return emit_cmp64(j, fault, 0x92); /* setb: CF=1 after cmp a,b */
+        return emit_cmp64(j, fault, 0x92); /* setb */
+    case CL_OP_ULE:
+        return emit_cmp64(j, fault, 0x96); /* setbe */
+    case CL_OP_UGT:
+        return emit_cmp64(j, fault, 0x97); /* seta */
+    case CL_OP_UGE:
+        return emit_cmp64(j, fault, 0x93); /* setae */
     case CL_OP_LOAD:
     case CL_OP_FLOAD:
         if (emit_pop_rax(j, fault) != 0 || emit_bounds(j, 4, g_fault_ba) != 0 ||
@@ -900,9 +909,16 @@ int jit_compile_image(const ClvmImage *image, JitBuf *buf, JitFn *fn_out) {
         yield = buf->used;
         if (emit_ret_value(buf, CLVM_STEP_YIELD) != 0)
             goto fail;
-
-        after_h = buf->used;
-        if (jit_emit_test_r32_r32(buf, 0, 0) != 0 || emit_js_to(buf, fault) != 0 ||
+        /* Helper already stored the real fault. Do not rewrite it as
+         * a stack underflow. */
+        {
+            uint32_t helper_fault = buf->used;
+            if (emit_set_state(buf, CLVM_FAULTED) != 0 ||
+                emit_ret_value(buf, CLVM_STEP_FAULT) != 0)
+                goto fail;
+            after_h = buf->used;
+            if (jit_emit_test_r32_r32(buf, 0, 0) != 0 ||
+                emit_js_to(buf, helper_fault) != 0 ||
             jit_emit(buf, ldst, 2) != 0 || jit_emit_u32(buf, JIT_OFF_STATE) != 0 ||
             emit_cmp_eax_imm8(buf, (int8_t)CLVM_WAITING) != 0 ||
             emit_je_to(buf, yield) != 0 ||
@@ -911,8 +927,9 @@ int jit_compile_image(const ClvmImage *image, JitBuf *buf, JitFn *fn_out) {
             emit_je_to(buf, halt) != 0 ||
             jit_emit(buf, ldst, 2) != 0 || jit_emit_u32(buf, JIT_OFF_STATE) != 0 ||
             emit_cmp_eax_imm8(buf, (int8_t)CLVM_FAULTED) != 0 ||
-            emit_je_to(buf, fault) != 0)
-            goto fail;
+            emit_je_to(buf, helper_fault) != 0)
+                goto fail;
+        }
         if (jit_emit_jmp_rel32(buf, 0) != 0)
             goto fail;
         to_disp = buf->used - 4u;

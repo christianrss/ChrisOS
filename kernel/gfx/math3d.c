@@ -226,19 +226,18 @@ void math3d_view(Mat4f *o) {
     Vec3f f;
     Vec3f r;
     Vec3f u;
-    Vec3f world_up;
 
+    /* Yaw 0 looks toward -Z. Positive pitch looks down. Right is +X, no roll. */
     f.x = sy * cp;
     f.y = -sp;
     f.z = -cy * cp;
+    r.x = cy;
+    r.y = 0.0f;
+    r.z = sy;
+    u.x = r.y * f.z - r.z * f.y;
+    u.y = r.z * f.x - r.x * f.z;
+    u.z = r.x * f.y - r.y * f.x;
     vec3f_norm(&f);
-    vec3f_set(&world_up, 0.0f, 1.0f, 0.0f);
-    vec3f_cross(&r, &world_up, &f);
-    if (vec3f_len(&r) < 1e-6f)
-        vec3f_set(&r, 1.0f, 0.0f, 0.0f);
-    else
-        vec3f_norm(&r);
-    vec3f_cross(&u, &f, &r);
     vec3f_norm(&u);
     mat4f_identity(o);
     o->m[0] = r.x;
@@ -278,6 +277,26 @@ int math3d_screen_w(void) {
 
 int math3d_screen_h(void) {
     return g_sh;
+}
+
+int project_view(float x, float y, float z, int *sx, int *sy, uint32_t *sz) {
+    float hz;
+    int half_w;
+    int half_h;
+
+    if (z <= 0.0f) {
+        *sx = -1;
+        *sy = -1;
+        *sz = 0xFFFFFFFFu;
+        return 0;
+    }
+    half_w = g_sw / 2;
+    half_h = g_sh / 2;
+    hz = z;
+    *sx = half_w + (int)(x * (float)half_w / hz);
+    *sy = half_h - (int)(y * (float)half_h / hz);
+    *sz = depth_to_z(z);
+    return 1;
 }
 
 int project_vertex(const Mat4f *mvp, float x, float y, float z,

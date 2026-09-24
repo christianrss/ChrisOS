@@ -35,7 +35,14 @@ static void app_title(char *dst, const char *name) {
     dst[i] = 0;
 }
 
+static int app_is_hd_game(int gw, int gh) {
+    return gw >= 640 && gh >= 480 && gw <= 1024 && gh <= 768;
+}
+
 static int app_is_game(int gw, int gh) {
+    if (app_is_hd_game(gw, gh)) {
+        return 1;
+    }
     return gw > 0 && gh > 0 && gw <= CLVM_SYS_GAME_W + 32 &&
            gh <= CLVM_SYS_GAME_H + 32;
 }
@@ -153,26 +160,27 @@ static int app_game_chrome(Task *task, int slot) {
         input_consume_left_press();
     }
 
-    gfx_fill_rect(x, y, w, APP_CHROME_H, 0x00306090u);
+    gfx_fill_rect(x, y, w, APP_CHROME_H, CHRIS_TITLE_COLOR);
+    gfx_fill_rect(x, y, w, 1, CHRIS_BORDER_COLOR);
     title = task_title(task);
     gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, title,
-                          x + 6, y + 3, 0x00FFFFFFu, x, y, w - close_w * 3,
+                          x + 6, y + 3, CHRIS_TITLE_TEXT, x, y, w - close_w * 3,
                           APP_CHROME_H);
     gfx_fill_rect(min_bx, y, close_w, APP_CHROME_H,
-                  min_hover ? 0x006080A0u : 0x00406080u);
+                  min_hover ? CHRIS_ACCENT_COLOR : CHRIS_EDITOR_COLOR);
     gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, "_",
-                          min_bx + 6, y + 2, 0x00FFFFFFu, min_bx, y, close_w,
+                          min_bx + 6, y + 2, CHRIS_TITLE_TEXT, min_bx, y, close_w,
                           APP_CHROME_H);
     gfx_fill_rect(max_bx, y, close_w, APP_CHROME_H,
-                  max_hover ? 0x006080A0u : 0x00406080u);
+                  max_hover ? CHRIS_ACCENT_COLOR : CHRIS_EDITOR_COLOR);
     gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
                           task->window.mode == TASK_WINDOW_MAXIMIZED ? "R" : "M",
-                          max_bx + 6, y + 2, 0x00FFFFFFu, max_bx, y, close_w,
+                          max_bx + 6, y + 2, CHRIS_TITLE_TEXT, max_bx, y, close_w,
                           APP_CHROME_H);
     gfx_fill_rect(close_bx, y, close_w, APP_CHROME_H,
-                  close_hover ? 0x00FF4444u : 0x00C02828u);
+                  close_hover ? 0x00E07050u : 0x00804030u);
     gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, "X",
-                          close_bx + 6, y + 2, 0x00FFFFFFu, close_bx, y, close_w,
+                          close_bx + 6, y + 2, CHRIS_TITLE_TEXT, close_bx, y, close_w,
                           APP_CHROME_H);
     gfx_fill_rect(x + w - 8, y + h - 8, 8, 8, 0x007090B0u);
 
@@ -259,6 +267,26 @@ static void app_run(Task *task, uint64_t ticks) {
         task->frame.body_height = gh;
     }
     clvm_sys_blit_to(pix, task->frame.x, task->frame.y, gw, gh, gw, gh);
+    if (task->frame.x == 0 && task->frame.y == 0 &&
+        gw >= g_gfx.width && gh >= g_gfx.height) {
+        ui_paint_desktop();
+        return;
+    }
+    if (gh <= UI_TASKBAR_HEIGHT + 8 &&
+        task->frame.y >= g_gfx.height - gh - 2 &&
+        task->frame.width >= g_gfx.width - 4) {
+        ui_paint_taskbar_strip(task->frame.y);
+        return;
+    }
+    ui_paint_title(task->frame.x, task->frame.y, task->frame.width, 20,
+                   task_title(task),
+                   task->window.mode == TASK_WINDOW_MAXIMIZED);
+    gfx_fill_rect(task->frame.x, task->frame.y + task->frame.body_height - 1,
+                  task->frame.width, 1, CHRIS_BORDER_COLOR);
+    gfx_fill_rect(task->frame.x, task->frame.y, 1, task->frame.body_height,
+                  CHRIS_BORDER_COLOR);
+    gfx_fill_rect(task->frame.x + task->frame.width - 1, task->frame.y, 1,
+                  task->frame.body_height, CHRIS_BORDER_COLOR);
 }
 
 void app_window_open(int lang_slot, const char *title) {
@@ -298,8 +326,9 @@ void app_window_open(int lang_slot, const char *title) {
     } else {
         offset = g_window_cascade * 28;
         if (game) {
-            frame.width = gw * 2;
-            frame.body_height = gh * 2 + APP_CHROME_H;
+            int scale = app_is_hd_game(gw, gh) ? 1 : 2;
+            frame.width = gw * scale;
+            frame.body_height = gh * scale + APP_CHROME_H;
             if (frame.width > g_gfx.width - 48) {
                 frame.width = g_gfx.width - 48;
             }

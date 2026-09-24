@@ -9,6 +9,7 @@
 #include "serial.h"
 #include "task.h"
 #include "ui.h"
+#include "usb_msc.h"
 
 static void boot_diag(const char *what, const char *path) {
     const char *err = lang_last_error();
@@ -56,6 +57,9 @@ static int boot_one(const char *clv, const char *lst) {
 void desktop_init(void) {
     task_system_init();
     input_init(g_gfx.width, g_gfx.height);
+    if (usb_tablet_ready()) {
+        input_use_absolute(1);
+    }
     gfx_clear(CHRIS_DESKTOP_COLOR);
 }
 
@@ -81,7 +85,10 @@ void desktop_boot_apps(void) {
 }
 
 void desktop_frame(uint64_t ticks) {
-    InputMouse mouse = input_mouse_snapshot();
+    InputMouse mouse;
+
+    usb_tablet_poll();
+    mouse = input_mouse_snapshot();
     InputEvent event;
     int focus;
     Task *focused;

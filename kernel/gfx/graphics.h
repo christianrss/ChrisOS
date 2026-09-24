@@ -7,15 +7,19 @@
 #define GFX_MAX_WIDTH  1920
 #define GFX_MAX_HEIGHT 1080
 
-#define CHRIS_DESKTOP_COLOR 0x0014283Cu
-#define CHRIS_TASKBAR_COLOR 0x0000FF00u
-#define CHRIS_SHELL_COLOR   0x00000080u
-#define CHRIS_BALL_COLOR    0x00808000u
-#define CHRIS_EDITOR_COLOR  0x00800000u
-#define CHRIS_TITLE_COLOR   0x00208020u
-#define CHRIS_WINDOW_COLOR  0x00FFFFFFu
-#define CHRIS_TEXT_COLOR    0x00000000u
-#define CHRIS_MOUSE_COLOR   0x00EFFFFFu
+#define CHRIS_DESKTOP_COLOR 0x00181014u
+#define CHRIS_TASKBAR_COLOR 0x00221C18u
+#define CHRIS_ACCENT_COLOR  0x00C4842Au
+#define CHRIS_HOVER_COLOR   0x00E0A84Au
+#define CHRIS_SHELL_COLOR   0x00C4842Au
+#define CHRIS_BALL_COLOR    0x008C6230u
+#define CHRIS_EDITOR_COLOR  0x00685850u
+#define CHRIS_TITLE_COLOR   0x00221C18u
+#define CHRIS_WINDOW_COLOR  0x00F3EEE4u
+#define CHRIS_TEXT_COLOR    0x00181014u
+#define CHRIS_TITLE_TEXT    0x00F3EEE4u
+#define CHRIS_BORDER_COLOR  0x00141010u
+#define CHRIS_MOUSE_COLOR   0x00F6E7C4u
 
 typedef uint32_t (*GfxFontRowFn)(unsigned int character, int row);
 
@@ -36,6 +40,9 @@ void gfx_put_pixel(int x, int y, uint32_t color);
 void gfx_fill_rect(int x, int y, int width, int height, uint32_t color);
 void gfx_blit_scaled(const uint32_t *src, int sw, int sh,
                      int dx, int dy, int dw, int dh);
+/* src pixels are 0xAARRGGBB. Alpha 0 is skipped. */
+void gfx_blit_rgba(const uint32_t *src, int sw, int sh,
+                   int dx, int dy, int dw, int dh);
 void gfx_fill_circle(int cx, int cy, int radius, uint32_t color);
 void gfx_draw_glyph(GfxFontRowFn font, int glyph_width, int glyph_height,
                     unsigned int character, int x, int y, uint32_t color);

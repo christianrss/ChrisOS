@@ -904,6 +904,44 @@ static int push_ok(ClvmVm *vm, int ok) {
     return clvm_vm_push(vm, ok ? 0 : -1) ? 0 : -1;
 }
 
+static int game_ptr_local(ClvmGfxCtx *ctx, int mx, int my, int *ox, int *oy) {
+    Task *t;
+    int bw;
+    int bh;
+    int x;
+    int y;
+    if (!ctx || ctx->w < 640 || ctx->h < 480)
+        return 0;
+    t = task_of_ctx(ctx);
+    if (!t)
+        return 0;
+    bw = t->frame.width;
+    bh = t->frame.body_height - TASK_TITLE_HEIGHT;
+    if (bw < 1)
+        bw = 1;
+    if (bh < 1)
+        bh = 1;
+    if (t->frame.x == 0 && t->frame.y == 0 && bw == ctx->w && bh == ctx->h)
+        return 0;
+    x = mx - t->frame.x;
+    y = my - (t->frame.y + TASK_TITLE_HEIGHT);
+    if (bw != ctx->w)
+        x = (int)(((int64_t)x * ctx->w) / bw);
+    if (bh != ctx->h)
+        y = (int)(((int64_t)y * ctx->h) / bh);
+    if (x < 0)
+        x = 0;
+    if (y < 0)
+        y = 0;
+    if (x >= ctx->w)
+        x = ctx->w - 1;
+    if (y >= ctx->h)
+        y = ctx->h - 1;
+    *ox = x;
+    *oy = y;
+    return 1;
+}
+
 int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     int32_t a, b, c, d, e, f, g;
     const uint8_t *src;
@@ -1073,6 +1111,14 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         tex_set_slot(a);
         return 0;
+    case 198: {
+        float dv;
+        float du;
+        if (!pop_f(vm, &dv) || !pop_f(vm, &du))
+            return -1;
+        tex_ofs(du, dv);
+        return 0;
+    }
     case 36:
         if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
             !pop_i32(vm, &a))
@@ -1909,14 +1955,24 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     }
     case 80: {
         InputMouse m = input_mouse_snapshot();
-        if (!clvm_vm_push(vm, m.x)) {
+        int lx;
+        int ly;
+        int x = m.x;
+        if (game_ptr_local(ctx, m.x, m.y, &lx, &ly))
+            x = lx;
+        if (!clvm_vm_push(vm, x)) {
             return -1;
         }
         return 0;
     }
     case 81: {
         InputMouse m = input_mouse_snapshot();
-        if (!clvm_vm_push(vm, m.y)) {
+        int lx;
+        int ly;
+        int y = m.y;
+        if (game_ptr_local(ctx, m.x, m.y, &lx, &ly))
+            y = ly;
+        if (!clvm_vm_push(vm, y)) {
             return -1;
         }
         return 0;
@@ -1939,7 +1995,8 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (t && top >= 0 && top != t->id) {
             btn = 0;
         } else if (t && gw > 0 && gh > 0 &&
-                   gw <= CLVM_SYS_GAME_W + 32 && gh <= CLVM_SYS_GAME_H + 32) {
+                   ((gw <= CLVM_SYS_GAME_W + 32 && gh <= CLVM_SYS_GAME_H + 32) ||
+                    (gw >= 640 && gh >= 480 && gw <= 1024 && gh <= 768))) {
             int cy = t->frame.y + TASK_TITLE_HEIGHT;
             int cb = t->frame.y + t->frame.body_height;
             if (m.y < cy || m.y >= cb || m.x < t->frame.x ||
@@ -2531,6 +2588,14 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 193:
         phys_step();
         return clvm_vm_push64(vm, 0) ? 0 : -1;
+    case 196:
+        if (!pop_i32(vm, &a))
+            return -1;
+        return clvm_vm_push(vm, phys_x(a)) ? 0 : -1;
+    case 197:
+        if (!pop_i32(vm, &a))
+            return -1;
+        return clvm_vm_push(vm, phys_y(a)) ? 0 : -1;
     case 194: {
         int64_t t, x, y, z, yaw;
         if (!clvm_vm_pop64(vm, &yaw) || !clvm_vm_pop64(vm, &z) ||

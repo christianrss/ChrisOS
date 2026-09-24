@@ -438,6 +438,26 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
         return jump_rel(vm, rel);
     case CL_OP_SYS:
         return jit_rt_sys(vm);
+    case CL_OP_LDARG:
+    case CL_OP_LDLOC:
+    case CL_OP_STLOC: {
+        uint8_t slot;
+        if (vm->pc >= vm->code_size)
+            return fault(vm, CLVM_FAULT_TRUNCATED, vm->pc);
+        slot = vm->code[vm->pc++];
+        if ((op == CL_OP_LDARG && slot >= 16) ||
+            (op != CL_OP_LDARG && slot >= 32))
+            return fault(vm, CLVM_FAULT_OPCODE, vm->pc);
+        if (op == CL_OP_STLOC) {
+            if (jit_rt_pop(vm, &a) != 0)
+                return -1;
+            vm->il_loc[slot] = a;
+            return 0;
+        }
+        if (op == CL_OP_LDARG)
+            return jit_rt_push(vm, (int32_t)vm->il_arg[slot]);
+        return jit_rt_push(vm, (int32_t)vm->il_loc[slot]);
+    }
     case CL_OP_HALT:
         vm->state = CLVM_HALTED;
         return 1;

@@ -47,6 +47,7 @@ void math3d_set_screen(int width, int height);
 int math3d_screen_w(void);
 int math3d_screen_h(void);
 
+int project_view(float x, float y, float z, int *sx, int *sy, uint32_t *sz);
 int project_vertex(const Mat4f *mvp, float x, float y, float z,
                    int *sx, int *sy, uint32_t *sz);
 

@@ -244,7 +244,11 @@ int storage_init(void) {
     (void)nvme_probe();
     (void)virtio_blk_probe();
     (void)usb_msc_probe();
+    serial_puts("disk scan\n");
     if (!discover_root()) {
+        serial_puts("root miss disks=");
+        serial_write_u64((uint64_t)bd_count());
+        serial_puts("\n");
         panic("no root disk");
     }
     rc = storage_format_if_empty(&g_disk, &formatted);

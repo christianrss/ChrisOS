@@ -317,15 +317,15 @@ int win_begin(int w, int h, int title) {
     }
   }
   g_win_prev = mb;
-  fillrgb(0, 0, g_win_w, 20, 0x00306090);
+  fillrgb(0, 0, g_win_w, 20, 0x00221C18);
   if (g_win_skip_body == 0) {
-    fillrgb(0, 20, g_win_w, g_win_h - 20, 0x00101828);
+    fillrgb(0, 20, g_win_w, g_win_h - 20, 0x00F3EEE4);
   }
   g_win_skip_body = 0;
-  fillrgb(g_win_w - 66, 0, 22, 20, 0x00406080);
-  fillrgb(g_win_w - 44, 0, 22, 20, 0x00406080);
-  fillrgb(g_win_w - 22, 0, 22, 20, 0x00C02828);
-  text(6, 3, title, 0x00FFFFFF);
+  fillrgb(g_win_w - 66, 0, 22, 20, 0x00685850);
+  fillrgb(g_win_w - 44, 0, 22, 20, 0x00685850);
+  fillrgb(g_win_w - 22, 0, 22, 20, 0x00804030);
+  text(6, 3, title, 0x00F3EEE4);
   text(g_win_w - 59, 3, "_", 0x00FFFFFF);
   if (g_win_max) {
     text(g_win_w - 38, 3, "R", 0x00FFFFFF);

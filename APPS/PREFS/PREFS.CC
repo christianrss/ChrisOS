@@ -13,23 +13,23 @@ void main() {
     }
     cur = kb_get();
     g_layout = cur;
-    text(16, 48, "Keyboard layout", 0x00E8F0FF);
-    text(16, 68, "Choose US or ABNT-2 (Brazil).", 0x00A0B0C0);
+    text(16, 48, "Keyboard layout", 0x001C1814);
+    text(16, 68, "Choose US or ABNT-2 (Brazil).", 0x00504038);
     if (g_layout == 1) {
       fillrgb(16, 100, 160, 28, 0x00406080);
       text(36, 108, "US QWERTY", 0x00FFFFFF);
       fillrgb(196, 100, 160, 28, 0x00008050);
       text(220, 108, "ABNT-2", 0x00FFFFFF);
-      text(16, 150, "Active: ABNT-2", 0x0000FF80);
+      text(16, 150, "Active: ABNT-2", 0x00603818);
     } else {
       fillrgb(16, 100, 160, 28, 0x00008050);
       text(36, 108, "US QWERTY", 0x00FFFFFF);
       fillrgb(196, 100, 160, 28, 0x00406080);
       text(220, 108, "ABNT-2", 0x00FFFFFF);
-      text(16, 150, "Active: US", 0x0000FF80);
+      text(16, 150, "Active: US", 0x00603818);
     }
-    text(16, 178, "Saved to SYS/KB.CFG", 0x008090A0);
-    text(16, win_h() - 28, "layout persists across reboot", 0x00607080);
+    text(16, 178, "Saved to SYS/KB.CFG", 0x00504038);
+    text(16, win_h() - 28, "layout persists across reboot", 0x00504038);
     if (win_click(16, 100, 160, 28)) {
       kb_layout(0);
       g_layout = 0;

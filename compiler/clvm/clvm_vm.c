@@ -411,6 +411,7 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
         case CL_OP_AND: case CL_OP_OR: case CL_OP_XOR:
         case CL_OP_SHL: case CL_OP_SHR: case CL_OP_SAR:
         case CL_OP_UDIV: case CL_OP_UMOD: case CL_OP_ULT:
+        case CL_OP_ULE: case CL_OP_UGT: case CL_OP_UGE:
             if (!clvm_vm_pop64(vm, &b) || !clvm_vm_pop64(vm, &a))
                 return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
             if ((op == CL_OP_DIV || op == CL_OP_MOD ||
@@ -430,6 +431,12 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
                 a = (int64_t)((uint64_t)a % (uint64_t)b);
             else if (op == CL_OP_ULT)
                 a = ((uint64_t)a < (uint64_t)b);
+            else if (op == CL_OP_ULE)
+                a = ((uint64_t)a <= (uint64_t)b);
+            else if (op == CL_OP_UGT)
+                a = ((uint64_t)a > (uint64_t)b);
+            else if (op == CL_OP_UGE)
+                a = ((uint64_t)a >= (uint64_t)b);
             else if (op == CL_OP_EQ) a = a == b;
             else if (op == CL_OP_NE) a = a != b;
             else if (op == CL_OP_LT) a = a < b;

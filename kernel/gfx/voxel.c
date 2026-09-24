@@ -246,6 +246,66 @@ static void face_verts(int x, int y, int z, int face, float *px, float *py,
     }
 }
 
+typedef struct {
+    float x;
+    float y;
+    float z;
+    float u;
+    float v;
+} ClipV;
+
+static int clip_near_tri(const ClipV in[3], ClipV out[4]) {
+    const float near = 0.08f;
+    int i;
+    int n = 0;
+    for (i = 0; i < 3; ++i) {
+        ClipV a = in[i];
+        ClipV b = in[(i + 1) % 3];
+        int ain = a.z >= near;
+        int bin = b.z >= near;
+        if (ain && bin) {
+            out[n++] = b;
+        } else if (ain != bin && b.z != a.z) {
+            float t = (near - a.z) / (b.z - a.z);
+            ClipV p;
+            p.x = a.x + (b.x - a.x) * t;
+            p.y = a.y + (b.y - a.y) * t;
+            p.z = near;
+            p.u = a.u + (b.u - a.u) * t;
+            p.v = a.v + (b.v - a.v) * t;
+            out[n++] = p;
+            if (bin)
+                out[n++] = b;
+        }
+    }
+    return n;
+}
+
+static void draw_clipped(uint32_t *pixels, int w, int h, const ClipV *poly, int n,
+                         int id, float nx, float ny, float nz) {
+    int sx[4];
+    int sy[4];
+    uint32_t sz[4];
+    int i;
+    if (n < 3)
+        return;
+    for (i = 0; i < n; ++i) {
+        if (!project_view(poly[i].x, poly[i].y, poly[i].z, &sx[i], &sy[i], &sz[i]))
+            return;
+    }
+    tri_fill_tex(pixels, w, h,
+                 sx[0], sy[0], (int32_t)sz[0], poly[0].u, poly[0].v,
+                 sx[1], sy[1], (int32_t)sz[1], poly[1].u, poly[1].v,
+                 sx[2], sy[2], (int32_t)sz[2], poly[2].u, poly[2].v,
+                 id, nx, ny, nz, 0, 0, w, h);
+    if (n >= 4)
+        tri_fill_tex(pixels, w, h,
+                     sx[0], sy[0], (int32_t)sz[0], poly[0].u, poly[0].v,
+                     sx[2], sy[2], (int32_t)sz[2], poly[2].u, poly[2].v,
+                     sx[3], sy[3], (int32_t)sz[3], poly[3].u, poly[3].v,
+                     id, nx, ny, nz, 0, 0, w, h);
+}
+
 static void draw_face(uint32_t *pixels, int w, int h, int x, int y, int z,
                       int face, int id, const Mat4f *view) {
     float px[4];
@@ -254,38 +314,39 @@ static void draw_face(uint32_t *pixels, int w, int h, int x, int y, int z,
     float nx = (float)FACE[face][0];
     float ny = (float)FACE[face][1];
     float nz = (float)FACE[face][2];
-    int sx[4];
-    int sy[4];
-    uint32_t sz[4];
-    int vis[4];
+    ClipV cam[4];
+    ClipV tri[3];
+    ClipV poly[4];
     int i;
+    int n;
     Vec3f wn;
     Vec3f vn;
-    float u[4];
-    float v[4];
+    Vec3f world;
+    Vec3f eye;
+    static const float tu[4] = { 0.0f, 1.0f, 1.0f, 0.0f };
+    static const float tv[4] = { 1.0f, 1.0f, 0.0f, 0.0f };
+    static const int fan[2][3] = { { 0, 1, 2 }, { 0, 2, 3 } };
 
     face_verts(x, y, z, face, px, py, pz);
-    u[0] = 0.0f; v[0] = 1.0f;
-    u[1] = 1.0f; v[1] = 1.0f;
-    u[2] = 1.0f; v[2] = 0.0f;
-    u[3] = 0.0f; v[3] = 0.0f;
     vec3f_set(&wn, nx, ny, nz);
     mat4f_transform_dir(view, &wn, &vn);
     vec3f_norm(&vn);
-    for (i = 0; i < 4; ++i)
-        vis[i] = project_vertex(view, px[i], py[i], pz[i], &sx[i], &sy[i], &sz[i]);
-    if (vis[0] && vis[1] && vis[2])
-        tri_fill_tex(pixels, w, h,
-                     sx[0], sy[0], (int32_t)sz[0], u[0], v[0],
-                     sx[1], sy[1], (int32_t)sz[1], u[1], v[1],
-                     sx[2], sy[2], (int32_t)sz[2], u[2], v[2],
-                     id, vn.x, vn.y, vn.z, 0, 0, w, h);
-    if (vis[0] && vis[2] && vis[3])
-        tri_fill_tex(pixels, w, h,
-                     sx[0], sy[0], (int32_t)sz[0], u[0], v[0],
-                     sx[2], sy[2], (int32_t)sz[2], u[2], v[2],
-                     sx[3], sy[3], (int32_t)sz[3], u[3], v[3],
-                     id, vn.x, vn.y, vn.z, 0, 0, w, h);
+    for (i = 0; i < 4; ++i) {
+        vec3f_set(&world, px[i], py[i], pz[i]);
+        mat4f_transform(view, &world, &eye);
+        cam[i].x = eye.x;
+        cam[i].y = eye.y;
+        cam[i].z = eye.z;
+        cam[i].u = tu[i];
+        cam[i].v = tv[i];
+    }
+    for (i = 0; i < 2; ++i) {
+        tri[0] = cam[fan[i][0]];
+        tri[1] = cam[fan[i][1]];
+        tri[2] = cam[fan[i][2]];
+        n = clip_near_tri(tri, poly);
+        draw_clipped(pixels, w, h, poly, n, id, vn.x, vn.y, vn.z);
+    }
 }
 
 int voxel_world_draw(uint32_t *pixels, int w, int h) {

@@ -56,6 +56,9 @@ typedef enum {
 void input_init(int screen_width, int screen_height);
 void input_keyboard_irq(uint8_t scancode);
 void input_mouse_irq_byte(uint8_t byte);
+/* USB tablet reports a position in 0..xmax / 0..ymax. PS/2 deltas are ignored. */
+void input_use_absolute(int on);
+void input_pointer_absolute(int x, int y, int xmax, int ymax, int buttons);
 bool input_next_event(InputEvent *event);
 void input_clear_events(void);
 uint32_t input_lost_events(void);

@@ -27,7 +27,7 @@ void main() {
     mb = mouse_btn();
     mx = mouse_x();
     my = mouse_y();
-    fillrgb(0, 0, dw, h, 0x00203040);
+    fillrgb(0, 0, dw, h, 0x00221C18);
     text(8, 12, "ChrisOS", 0x00E0F0FF);
     fillrgb(80, 8, 64, 24, 0x006090);
     text(90, 12, "Shell", 0x00FFFFFF);

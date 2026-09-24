@@ -301,12 +301,12 @@ void main() {
     }
     g_hscroll = win_hscroll(6, win_h() - 16, list_w, hoff, 20, g_hscroll);
     if (loadb(g_cwd) == 0) {
-      text(8, 24, "/", 0x00A0E0FF);
+      text(8, 24, "/", 0x00603818);
     } else {
       copy_show(g_cwd, g_hscroll);
-      text(8, 24, g_show, 0x00A0E0FF);
+      text(8, 24, g_show, 0x00603818);
     }
-    text(8, 44, ".. parent   Enter opens   click file", 0x0080A0B0);
+    text(8, 44, ".. parent   Enter opens   click file", 0x00504038);
     y = 68;
     g_nshow = 0;
     g_empty = 1;
@@ -334,7 +334,7 @@ void main() {
       }
     }
     if (g_empty) {
-      text(10, y + 4, "(empty dir)", 0x008090A0);
+      text(10, y + 4, "(empty dir)", 0x00504038);
     }
     k = ev_key();
     while (k) {

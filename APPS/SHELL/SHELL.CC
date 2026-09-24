@@ -582,7 +582,7 @@ void draw_log() {
       if (n >= start) {
         if (n < start + view) {
           storeb(row + rn, 0);
-          text(8, y, row, 0x00C0D8F0);
+          text(8, y, row, 0x001C1814);
           y = y + 16;
         }
       }

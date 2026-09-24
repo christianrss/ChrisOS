@@ -380,8 +380,10 @@ static int g_mode;
 static char g_namebuf[ED_NAME];
 static int g_pending; /* 1=new after confirm, 2=open after confirm */
 static char g_picks[PICK_MAX][ED_NAME];
+static uint16_t g_pick_type[PICK_MAX];
 static int g_npick;
 static int g_psel;
+static char g_pick_dir[FS_PATH];
 
 static void name_from_editor(void) {
     int i = 0;
@@ -392,6 +394,44 @@ static void name_from_editor(void) {
     g_namebuf[i] = 0;
 }
 
+static int pick_join(const char *dir, const char *name, char *out, int cap) {
+    int i = 0;
+    int j = 0;
+    if (!out || cap < 2) {
+        return 0;
+    }
+    if (dir && dir[0]) {
+        while (dir[i] && i < cap - 1) {
+            out[i] = dir[i];
+            i++;
+        }
+        if (i < cap - 1 && name && name[0]) {
+            out[i++] = '/';
+        }
+    }
+    while (name && name[j] && i < cap - 1) {
+        out[i++] = name[j++];
+    }
+    out[i] = 0;
+    return 1;
+}
+
+static void pick_parent(void) {
+    int n = 0;
+    int slash = -1;
+    while (g_pick_dir[n]) {
+        if (g_pick_dir[n] == '/') {
+            slash = n;
+        }
+        n++;
+    }
+    if (slash < 0) {
+        g_pick_dir[0] = 0;
+        return;
+    }
+    g_pick_dir[slash] = 0;
+}
+
 static int pick_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
     int *n = ctx;
     int i = 0;
@@ -399,29 +439,46 @@ static int pick_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
     if (*n >= PICK_MAX) {
         return 0;
     }
-    if (type == CFS_INODE_DIR) {
-        g_picks[*n][0] = '/';
-        while (name[i] && i < ED_NAME - 2) {
-            g_picks[*n][i + 1] = name[i];
-            i++;
-        }
-        g_picks[*n][i + 1] = 0;
-    } else {
-        while (name[i] && i < ED_NAME - 1) {
-            g_picks[*n][i] = name[i];
-            i++;
-        }
-        g_picks[*n][i] = 0;
+    while (name[i] && i < ED_NAME - 1) {
+        g_picks[*n][i] = name[i];
+        i++;
     }
+    g_picks[*n][i] = 0;
+    g_pick_type[*n] = type;
     (*n)++;
     return 0;
 }
 
-static void start_picker(void) {
+static void reload_picker(void) {
     g_npick = 0;
     g_psel = 0;
-    (void)fs_list_at("", pick_cb, &g_npick);
+    (void)fs_list_at(g_pick_dir, pick_cb, &g_npick);
+}
+
+static void start_picker(void) {
+    g_pick_dir[0] = 0;
+    reload_picker();
     g_mode = ED_MODE_PICK;
+}
+
+static void pick_activate(Editor *e, int index) {
+    char path[FS_PATH];
+    if (index < 0 || index >= g_npick) {
+        return;
+    }
+    if (!pick_join(g_pick_dir, g_picks[index], path, FS_PATH)) {
+        ed_set_status(e, "path too long");
+        return;
+    }
+    if (g_pick_type[index] == CFS_INODE_DIR) {
+        pick_join(g_pick_dir, g_picks[index], g_pick_dir, FS_PATH);
+        reload_picker();
+        ed_set_status(e, g_pick_dir[0] ? g_pick_dir : "/");
+        return;
+    }
+    ed_set_name(e, path);
+    (void)ed_open(e);
+    g_mode = ED_MODE_EDIT;
 }
 
 static void do_new(void) {
@@ -530,31 +587,52 @@ static void editor_run(Task *task, uint64_t ticks) {
         return;
     }
     if (g_mode == ED_MODE_PICK) {
-        ui_label(bx, by, 200, 16, "Open file (root)", CHRIS_TEXT_COLOR);
+        char label[80];
+        int row_h = font_arial_height > 0 ? font_arial_height : 16;
+        int nlab = 0;
+        const char *shown = g_pick_dir[0] ? g_pick_dir : "/";
+        label[nlab++] = 'O';
+        label[nlab++] = 'p';
+        label[nlab++] = 'e';
+        label[nlab++] = 'n';
+        label[nlab++] = ' ';
+        while (shown[0] && nlab < 78) {
+            label[nlab++] = *shown++;
+        }
+        label[nlab] = 0;
+        ui_label(bx, by, task->frame.width - 8, row_h, label, CHRIS_TEXT_COLOR);
+        if (ui_button(task, bx, by + row_h + 2, 36, row_h, CHRIS_TASKBAR_COLOR,
+                      "Up")) {
+            pick_parent();
+            reload_picker();
+        }
         for (i = 0; i < g_npick; i++) {
-            int ry = by + 20 + i * 16;
-            if (i == g_psel) {
-                gfx_fill_rect(bx, ry, task->frame.width - 16, 16, 0x00C0C0C0u);
+            int ry = by + row_h + 4 + row_h + i * row_h;
+            char line[ED_NAME + 8];
+            int k = 0;
+            int s = 0;
+            if (g_pick_type[i] == CFS_INODE_DIR) {
+                line[k++] = '[';
+                line[k++] = 'D';
+                line[k++] = ']';
+                line[k++] = ' ';
             }
-            ui_label(bx + 2, ry, task->frame.width - 20, 16, g_picks[i],
+            while (g_picks[i][s] && k < ED_NAME + 6) {
+                line[k++] = g_picks[i][s++];
+            }
+            line[k] = 0;
+            if (i == g_psel) {
+                gfx_fill_rect(bx, ry, task->frame.width - 16, row_h, 0x00D8D0C4u);
+            }
+            ui_label(bx + 2, ry, task->frame.width - 20, row_h, line,
                      CHRIS_TEXT_COLOR);
-            if (task_is_focused(task) &&
-                ui_hit_rect(input_mouse_snapshot().x, input_mouse_snapshot().y,
-                            bx, ry, task->frame.width - 16, 16) &&
-                input_left_pressed()) {
+            if (ui_row_click(task, bx, ry, task->frame.width - 16, row_h)) {
                 g_psel = i;
-                input_consume_left_press();
-                if (g_picks[i][0] == '/') {
-                    ed_set_status(e, "pick a file");
-                } else {
-                    ed_set_name(e, g_picks[i]);
-                    (void)ed_open(e);
-                    g_mode = ED_MODE_EDIT;
-                }
+                pick_activate(e, i);
             }
         }
-        if (ui_button(task, bx, by + 20 + g_npick * 16, 50, 16,
-                      CHRIS_EDITOR_COLOR, "Esc")) {
+        if (ui_button(task, bx, by + row_h + 4 + row_h + g_npick * row_h, 50,
+                      row_h, CHRIS_EDITOR_COLOR, "Esc")) {
             g_mode = ED_MODE_EDIT;
         }
         editor_draw_status(task, e);

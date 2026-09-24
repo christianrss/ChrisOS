@@ -44,20 +44,34 @@ static void ide_irq(struct irq_frame *frame) {
 
 static void ata_program(const AtaPio *a, uint32_t lba,
                         uint8_t count, uint8_t command);
+static void ata_soft_reset_port(uint16_t ctrl);
+static int ata_wait_not_busy(const AtaPio *a);
 
 static int ata_dma_wait(uint16_t bm) {
     uint32_t i;
-    for (i = 0; i < 1000000u; ++i) {
+    int saw_idle = 0;
+    for (i = 0; i < 200000u; ++i) {
         uint8_t st = inb((uint16_t)(bm + 2u));
-        if (g_ide_irq || (st & 0x04u)) {
-            if (st & 0x02u) {
+        /* A stuck interrupt bit must not count as completion. The bit has
+           to fall, then rise, after the command is started. */
+        if ((st & 0x04u) == 0 && !g_ide_irq)
+            saw_idle = 1;
+        if (saw_idle && (g_ide_irq || (st & 0x04u))) {
+            if (st & 0x02u)
                 return BD_EIO;
-            }
             return BD_OK;
         }
-        __asm__ volatile ("pause");
+        if ((i & 63u) == 0)
+            (void)inb(0x80);
     }
     return BD_ETIMEOUT;
+}
+
+static void ata_dma_abort(AtaPio *a) {
+    if (a->bm != 0)
+        outb(a->bm, 0);
+    ata_soft_reset_port(a->ctrl);
+    (void)ata_wait_not_busy(a);
 }
 
 static int ata_dma_xfer(AtaPio *a, uint32_t lba, uint8_t count,
@@ -78,13 +92,12 @@ static int ata_dma_xfer(AtaPio *a, uint32_t lba, uint8_t count,
     pages = (bytes + PMM_PAGE - 1ull) / PMM_PAGE;
     phys = pmm_alloc_contig(pages);
     prdt_phys = pmm_alloc();
-    if (phys == 0 || prdt_phys == 0) {
-        if (phys) {
+    if (phys == 0 || prdt_phys == 0 || phys > 0xffffffffull ||
+        prdt_phys > 0xffffffffull) {
+        if (phys)
             pmm_free_contig(phys, pages);
-        }
-        if (prdt_phys) {
+        if (prdt_phys)
             pmm_free(prdt_phys);
-        }
         return BD_EIO;
     }
     dst = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
@@ -234,6 +247,7 @@ static int ata_bd_read(void *ctx, uint32_t lba,
         uint8_t n = (uint8_t)(count > 16u ? 16u : count);
         int rc = ata_dma_xfer(a, lba, n, p, 0);
         if (rc != BD_OK) {
+            ata_dma_abort(a);
             n = (uint8_t)(count > 255u ? 255u : count);
             rc = ata_read_chunk(a, lba, n, p);
         }
@@ -254,6 +268,7 @@ static int ata_bd_write(void *ctx, uint32_t lba,
         uint8_t n = (uint8_t)(count > 16u ? 16u : count);
         int rc = ata_dma_xfer(a, lba, n, (uint8_t *)p, 1);
         if (rc != BD_OK) {
+            ata_dma_abort(a);
             n = (uint8_t)(count > 255u ? 255u : count);
             rc = ata_write_chunk(a, lba, n, p);
         }

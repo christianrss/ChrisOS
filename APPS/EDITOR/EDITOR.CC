@@ -1899,33 +1899,33 @@ int syn_color(int at, int in_str, int in_line_cmt, int in_blk) {
   int c;
   g_kw_len = 0;
   if (in_line_cmt) {
-    return 0x00608070;
+    return 0x00605048;
   }
   if (in_blk) {
-    return 0x00608070;
+    return 0x00605048;
   }
   if (in_str) {
-    return 0x00E0A060;
+    return 0x00804818;
   }
   c = loadb(g_buf + at);
   if (c == 35) {
-    return 0x00C080E0;
+    return 0x00504068;
   }
   if (c >= 48) {
     if (c <= 57) {
-      return 0x00E0E060;
+      return 0x00603818;
     }
   }
   g_kw_len = kw_len_at(at);
   if (g_kw_len > 0) {
-    return 0x0060C8E0;
+    return 0x00305068;
   }
-  return 0x00E8F0FF;
+  return 0x001C1814;
 }
 
 void draw_gutter_num(int x, int y, int num) {
   put_num(num, g_lnum);
-  text(x, y, g_lnum, 0x00607080);
+  text(x, y, g_lnum, 0x00584840);
 }
 
 void flush_line_runs() {
@@ -2518,9 +2518,9 @@ void main() {
         text(8, 48, g_show, 0x00FFE080);
       }
       if (g_saveas) {
-        text(8, 68, "Save As ??? enter folder, open file or :w name", 0x00E0C080);
+        text(8, 68, "Save As ??? enter folder, open file or :w name", 0x00603818);
       } else {
-        text(8, 68, "Open file", 0x0080A0B0);
+        text(8, 68, "Open file", 0x00504038);
       }
       y = 88;
       g_nshow = 0;
@@ -2546,7 +2546,7 @@ void main() {
       }
     } else {
       fillrgb(0, 48, win_w(), 20, 0x00101828);
-      text(8, 48, "Esc  i  v V  yy p P  dd x  :w :e :n :cc  hjkl", 0x00607080);
+      text(8, 48, "Esc  i  v V  yy p P  dd x  :w :e :n :cc  hjkl", 0x00E8DCC8);
       skip_draw = 0;
       if (g_line_index_dirty == 0) {
         if (g_seen_ok) {

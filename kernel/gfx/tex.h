@@ -8,6 +8,7 @@
 
 void tex_init(void);
 void tex_set_slot(int slot);
+void tex_ofs(float du, float dv);
 int tex_slot(void);
 uint32_t tex_sample(int slot, float u, float v);
 

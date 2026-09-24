@@ -5,6 +5,7 @@
 #include "editor_window.h"
 #include "fs.h"
 #include "graphics.h"
+#include "icons.h"
 #include "input.h"
 #include "task.h"
 #include "ui.h"
@@ -332,14 +333,17 @@ static void explorer_run(Task *task, uint64_t ticks) {
             }
         }
         line[k] = 0;
-        ui_label(x + 6, ry, task->frame.width - 12, EXP_ROW_H, line,
+        {
+            const RgbaImage *ic = icon_by_id(
+                g_ents[idx].type == CFS_INODE_DIR ? ICON_START : ICON_FILES);
+            if (ic && ic->px) {
+                gfx_blit_rgba(ic->px, ic->w, ic->h, x + 6, ry, 16, 16);
+            }
+        }
+        ui_label(x + 24, ry, task->frame.width - 30, EXP_ROW_H, line,
                  CHRIS_TEXT_COLOR);
-        if (task_is_focused(task) &&
-            ui_hit_rect(input_mouse_snapshot().x, input_mouse_snapshot().y,
-                        x + 4, ry, task->frame.width - 8, EXP_ROW_H) &&
-            input_left_pressed()) {
+        if (ui_row_click(task, x + 4, ry, task->frame.width - 8, EXP_ROW_H)) {
             ex->selected = idx;
-            input_consume_left_press();
             exp_open_selected(task);
         }
     }

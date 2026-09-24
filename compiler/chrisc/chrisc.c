@@ -120,7 +120,9 @@ typedef struct Symbol {
     uint8_t is_global;
     uint16_t scope;
     uint8_t width;
-    uint8_t pointee;
+    uint8_t is_const;
+    uint8_t is_complex;
+    uint16_t pointee;
     int16_t struct_id;
     uint16_t stride;
     uint16_t array_n;
@@ -138,6 +140,8 @@ typedef struct StructDef {
     uint16_t felemw[FIELD_MAX]; /* 0 = scalar/use fwidth; else array elem width */
     uint16_t foff[FIELD_MAX];
     int16_t fstruct[FIELD_MAX];
+    uint8_t fbits[FIELD_MAX];
+    uint8_t fbitoff[FIELD_MAX];
     uint16_t size;
     uint8_t packed;
     uint8_t is_union;
@@ -228,6 +232,7 @@ typedef struct Compiler {
     int loop_nbrk[LOOP_MAX];
     int loop_cont[LOOP_MAX][LOOP_PATCH_MAX];
     int loop_ncont[LOOP_MAX];
+    uint8_t loop_switch[LOOP_MAX];
     int pp_skip;
     int pp_depth;
     int pp_true[16];
@@ -261,6 +266,9 @@ typedef struct Compiler {
     int scope_stack[32];
     int tu_id;
     uint8_t saw_static;
+    uint8_t saw_const;
+    int align_next;
+    int field_bits;
     uint8_t saw_tls;
     int n_tls;
     uint8_t pack_pragma;
@@ -445,6 +453,8 @@ static const Builtin builtins[] = {
     {"scene_draw", 191, 3, 1, 0},
     {"phys_add", 192, 4, 1, 0},
     {"phys_step", 193, 0, 1, 0},
+    {"phys_x", 196, 1, 1, 0}, {"phys_y", 197, 1, 1, 0},
+    {"tex_ofs", 198, 2, 0, 0},
     {"anim_key", 194, 5, 1, 0},
     {"anim_apply", 195, 2, 1, 0},
     {"transform", 22, 3, 0, 0}, {"meshf", 23, 8, 0, 0},
@@ -2441,6 +2451,7 @@ static int take(Compiler *c, TokenKind k) {
 static uint8_t take_qualifiers(Compiler *c) {
     uint8_t uns = 0;
     c->saw_static = 0;
+    c->saw_const = 0;
     c->saw_tls = 0;
     for (;;) {
         if (take(c, T_UNSIGNED)) {
@@ -2455,9 +2466,12 @@ static uint8_t take_qualifiers(Compiler *c) {
             c->saw_static = 1;
             continue;
         }
-        if (take(c, T_CONST) || take(c, T_EXTERN) ||
-            take(c, T_VOLATILE) || take(c, T_INLINE) || take(c, T_RESTRICT) ||
-            take(c, T_NORETURN)) {
+        if (take(c, T_CONST)) {
+            c->saw_const = 1;
+            continue;
+        }
+        if (take(c, T_EXTERN) || take(c, T_VOLATILE) || take(c, T_INLINE) ||
+            take(c, T_RESTRICT) || take(c, T_NORETURN)) {
             continue;
         }
         if (take(c, T_THREADLOCAL)) {
@@ -2672,8 +2686,14 @@ static int sym_add(Compiler *c, Token *t, uint8_t is_float, uint8_t width,
     if (width == 0)
         width = 4;
     {
-        uint8_t pointee;
+        uint16_t pointee;
         uint32_t need;
+        if (c->align_next > 1) {
+            uint32_t a = (uint32_t)c->align_next;
+            if ((a & (a - 1u)) == 0)
+                c->mem_next = (c->mem_next + a - 1u) & ~(a - 1u);
+            c->align_next = 0;
+        }
         if (is_ptr) {
             /* `width` is always the pointee size (1=char*, 4=int*, 8=char**). */
             pointee = width ? width : 4u;
@@ -2690,6 +2710,9 @@ static int sym_add(Compiler *c, Token *t, uint8_t is_float, uint8_t width,
         c->syms[i].is_array = 0;
         c->syms[i].is_ptr = is_ptr;
         c->syms[i].is_unsigned = 0;
+        c->syms[i].is_const = c->saw_const;
+        c->syms[i].is_complex = 0;
+        c->saw_const = 0;
         c->syms[i].is_global = 0;
         c->syms[i].scope = (uint16_t)scope_cur(c);
         c->syms[i].width = width;
@@ -2779,6 +2802,8 @@ static int sym_add_array(Compiler *c, Token *t, int32_t count, uint8_t is_float,
     c->syms[i].is_array = 1;
     c->syms[i].is_ptr = 0;
     c->syms[i].is_unsigned = 0;
+    c->syms[i].is_const = 0;
+    c->syms[i].is_complex = 0;
     c->syms[i].is_global = 0;
     c->syms[i].scope = (uint16_t)scope_cur(c);
     c->syms[i].width = packed ? 1 : elem_w;
@@ -2862,6 +2887,13 @@ static int struct_add_field_ex(Compiler *c, StructDef *s, const char *name,
     s->felemw[s->nfields] = elemw;
     s->foff[s->nfields] = is_union ? 0 : s->size;
     s->fstruct[s->nfields] = nested;
+    s->fbits[s->nfields] = 0;
+    s->fbitoff[s->nfields] = 0;
+    if (c->field_bits > 0 && c->field_bits <= 32) {
+        s->fbits[s->nfields] = (uint8_t)c->field_bits;
+        s->fwidth[s->nfields] = 4;
+        c->field_bits = 0;
+    }
     s->nfields++;
     if (is_union) {
         if (need > s->size)
@@ -2878,9 +2910,27 @@ static void struct_recompute_layout(StructDef *s) {
     int i;
     uint16_t off = 0;
     uint16_t maxneed = 0;
+    int bit_used = 0;
+    uint16_t unit = 0;
     for (i = 0; i < s->nfields; ++i) {
         uint16_t w = s->fwidth[i] ? s->fwidth[i] : 4u;
         uint16_t need;
+        if (s->fbits[i] > 0 && !s->is_union) {
+            int bits = s->fbits[i];
+            if (bit_used == 0 || bit_used + bits > 32) {
+                if (off & 3u)
+                    off = (uint16_t)((off + 3u) & ~3u);
+                unit = off;
+                bit_used = 0;
+                off = (uint16_t)(off + 4u);
+            }
+            s->foff[i] = unit;
+            s->fbitoff[i] = (uint8_t)bit_used;
+            s->fwidth[i] = 4;
+            bit_used += bits;
+            continue;
+        }
+        bit_used = 0;
         if (s->packed) {
             need = w;
         } else if (w <= 2) {
@@ -2940,6 +2990,38 @@ static int struct_add_field(Compiler *c, StructDef *s, const char *name,
                             int col, int16_t nested, uint8_t is_ptr) {
     return struct_add_field_ex(c, s, name, isf, w, 0, is_union, line, col,
                                nested, is_ptr);
+}
+
+static void struct_recompute_layout(StructDef *s);
+
+static int ensure_complex(Compiler *c) {
+    int sid = struct_find(c, "__Complex");
+    StructDef *s;
+    int i;
+    if (sid >= 0)
+        return sid;
+    if (c->nstructs == STRUCT_MAX)
+        return -1;
+    s = &c->structs[c->nstructs];
+    text(s->name, NAME_MAX, "__Complex");
+    s->nfields = 0;
+    s->size = 0;
+    s->packed = 0;
+    s->is_union = 0;
+    for (i = 0; i < FIELD_MAX; ++i) {
+        s->fstruct[i] = -1;
+        s->fptr[i] = 0;
+        s->fbits[i] = 0;
+        s->fbitoff[i] = 0;
+    }
+    ht_ins_grid(c->ht_st, HT_ST_N, "__Complex", c->nstructs,
+                (const char *)c->structs, (int)sizeof(StructDef));
+    c->nstructs++;
+    if (!struct_add_field(c, s, "re", 1, 4, 0, 1, 1, -1, 0) ||
+        !struct_add_field(c, s, "im", 1, 4, 0, 1, 1, -1, 0))
+        return -1;
+    struct_recompute_layout(s);
+    return c->nstructs - 1;
 }
 
 static int parse_type_n(Compiler *c, DeclType *d, char *name_out, int ncap);
@@ -3214,6 +3296,8 @@ static int parse_struct_def(Compiler *c, int is_union) {
         for (i = 0; i < FIELD_MAX; ++i) {
             s->fstruct[i] = -1;
             s->fptr[i] = 0;
+            s->fbits[i] = 0;
+            s->fbitoff[i] = 0;
         }
         if (skip_attr(c)) {
             s->packed = 1;
@@ -3318,16 +3402,12 @@ static int parse_struct_def(Compiler *c, int is_union) {
             }
         }
         if (take(c, T_COLON)) {
-            int bits = 8;
-            parse_const_int(c, &bits);
-            s->packed = 1;
-            if (bits <= 8) {
-                dt.w = 1;
-            } else if (bits <= 16) {
-                dt.w = 2;
-            } else {
-                dt.w = 4;
+            int bits = 1;
+            if (!parse_const_int(c, &bits) || bits < 1 || bits > 32) {
+                return fail(c, fn->line, fn->column, "bad bitfield width");
             }
+            c->field_bits = bits;
+            dt.w = 4;
             dt.ptr = 0;
         }
             if (take(c, T_LBRACK)) {
@@ -3412,8 +3492,14 @@ static int parse_type_n(Compiler *c, DeclType *d, char *name_out, int ncap) {
         d->w = 4;
     }
     if (take(c, T_FLOAT) || take(c, T_COMPLEX)) {
+        int was_complex = c->tokens[c->pos - 1].kind == T_COMPLEX;
         d->isf = 1;
         d->w = 4;
+        if (was_complex || take(c, T_COMPLEX)) {
+            d->isf = 0;
+            d->w = 8;
+            d->sid = (int16_t)ensure_complex(c);
+        }
         got = 1;
     } else if (take(c, T_CHAR) || take(c, T_BOOL)) {
         d->w = 1;
@@ -4852,6 +4938,9 @@ static int make_assign(Compiler *c, int lhs, int rhs, Token *t) {
         return -1;
     }
     if (c->nodes[lhs].kind == N_VAR) {
+        if (c->syms[c->nodes[lhs].value].is_const) {
+            return fail(c, t->line, t->column, "assignment to const");
+        }
         id = node(c, N_ASSIGN, t);
         if (id < 0) {
             return -1;
@@ -5588,7 +5677,6 @@ static int for_init(Compiler *c) {
     int id;
     int sym;
     int v;
-    uint8_t is_float = 0;
 
     if (cur(c)->kind == T_SEMI) {
         id = node(c, N_BLOCK, t);
@@ -5597,11 +5685,50 @@ static int for_init(Compiler *c) {
         }
         return id;
     }
-    if (take(c, T_INT)) {
-        is_float = 0;
-    } else if (take(c, T_FLOAT)) {
-        is_float = 1;
-    } else if (t->kind == T_ID || t->kind == T_PLUSPLUS || t->kind == T_MINUSMINUS) {
+    {
+        DeclType dt;
+        dt.w = 4;
+        dt.ptr = 0;
+        dt.isf = 0;
+        dt.uns = 0;
+        dt.is_void = 0;
+        dt.sid = -1;
+        dt.arr_n = 0;
+        dt.elemw = 0;
+        if (parse_type_n(c, &dt, 0, 0)) {
+            int dw = dt.ptr ? 8 : (dt.w > 255 ? 255 : (int)dt.w);
+            name = cur(c);
+            if (!expect(c, T_ID, "expected variable name")) {
+                return -1;
+            }
+            sym = sym_add(c, name, dt.isf, (uint8_t)(dw ? dw : 4), dt.ptr);
+            if (sym < 0) {
+                return -1;
+            }
+            c->syms[sym].is_unsigned = dt.uns;
+            if (dt.sid >= 0) {
+                c->syms[sym].struct_id = dt.sid;
+                if (dt.ptr)
+                    c->syms[sym].pointee = c->structs[dt.sid].size
+                                               ? c->structs[dt.sid].size
+                                               : 4;
+            }
+            id = node(c, N_DECL, t);
+            if (id < 0) {
+                return -1;
+            }
+            c->nodes[id].value = sym;
+            if (take(c, T_ASSIGN)) {
+                v = expression(c);
+                if (v < 0) {
+                    return -1;
+                }
+                c->nodes[id].left = v;
+            }
+            return id;
+        }
+    }
+    if (t->kind == T_ID || t->kind == T_PLUSPLUS || t->kind == T_MINUSMINUS) {
         v = expression(c);
         if (v < 0) {
             return -1;
@@ -5612,38 +5739,8 @@ static int for_init(Compiler *c) {
         }
         c->nodes[id].left = v;
         return id;
-    } else {
-        return fail(c, t->line, t->column, "expected for init");
     }
-    name = cur(c);
-    if (!expect(c, T_ID, "expected variable name")) {
-        return -1;
-    }
-    if (take(c, T_LBRACK)) {
-        int count = 1;
-        if (!parse_array_dim(c, &count)) {
-            return -1;
-        }
-        sym = sym_add_array(c, name, count, is_float, 0, is_float ? 4 : 4);
-    } else {
-        sym = sym_add(c, name, is_float, is_float ? 4 : 4, 0);
-    }
-    if (sym < 0) {
-        return -1;
-    }
-    id = node(c, N_DECL, t);
-    if (id < 0) {
-        return -1;
-    }
-    c->nodes[id].value = sym;
-    if (take(c, T_ASSIGN)) {
-        v = expression(c);
-        if (v < 0) {
-            return -1;
-        }
-        c->nodes[id].left = v;
-    }
-    return id;
+    return fail(c, t->line, t->column, "expected for init");
 }
 
 static int statement(Compiler *c) {
@@ -5673,8 +5770,17 @@ static int statement(Compiler *c) {
         if (!expect(c, T_LP, "expected ( after _Alignas")) {
             return -1;
         }
-        while (!take(c, T_RP) && cur(c)->kind != T_EOF) {
-            ++c->pos;
+        {
+            int al = 4;
+            if (!parse_const_int(c, &al)) {
+                return -1;
+            }
+            if (!expect(c, T_RP, "expected ) after _Alignas")) {
+                return -1;
+            }
+            if (al < 1)
+                al = 1;
+            c->align_next = al;
         }
     }
     if (take(c, T_ENUM)) {
@@ -5808,7 +5914,8 @@ static int statement(Compiler *c) {
             sym = sym_add_array(c, name, count, 0, 0, ptr ? 8 : w);
         } else {
             if (take(c, T_COLON)) {
-                return fail(c, name->line, name->column, "bitfields not supported");
+                return fail(c, name->line, name->column,
+                            "bitfield only inside a struct");
             }
             sym = sym_add(c, name, 0, w, ptr);
         }
@@ -5826,6 +5933,7 @@ static int statement(Compiler *c) {
     }
     if (take(c, T_FLOAT)) {
         uint8_t ptr = 0;
+        int complex = take(c, T_COMPLEX);
         while (take(c, T_STAR)) {
             ptr = 1;
         }
@@ -5839,6 +5947,13 @@ static int statement(Compiler *c) {
                 return -1;
             }
             sym = sym_add_array(c, name, count, 1, 0, 4);
+        } else if (complex && !ptr) {
+            int cs = ensure_complex(c);
+            sym = sym_add(c, name, 0, 8, 0);
+            if (sym >= 0 && cs >= 0) {
+                c->syms[sym].struct_id = (int16_t)cs;
+                c->syms[sym].is_complex = 1;
+            }
         } else {
             sym = sym_add(c, name, 1, 4, ptr);
         }
@@ -5945,7 +6060,7 @@ static int statement(Compiler *c) {
                 if (ptr && nstar <= 1 && c->td_struct[ti] >= 0) {
                     uint16_t sz = c->structs[c->td_struct[ti]].size;
                     if (sz) {
-                        c->syms[sym].pointee = (uint8_t)(sz > 255 ? 255 : sz);
+                        c->syms[sym].pointee = sz;
                         c->syms[sym].stride = sz;
                     }
                 }
@@ -6001,7 +6116,26 @@ static int statement(Compiler *c) {
         st = &c->structs[sid];
         if (sptr) {
             if (take(c, T_LBRACK)) {
-                return fail(c, vn->line, vn->column, "array of struct pointers: use pointer");
+                int nptr = 1;
+                if (!parse_array_dim(c, &nptr)) {
+                    return -1;
+                }
+                sym = sym_add_array(c, vn, nptr, 0, 0, 8);
+                if (sym < 0) {
+                    return -1;
+                }
+                c->syms[sym].is_ptr = 1;
+                c->syms[sym].is_unsigned = uns;
+                c->syms[sym].struct_id = (int16_t)sid;
+                c->syms[sym].pointee = st->size ? st->size : 4;
+                c->syms[sym].stride = 8;
+                id = node(c, N_DECL, t);
+                if (id < 0) {
+                    return -1;
+                }
+                c->nodes[id].value = sym;
+                c->nodes[id].left = -1;
+                return finish_decl(c, id, t);
             }
             sym = sym_add(c, vn, 0, 8, 1);
             if (sym < 0) {
@@ -6009,7 +6143,7 @@ static int statement(Compiler *c) {
             }
             c->syms[sym].is_unsigned = uns;
             c->syms[sym].struct_id = (int16_t)sid;
-            c->syms[sym].pointee = (uint8_t)(st->size > 255 ? 255 : st->size);
+            c->syms[sym].pointee = st->size;
             c->syms[sym].stride = st->size ? st->size : 8;
             id = node(c, N_DECL, t);
             if (id < 0) {
@@ -6041,6 +6175,12 @@ static int statement(Compiler *c) {
             fail(c, vn->line, vn->column, "struct exceeds memory");
             return -1;
         }
+        if (c->align_next > 1) {
+            uint32_t a = (uint32_t)c->align_next;
+            if ((a & (a - 1u)) == 0)
+                c->mem_next = (c->mem_next + a - 1u) & ~(a - 1u);
+            c->align_next = 0;
+        }
         sym = c->nsyms++;
         decl_name(c, vn, c->syms[sym].name);
         c->syms[sym].address = c->mem_next;
@@ -6049,6 +6189,9 @@ static int statement(Compiler *c) {
         c->syms[sym].is_array = (uint8_t)(count > 1);
         c->syms[sym].is_ptr = 0;
         c->syms[sym].is_unsigned = 0;
+        c->syms[sym].is_const = c->saw_const;
+        c->syms[sym].is_complex = 0;
+        c->saw_const = 0;
         c->syms[sym].is_global = 0;
         c->syms[sym].scope = (uint16_t)scope_cur(c);
         c->syms[sym].width = 4;
@@ -6709,7 +6852,7 @@ static int parse_function(Compiler *c, uint8_t ret, Token *name, int16_t ret_sid
                 c->syms[sym].struct_id = dt.sid;
                 if (ptr) {
                     uint16_t sz = c->structs[dt.sid].size;
-                    c->syms[sym].pointee = (uint8_t)(sz > 255 ? 255 : sz);
+                    c->syms[sym].pointee = sz;
                     c->syms[sym].stride = sz ? sz : 8;
                 }
             }
@@ -7745,6 +7888,21 @@ static int gen_expr(Compiler *c, int id) {
         sid = c->syms[n->value].struct_id;
         if (sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields)
             elemw = (int)c->structs[sid].felemw[n->left];
+        if (!n->is_float && elemw == 0 && n->right < 0 && (n->third >> 4) == 0 &&
+            sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields &&
+            c->structs[sid].fbits[n->left] == 0 &&
+            c->structs[sid].fwidth[n->left] >= 8) {
+            uint32_t u = c->structs[sid].foff[n->left];
+            if (!push(c, (int32_t)c->syms[n->value].address, n) ||
+                !room(c, 5, n))
+                return -1;
+            c->out[c->pc++] = CL_OP_LDFLD;
+            c->out[c->pc++] = (uint8_t)u;
+            c->out[c->pc++] = (uint8_t)(u >> 8);
+            c->out[c->pc++] = (uint8_t)(u >> 16);
+            c->out[c->pc++] = (uint8_t)(u >> 24);
+            return 1;
+        }
         if (gen_field_addr(c, n->value, n->left, n->right, n) != 1) {
             return -1;
         }
@@ -7760,6 +7918,19 @@ static int gen_expr(Compiler *c, int id) {
             }
         } else if (sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields) {
             w = c->structs[sid].fwidth[n->left];
+        }
+        if (sid >= 0 && n->left >= 0 && n->left < c->structs[sid].nfields &&
+            c->structs[sid].fbits[n->left] > 0) {
+            int bits = c->structs[sid].fbits[n->left];
+            int boff = c->structs[sid].fbitoff[n->left];
+            int mask = (bits >= 31) ? -1 : ((1 << bits) - 1);
+            if (gen_load_w(c, n, 4) != 1)
+                return -1;
+            if (boff && (!push(c, boff, n) || !byte(c, CL_OP_SHR, n)))
+                return -1;
+            if (!push(c, mask, n) || !byte(c, CL_OP_AND, n))
+                return -1;
+            return 1;
         }
         if (n->is_float) {
             return byte(c, CL_OP_FLOAD, n) ? 1 : -1;
@@ -8038,6 +8209,26 @@ static int gen_expr(Compiler *c, int id) {
         if (gen_expr(c, n->left) != 1) {
             return -1;
         }
+        if (!isf && sid >= 0 && fi < c->structs[sid].nfields &&
+            c->structs[sid].fbits[fi] > 0) {
+            int bits = c->structs[sid].fbits[fi];
+            int boff = c->structs[sid].fbitoff[fi];
+            int mask = (bits >= 31) ? -1 : ((1 << bits) - 1);
+            int clear = ~(mask << boff);
+            if (!push(c, mask, n) || !byte(c, CL_OP_AND, n) ||
+                !byte(c, CL_OP_DUP, n))
+                return -1;
+            if (boff && (!push(c, boff, n) || !byte(c, CL_OP_SHL, n)))
+                return -1;
+            if (gen_field_addr(c, n->value, fi, n->right, n) != 1 ||
+                !byte(c, CL_OP_LOAD, n) || !push(c, clear, n) ||
+                !byte(c, CL_OP_AND, n) || !byte(c, CL_OP_SWAP, n) ||
+                !byte(c, CL_OP_OR, n))
+                return -1;
+            if (gen_field_addr(c, n->value, fi, n->right, n) != 1)
+                return -1;
+            return byte(c, CL_OP_STORE, n) ? 1 : -1;
+        }
         if (!byte(c, CL_OP_DUP, n)) {
             return -1;
         }
@@ -8308,9 +8499,24 @@ static int gen_expr(Compiler *c, int id) {
                 return -1;
             }
             return push(c, 1, n) && byte(c, CL_OP_SWAP, n) && byte(c, CL_OP_SUB, n) ? 1 : -1;
-        case N_MOD:
-            fail(c, n->line, n->column, "mod not defined for float");
-            return -1;
+        case N_MOD: {
+            /* a - b * (float)(int)(a / b), trunc toward zero. */
+            if (gen_expr(c, n->left) != 1 || !byte(c, CL_OP_STLOC, n) ||
+                !byte(c, 30, n))
+                return -1;
+            if (gen_expr(c, n->right) != 1 || !byte(c, CL_OP_STLOC, n) ||
+                !byte(c, 31, n))
+                return -1;
+            if (!byte(c, CL_OP_LDLOC, n) || !byte(c, 30, n) ||
+                !byte(c, CL_OP_LDLOC, n) || !byte(c, 31, n) ||
+                !byte(c, CL_OP_FDIV, n) || !byte(c, CL_OP_FTOI, n) ||
+                !byte(c, CL_OP_ITOF, n) || !byte(c, CL_OP_LDLOC, n) ||
+                !byte(c, 31, n) || !byte(c, CL_OP_FMUL, n) ||
+                !byte(c, CL_OP_LDLOC, n) || !byte(c, 30, n) ||
+                !byte(c, CL_OP_SWAP, n) || !byte(c, CL_OP_FSUB, n))
+                return -1;
+            return 1;
+        }
         default:
             fail(c, n->line, n->column, "bad expression node");
             return -1;
@@ -8395,14 +8601,46 @@ static int gen_expr(Compiler *c, int id) {
             op = CL_OP_ULT;
         }
         break;
-    case N_LE:  op = CL_OP_LE;  break;
-    case N_GT:  op = CL_OP_GT;  break;
-    case N_GE:  op = CL_OP_GE;  break;
+    case N_LE:
+        op = CL_OP_LE;
+        if ((c->nodes[n->left].kind == N_VAR &&
+             c->syms[c->nodes[n->left].value].is_unsigned) ||
+            (c->nodes[n->left].kind == N_CAST &&
+             (c->nodes[n->left].value & CAST_UNS))) {
+            op = CL_OP_ULE;
+        }
+        break;
+    case N_GT:
+        op = CL_OP_GT;
+        if ((c->nodes[n->left].kind == N_VAR &&
+             c->syms[c->nodes[n->left].value].is_unsigned) ||
+            (c->nodes[n->left].kind == N_CAST &&
+             (c->nodes[n->left].value & CAST_UNS))) {
+            op = CL_OP_UGT;
+        }
+        break;
+    case N_GE:
+        op = CL_OP_GE;
+        if ((c->nodes[n->left].kind == N_VAR &&
+             c->syms[c->nodes[n->left].value].is_unsigned) ||
+            (c->nodes[n->left].kind == N_CAST &&
+             (c->nodes[n->left].value & CAST_UNS))) {
+            op = CL_OP_UGE;
+        }
+        break;
     case N_BITAND: op = CL_OP_AND; break;
     case N_BITOR:  op = CL_OP_OR;  break;
     case N_BITXOR: op = CL_OP_XOR; break;
     case N_SHL:    op = CL_OP_SHL; break;
-    case N_SHR:    op = CL_OP_SHR; break;
+    case N_SHR:
+        op = CL_OP_SAR;
+        if ((c->nodes[n->left].kind == N_VAR &&
+             c->syms[c->nodes[n->left].value].is_unsigned) ||
+            (c->nodes[n->left].kind == N_CAST &&
+             (c->nodes[n->left].value & CAST_UNS))) {
+            op = CL_OP_SHR;
+        }
+        break;
     default:
         fail(c, n->line, n->column, "bad expression node");
         return -1;
@@ -8412,12 +8650,13 @@ static int gen_expr(Compiler *c, int id) {
 
 static int gen_block(Compiler *c, int id);
 
-static int loop_enter(Compiler *c, Node *n) {
+static int loop_enter(Compiler *c, Node *n, int is_switch) {
     if (c->loop_sp >= LOOP_MAX) {
         return fail(c, n->line, n->column, "loops nested too deep");
     }
     c->loop_nbrk[c->loop_sp] = 0;
     c->loop_ncont[c->loop_sp] = 0;
+    c->loop_switch[c->loop_sp] = (uint8_t)(is_switch ? 1 : 0);
     c->loop_sp++;
     return 1;
 }
@@ -8474,6 +8713,23 @@ static int gen_stmt(Compiler *c, int id) {
                byte(c, is_float ? CL_OP_FSTORE : mem_st(&c->syms[n->value]), n);
     }
     if (n->kind == N_ASSIGN) {
+        if (c->syms[n->value].struct_id >= 0 && !c->syms[n->value].is_ptr &&
+            n->left >= 0 && c->nodes[n->left].kind == N_VAR &&
+            c->syms[c->nodes[n->left].value].struct_id ==
+                c->syms[n->value].struct_id) {
+            int sz = c->structs[c->syms[n->value].struct_id].size;
+            int off;
+            int32_t src = (int32_t)c->syms[c->nodes[n->left].value].address;
+            int32_t dst = (int32_t)c->syms[n->value].address;
+            if (sz < 1)
+                sz = 4;
+            for (off = 0; off + 4 <= sz; off += 4) {
+                if (!push(c, src + off, n) || !byte(c, CL_OP_LOAD, n) ||
+                    !push(c, dst + off, n) || !byte(c, CL_OP_STORE, n))
+                    return 0;
+            }
+            return 1;
+        }
         if (c->syms[n->value].is_tls) {
             v = gen_expr(c, n->left);
             return v == 1 && push(c, (int32_t)c->syms[n->value].tls_i, n) &&
@@ -8518,6 +8774,26 @@ static int gen_stmt(Compiler *c, int id) {
         v = gen_expr(c, n->left);
         if (v != 1) {
             return 0;
+        }
+        if (!isf && sid >= 0 && fi < c->structs[sid].nfields &&
+            c->structs[sid].fbits[fi] > 0) {
+            int bits = c->structs[sid].fbits[fi];
+            int boff = c->structs[sid].fbitoff[fi];
+            int mask = (bits >= 31) ? -1 : ((1 << bits) - 1);
+            int clear = ~(mask << boff);
+            if (!push(c, mask, n) || !byte(c, CL_OP_AND, n))
+                return 0;
+            if (boff && (!push(c, boff, n) || !byte(c, CL_OP_SHL, n)))
+                return 0;
+            if (gen_field_addr(c, n->value, fi, n->right, n) != 1 ||
+                !byte(c, CL_OP_LOAD, n) || !push(c, clear, n) ||
+                !byte(c, CL_OP_AND, n))
+                return 0;
+            if (!byte(c, CL_OP_SWAP, n) || !byte(c, CL_OP_OR, n))
+                return 0;
+            if (gen_field_addr(c, n->value, fi, n->right, n) != 1)
+                return 0;
+            return byte(c, CL_OP_STORE, n);
         }
         if (!isf && fw == 2) {
             if (!byte(c, CL_OP_DUP, n)) {
@@ -8604,6 +8880,12 @@ static int gen_stmt(Compiler *c, int id) {
             return 0;
         }
         sp = c->loop_sp - 1;
+        while (sp >= 0 && c->loop_switch[sp]) {
+            sp--;
+        }
+        if (sp < 0) {
+            return fail(c, n->line, n->column, "continue outside loop");
+        }
         if (c->loop_ncont[sp] == LOOP_PATCH_MAX) {
             return fail(c, n->line, n->column, "too many continues");
         }
@@ -8638,7 +8920,7 @@ static int gen_stmt(Compiler *c, int id) {
     if (n->kind == N_WHILE) {
         size_t begin = c->pc;
         int sp;
-        if (!loop_enter(c, n)) {
+        if (!loop_enter(c, n, 0)) {
             return 0;
         }
         v = gen_expr(c, n->left);
@@ -8665,7 +8947,7 @@ static int gen_stmt(Compiler *c, int id) {
         size_t begin;
         size_t cont;
         int sp;
-        if (!loop_enter(c, n)) {
+        if (!loop_enter(c, n, 0)) {
             return 0;
         }
         if (!gen_stmt(c, n->left)) {
@@ -8699,7 +8981,7 @@ static int gen_stmt(Compiler *c, int id) {
     if (n->kind == N_DO) {
         size_t begin = c->pc;
         int sp;
-        if (!loop_enter(c, n)) {
+        if (!loop_enter(c, n, 0)) {
             return 0;
         }
         if (!gen_block(c, n->right)) {
@@ -8730,7 +9012,7 @@ static int gen_stmt(Compiler *c, int id) {
         int to_def = -1;
         int to_end = -1;
         int i;
-        if (!loop_enter(c, n)) {
+        if (!loop_enter(c, n, 1)) {
             return 0;
         }
         if (gen_expr(c, n->left) != 1) {
@@ -9068,6 +9350,9 @@ int chrisc_compile_ex(const char *path, const char *source, size_t source_size,
     c->icall_base = 0;
     c->tu_id = 0;
     c->saw_static = 0;
+    c->saw_const = 0;
+    c->align_next = 0;
+    c->field_bits = 0;
     c->pack_pragma = 0;
     c->abi_major = 1;
     c->abi_minor = 0;
@@ -9182,6 +9467,9 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
     c->icall_base = 0;
     c->tu_id = 0;
     c->saw_static = 0;
+    c->saw_const = 0;
+    c->align_next = 0;
+    c->field_bits = 0;
     c->pack_pragma = 0;
     c->abi_major = 1;
     c->abi_minor = 0;

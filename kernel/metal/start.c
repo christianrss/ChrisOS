@@ -89,9 +89,13 @@ void kstart(void) {
     (void)install_selftest();
     (void)install_auto();
     lang_init(clvm_sys_dispatch, 0);
-    lang_make_cc();
     speaker_off();
     (void)ac97_init();
+
+    /* Compile with interrupts off. The timer preempts the guest compiler. */
+    gfx_clear(CHRIS_DESKTOP_COLOR);
+    gfx_present();
+    lang_make_cc();
 
     __asm__ volatile ("sti");
     desktop_init();

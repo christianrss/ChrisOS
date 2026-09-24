@@ -41,6 +41,9 @@ typedef struct HwGpu {
     int h;
     int notify_win;
     uint32_t notify_off;
+    int isr_win;
+    uint32_t isr_off;
+    int isr_ok;
     uint16_t avail;
 } HwGpu;
 
@@ -373,6 +376,12 @@ static void put32(uint8_t *p, uint32_t off, uint32_t v) {
     p[off + 3] = (uint8_t)(v >> 24);
 }
 
+static void gpu_isr_ack(void) {
+    if (g_gpu.isr_ok) {
+        (void)hw_mmio_r8(g_gpu.isr_win, g_gpu.isr_off);
+    }
+}
+
 static int gpu_kick(uint32_t len) {
     uint16_t idx;
     int spins;
@@ -394,15 +403,18 @@ static int gpu_kick(uint32_t len) {
     g_gpu.q[67] = (uint8_t)(idx >> 8);
     if (hw_mmio_w16(g_gpu.notify_win, g_gpu.notify_off, 0) != 0) {
         g_gpu.live = 0;
+        gpu_isr_ack();
         return -1;
     }
     for (spins = 0; spins < 100000; ++spins) {
         used = (uint32_t)g_gpu.q[2048] | ((uint32_t)g_gpu.q[2049] << 8) |
                ((uint32_t)g_gpu.q[2050] << 16) | ((uint32_t)g_gpu.q[2051] << 24);
         if ((used >> 16) == idx) {
+            gpu_isr_ack();
             return 0;
         }
     }
+    gpu_isr_ack();
     g_gpu.live = 0;
     return -1;
 }
@@ -552,6 +564,8 @@ int virtio_gpu_boot(void) {
     if (g_gpu.live) {
         return 1;
     }
+    g_gpu.isr_ok = 0;
+    g_gpu.isr_win = -1;
     if (!g_gfx.width || !g_gfx.height) {
         return 0;
     }
@@ -582,6 +596,11 @@ int virtio_gpu_boot(void) {
                 noff = cfg;
                 mult = pci_read((uint8_t)bus, (uint8_t)dev, 0,
                                 (uint8_t)(off + 16));
+            }
+            if (typ == 3 && win >= 0) {
+                g_gpu.isr_win = win;
+                g_gpu.isr_off = cfg;
+                g_gpu.isr_ok = 1;
             }
         }
         off = next;
