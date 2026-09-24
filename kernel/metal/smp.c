@@ -218,6 +218,21 @@ uint32_t smp_current_cpu(void) {
     return index;
 }
 
+uint32_t smp_current_cpu(void) {
+    uint32_t lapic;
+    uint32_t index;
+
+    if (!g_cpu_ready) {
+        return 0u;
+    }
+    lapic = lapic_id_read();
+    index = g_cpu_by_lapic[lapic & 0xffu];
+    if (index >= SMP_CPU_CAP) {
+        return 0u;
+    }
+    return index;
+}
+
 uint32_t smp_cpu_count(void) {
     const struct bootinfo *boot = bootinfo_get();
     if (boot->cpu_count == 0u) {
