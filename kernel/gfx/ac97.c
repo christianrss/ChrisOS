@@ -7,6 +7,7 @@
 #include "port.h"
 #include "proc.h"
 #include "serial.h"
+#include "spin.h"
 
 #define PCM_RING 2048
 
@@ -14,7 +15,9 @@ static uint16_t g_nam;
 static uint16_t g_nabm;
 static uint8_t g_irq;
 static int g_ready;
-static volatile int g_event;
+static volatile uint32_t g_event_seq;
+static uint32_t g_event_seen;
+static Spinlock g_ac97_lock;
 static uint64_t g_buf_phys;
 static int16_t *g_buf;
 static uint64_t g_bdl_phys;
@@ -42,34 +45,48 @@ static void ac97_fill(void) {
 
 static void ac97_on_irq(struct irq_frame *frame) {
     uint16_t st;
+    int idle;
     (void)frame;
     st = inw((uint16_t)(g_nabm + 0x16u));
     outw((uint16_t)(g_nabm + 0x16u), st);
-    g_event = 1;
+    spin_lock(&g_ac97_lock);
+    __atomic_fetch_add(&g_event_seq, 1u, __ATOMIC_RELEASE);
+    idle = g_n <= 0;
+    if (!idle) {
+        ac97_fill();
+    }
+    spin_unlock(&g_ac97_lock);
     proc_unblock_why(PROC_ST_BLOCK_IRQ);
-    if (g_n <= 0) {
+    if (idle) {
         outb((uint8_t)(g_nabm + 0x1Bu), 0);
         return;
     }
-    ac97_fill();
     outb((uint8_t)(g_nabm + 0x15u), 0);
     outb((uint8_t)(g_nabm + 0x1Bu), 0x11u);
 }
 
 int ac97_take_event(int irq) {
-    if (!g_ready || (uint8_t)irq != g_irq || !g_event) {
+    uint32_t seq;
+    if (!g_ready || (uint8_t)irq != g_irq) {
         return 0;
     }
-    g_event = 0;
+    seq = __atomic_load_n(&g_event_seq, __ATOMIC_ACQUIRE);
+    if (seq == g_event_seen) {
+        return 0;
+    }
+    g_event_seen = seq;
     return 1;
 }
 
 int ac97_write(const int16_t *samples, int n) {
     int i;
     int put = 0;
+    uint64_t flags;
     if (!g_ready || !samples || n <= 0) {
         return -1;
     }
+    flags = irq_save();
+    spin_lock(&g_ac97_lock);
     for (i = 0; i < n; ++i) {
         if (g_n >= PCM_RING) {
             break;
@@ -81,6 +98,10 @@ int ac97_write(const int16_t *samples, int n) {
     }
     if (put > 0) {
         ac97_fill();
+    }
+    spin_unlock(&g_ac97_lock);
+    irq_restore(flags);
+    if (put > 0) {
         outb((uint8_t)(g_nabm + 0x15u), 0);
         outb((uint8_t)(g_nabm + 0x1Bu), 0x11u);
     }
@@ -91,6 +112,7 @@ int ac97_init(void) {
     uint16_t nam = 0;
     uint16_t nabm = 0;
     uint8_t irq = 0;
+    spin_init(&g_ac97_lock);
     if (!pci_find_ac97(&nam, &nabm, &irq)) {
         serial_puts("ac97: no device\n");
         return 0;
@@ -98,6 +120,14 @@ int ac97_init(void) {
     g_buf_phys = pmm_alloc();
     g_bdl_phys = pmm_alloc();
     if (g_buf_phys == 0 || g_bdl_phys == 0) {
+        if (g_buf_phys != 0) {
+            pmm_free(g_buf_phys);
+        }
+        if (g_bdl_phys != 0) {
+            pmm_free(g_bdl_phys);
+        }
+        g_buf_phys = 0;
+        g_bdl_phys = 0;
         return 0;
     }
     g_buf = (int16_t *)(uintptr_t)bootinfo_phys_to_virt(g_buf_phys);
