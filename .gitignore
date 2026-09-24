@@ -100,6 +100,11 @@ docs/*
 !docs/FOUNDATION_FINAL_REPORT.md
 !docs/CLVM_ABI.md
 !docs/CHRISC_SYSTEM_ABI.md
+!docs/DEVTOOL_AUDIT.md
+!docs/DEVTOOL_ARCHITECTURE.md
+!docs/SELFHOST_STATUS.md
+!docs/CHRISC_SELFHOST_CONFORMANCE.md
+!docs/NATIVE_TOOLCHAIN_GAP.md
 backup/
 tools/gen_fase*.py
 tools/write_learn_book.py
