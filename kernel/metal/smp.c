@@ -17,6 +17,8 @@ uint64_t kernel_cr3;
 
 static uint64_t g_ap_stacks[SMP_MAX_APS];
 static uint32_t g_ap_index_by_lapic[256];
+static uint32_t g_cpu_by_lapic[256];
+static int g_cpu_ready;
 
 static void ap_entry(struct limine_mp_info *info);
 
@@ -124,7 +126,10 @@ void smp_init(void) {
 
     for (i = 0; i < 256u; i++) {
         g_ap_index_by_lapic[i] = 0u;
+        g_cpu_by_lapic[i] = 0u;
     }
+    g_cpu_by_lapic[mp->bsp_lapic_id & 0xffu] = 0u;
+    g_cpu_ready = 1;
 
     for (i = 0; i < mp->cpu_count; i++) {
         struct limine_mp_info *info = mp->cpus[i];
@@ -150,6 +155,7 @@ void smp_init(void) {
             break;
         }
         g_ap_index_by_lapic[info->lapic_id & 0xffu] = next;
+        g_cpu_by_lapic[info->lapic_id & 0xffu] = next;
         g_ap_stacks[next] = alloc_ap_stack(next);
         info->extra_argument = (uint64_t)next;
         __asm__ volatile ("" ::: "memory");
@@ -166,6 +172,21 @@ void smp_init(void) {
     serial_puts("cpu_online_count=");
     serial_write_u64(cpu_online_count);
     serial_puts(" (BSP+AP)\n");
+}
+
+uint32_t smp_current_cpu(void) {
+    uint32_t lapic;
+    uint32_t index;
+
+    if (!g_cpu_ready) {
+        return 0u;
+    }
+    lapic = lapic_id_read();
+    index = g_cpu_by_lapic[lapic & 0xffu];
+    if (index >= SMP_CPU_CAP) {
+        return 0u;
+    }
+    return index;
 }
 
 uint32_t smp_cpu_count(void) {
