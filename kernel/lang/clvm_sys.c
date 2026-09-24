@@ -38,6 +38,7 @@
 #include "x25519.h"
 #include "rng.h"
 #include "ac97.h"
+#include "clvm_sync.h"
 #include "bdev.h"
 #include "hwgate.h"
 #include "install.h"
@@ -93,10 +94,13 @@ static int th_count_slot(int slot) {
     return n;
 }
 
-static void th_wake_mutex(int addr) {
+static int vm_sync_slot(ClvmVm *vm);
+
+static void th_wake_mutex(int slot, int addr) {
     int i;
     for (i = 0; i < CLVM_TH_MAX; ++i) {
-        if (g_th[i].used && g_th[i].blocked && g_th[i].mtx_addr == addr) {
+        if (g_th[i].used && g_th[i].blocked &&
+            clvm_sync_same(g_th[i].slot, g_th[i].mtx_addr, slot, addr)) {
             g_th[i].blocked = 0;
             g_th[i].mtx_addr = 0;
             if (g_th[i].vm)
@@ -106,10 +110,11 @@ static void th_wake_mutex(int addr) {
     }
 }
 
-static void th_wake_cond(int addr) {
+static void th_wake_cond(int slot, int addr) {
     int i;
     for (i = 0; i < CLVM_TH_MAX; ++i) {
-        if (g_th[i].used && g_th[i].blocked && g_th[i].cnd_addr == addr) {
+        if (g_th[i].used && g_th[i].blocked &&
+            clvm_sync_same(g_th[i].slot, g_th[i].cnd_addr, slot, addr)) {
             g_th[i].blocked = 0;
             if (g_th[i].vm)
                 clvm_vm_wake(g_th[i].vm, 0);
@@ -445,30 +450,41 @@ static int sys_fopen(ClvmVm *vm, void *user, int32_t path_addr) {
     return clvm_vm_push(vm, i) ? 0 : -1;
 }
 
-static void fd_free(int i) {
+static int fd_owned(void *user, int fd) {
+    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used) {
+        return 0;
+    }
+    return g_fds[fd].slot == fd_slot(user);
+}
+
+static int fd_free(int i) {
+    int rc = 0;
     if (i < 0 || i >= CLVM_FD_MAX || !g_fds[i].used)
-        return;
-    if (g_fds[i].dirty && g_fds[i].buf)
-        fs_write(g_fds[i].path, g_fds[i].buf, (int)g_fds[i].size);
+        return -1;
+    if (g_fds[i].dirty && g_fds[i].buf) {
+        int n = fs_write(g_fds[i].path, g_fds[i].buf, (int)g_fds[i].size);
+        if (n != (int)g_fds[i].size)
+            rc = -1;
+    }
     if (g_fds[i].buf)
         kfree(g_fds[i].buf);
     g_fds[i].buf = 0;
     g_fds[i].used = 0;
     g_fds[i].dirty = 0;
     g_fds[i].streaming = 0;
+    return rc;
 }
 
-static int sys_fclose(int32_t fd) {
-    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used)
+static int sys_fclose(void *user, int32_t fd) {
+    if (!fd_owned(user, fd))
         return -1;
-    fd_free(fd);
-    return 0;
+    return fd_free(fd);
 }
 
-static int sys_fread(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
+static int sys_fread(ClvmVm *vm, void *user, int32_t fd, int32_t addr, int32_t n) {
     uint32_t left;
     uint32_t take;
-    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used || n < 0)
+    if (!fd_owned(user, fd) || n < 0)
         return clvm_vm_push(vm, -1) ? 0 : -1;
     left = g_fds[fd].size - g_fds[fd].pos;
     take = (uint32_t)n < left ? (uint32_t)n : left;
@@ -492,7 +508,7 @@ static int sys_fread(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
     return clvm_vm_push(vm, (int32_t)take) ? 0 : -1;
 }
 
-static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
+static int sys_fwrite(ClvmVm *vm, void *user, int32_t fd, int32_t addr, int32_t n) {
     uint32_t end;
     /* Stdout/stderr style fds used by putchar/printf: mirror to serial. */
     if ((fd == 1 || fd == 2) && n > 0) {
@@ -512,7 +528,7 @@ static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
         }
         return clvm_vm_push(vm, n) ? 0 : -1;
     }
-    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used || n < 0)
+    if (!fd_owned(user, fd) || n < 0)
         return clvm_vm_push(vm, -1) ? 0 : -1;
     if (g_fds[fd].streaming)
         return clvm_vm_push(vm, -1) ? 0 : -1;
@@ -552,8 +568,8 @@ static int sys_fwrite(ClvmVm *vm, int32_t fd, int32_t addr, int32_t n) {
     return clvm_vm_push(vm, n) ? 0 : -1;
 }
 
-static int sys_fseek(ClvmVm *vm, int32_t fd, int32_t off) {
-    if (fd < 0 || fd >= CLVM_FD_MAX || !g_fds[fd].used)
+static int sys_fseek(ClvmVm *vm, void *user, int32_t fd, int32_t off) {
+    if (!fd_owned(user, fd))
         return clvm_vm_push(vm, -1) ? 0 : -1;
     if (off < 0)
         off = 0;
@@ -563,8 +579,25 @@ static int sys_fseek(ClvmVm *vm, int32_t fd, int32_t off) {
     return clvm_vm_push(vm, (int32_t)g_fds[fd].pos) ? 0 : -1;
 }
 
+static void gfx3d_ctx_cleanup(Gfx3DCtx **held) {
+    if (held && *held) {
+        gfx3d_ctx_save(*held);
+    }
+}
+
+static int voxel_for(ClvmGfxCtx *ctx) {
+    int slot = lang_find_slot_by_gfx(ctx);
+    if (slot < 0) {
+        return 0;
+    }
+    return voxel_claim(slot);
+}
+
 void clvm_sys_close_slot(int slot_id) {
     int i;
+    voxel_release(slot_id);
+    input_capture_release_task(lang_slot_task(slot_id));
+    sock_close_slot(slot_id);
     for (i = 0; i < CLVM_FD_MAX; ++i) {
         if (g_fds[i].used && g_fds[i].slot == slot_id)
             fd_free(i);
@@ -670,6 +703,22 @@ int clvm_gfx_viewport(ClvmGfxCtx *ctx, int w, int h) {
 
 static int lang_slot_of(ClvmGfxCtx *ctx) {
     return lang_find_slot_by_gfx(ctx);
+}
+
+static int vm_sync_slot(ClvmVm *vm) {
+    int i;
+    if (!vm) {
+        return -1;
+    }
+    for (i = 0; i < CLVM_TH_MAX; ++i) {
+        if (g_th[i].used && g_th[i].vm == vm) {
+            return g_th[i].slot;
+        }
+    }
+    if (vm->sys_user) {
+        return lang_slot_of((ClvmGfxCtx *)vm->sys_user);
+    }
+    return -1;
 }
 
 static Task *task_of_ctx(ClvmGfxCtx *ctx) {
@@ -1000,6 +1049,9 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     pix = ctx->pixels;
     gw = ctx->w;
     gh = ctx->h;
+    gfx3d_ctx_load(&ctx->view3d);
+    Gfx3DCtx *_view_guard __attribute__((cleanup(gfx3d_ctx_cleanup), unused)) =
+        &ctx->view3d;
     {
         int tr = g_sys_n % SYS_TRACE;
         g_sys_trace[tr].id = id;
@@ -1061,7 +1113,11 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         {
             extern int input_key_down(int scancode);
-            if (!clvm_vm_push(vm, input_key_down(a)))
+            Task *owner = task_of_ctx(ctx);
+            int down = 0;
+            if (!owner || task_is_focused(owner))
+                down = input_key_down(a);
+            if (!clvm_vm_push(vm, down))
                 return -1;
         }
         return 0;
@@ -1167,18 +1223,20 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!pop_i32(vm, &d) || !pop_i32(vm, &c) || !pop_i32(vm, &b) ||
             !pop_i32(vm, &a))
             return -1;
-        if (voxel_set(a, b, c, d) != 0)
+        if (voxel_for(ctx) != 0 || voxel_set(a, b, c, d) != 0)
             return -1;
         return 0;
     case 37:
         if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
+        if (voxel_for(ctx) != 0)
+            return clvm_vm_push(vm, 0) ? 0 : -1;
         if (!clvm_vm_push(vm, voxel_get(a, b, c)))
             return -1;
         return 0;
     case 38:
         gfx_zbuf_prepare(ctx, gw, gh);
-        if (voxel_world_draw(pix, gw, gh) != 0)
+        if (voxel_for(ctx) != 0 || voxel_world_draw(pix, gw, gh) != 0)
             return -1;
         return 0;
     case 39:
@@ -1224,16 +1282,15 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 51:
         if (!pop_i32(vm, &a))
             return -1;
-        (void)sys_fclose(a);
-        return clvm_vm_push(vm, 0) ? 0 : -1;
+        return clvm_vm_push(vm, sys_fclose(user, a)) ? 0 : -1;
     case 52:
         if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
-        return sys_fread(vm, a, b, c);
+        return sys_fread(vm, user, a, b, c);
     case 53:
         if (!pop_i32(vm, &c) || !pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
-        return sys_fwrite(vm, a, b, c);
+        return sys_fwrite(vm, user, a, b, c);
     case 54: {
         char path[FS_PATH];
         uint32_t sz = 0;
@@ -1423,7 +1480,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         if (!guest_store_i32(vm, addr, 0))
             return -1;
-        th_wake_mutex((int)addr);
+        th_wake_mutex(vm_sync_slot(vm), (int)addr);
         return clvm_vm_push64(vm, 0) ? 0 : -1;
     }
     case 129: {
@@ -1433,7 +1490,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         if (!guest_store_i32(vm, mtx, 0))
             return -1;
-        th_wake_mutex((int)mtx);
+        th_wake_mutex(vm_sync_slot(vm), (int)mtx);
         {
             int i;
             int already = 0;
@@ -1469,7 +1526,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t cnd;
         if (!clvm_vm_pop64(vm, &cnd))
             return -1;
-        th_wake_cond((int)cnd);
+        th_wake_cond(vm_sync_slot(vm), (int)cnd);
         return clvm_vm_push64(vm, 0) ? 0 : -1;
     }
     case 131: {
@@ -1493,20 +1550,26 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t port;
         if (!clvm_vm_pop64(vm, &port))
             return -1;
-        return clvm_vm_push64(vm, sock_listen((uint16_t)port)) ? 0 : -1;
+        if (vm_sync_slot(vm) < 0)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, sock_listen_for((uint16_t)port, vm_sync_slot(vm))) ? 0 : -1;
     }
     case 141: {
         int64_t fd;
         if (!clvm_vm_pop64(vm, &fd))
             return -1;
-        return clvm_vm_push64(vm, sock_accept((int)fd)) ? 0 : -1;
+        if (vm_sync_slot(vm) < 0)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, sock_accept_for((int)fd, vm_sync_slot(vm))) ? 0 : -1;
     }
     case 142: {
         int64_t ip;
         int64_t port;
         if (!clvm_vm_pop64(vm, &port) || !clvm_vm_pop64(vm, &ip))
             return -1;
-        return clvm_vm_push64(vm, sock_connect((uint32_t)ip, (uint16_t)port)) ? 0 : -1;
+        if (vm_sync_slot(vm) < 0)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, sock_connect_for((uint32_t)ip, (uint16_t)port, vm_sync_slot(vm))) ? 0 : -1;
     }
     case 143: {
         int64_t fd, addr, n;
@@ -1517,11 +1580,15 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         if (n > 200)
             n = 200;
-        if (n < 0 || !vm->memory || (uint64_t)addr + (uint64_t)n > vm->mem_size)
+        if (n < 0 || addr < 0 || !vm->memory ||
+            (uint64_t)addr > vm->mem_size ||
+            (uint64_t)n > vm->mem_size - (uint64_t)addr)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        if (vm_sync_slot(vm) < 0)
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         for (i = 0; i < (int)n; ++i)
             tmp[i] = vm->memory[addr + i];
-        rc = sock_send((int)fd, tmp, (int)n);
+        rc = sock_send_for((int)fd, tmp, (int)n, vm_sync_slot(vm));
         return clvm_vm_push64(vm, rc) ? 0 : -1;
     }
     case 144: {
@@ -1533,10 +1600,13 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return -1;
         if (n > 200)
             n = 200;
-        if (n < 0 || !vm->memory || (uint64_t)addr + (uint64_t)n > vm->mem_size)
+        if (n < 0 || addr < 0 || !vm->memory ||
+            (uint64_t)addr > vm->mem_size ||
+            (uint64_t)n > vm->mem_size - (uint64_t)addr)
             return clvm_vm_push64(vm, -1) ? 0 : -1;
-        sock_bind_proc((int)fd, proc_current());
-        rc = sock_recv((int)fd, tmp, (int)n);
+        if (vm_sync_slot(vm) < 0)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        rc = sock_recv_for((int)fd, tmp, (int)n, vm_sync_slot(vm));
         if (rc == 0) {
             vm->state = CLVM_WAITING;
             proc_block(proc_current(), PROC_ST_BLOCK_SOCK);
@@ -1555,7 +1625,9 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         int64_t fd;
         if (!clvm_vm_pop64(vm, &fd))
             return -1;
-        return clvm_vm_push64(vm, sock_close((int)fd)) ? 0 : -1;
+        if (vm_sync_slot(vm) < 0)
+            return clvm_vm_push64(vm, -1) ? 0 : -1;
+        return clvm_vm_push64(vm, sock_close_for((int)fd, vm_sync_slot(vm))) ? 0 : -1;
     }
     case 146: {
         int64_t addr;
@@ -1690,6 +1762,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return clvm_vm_push64(vm, -1) ? 0 : -1;
         if (!ac97_take_event((int)irq)) {
             vm->state = CLVM_WAITING;
+            ac97_arm_waiter(proc_current());
             proc_block(proc_current(), PROC_ST_BLOCK_IRQ);
             if (!clvm_vm_push64(vm, irq) || !clvm_vm_push64(vm, 174))
                 return -1;
@@ -1946,7 +2019,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 65:
         if (!pop_i32(vm, &b) || !pop_i32(vm, &a))
             return -1;
-        return sys_fseek(vm, a, b);
+        return sys_fseek(vm, user, a, b);
     case 72: {
         int32_t ptr;
         int32_t bw;
@@ -1998,7 +2071,13 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         return 0;
     }
     case 80: {
+        Task *focus = task_of_ctx(ctx);
         InputMouse m = input_mouse_snapshot();
+        if (focus && !task_is_focused(focus)) {
+            if (!clvm_vm_push(vm, -1))
+                return -1;
+            return 0;
+        }
         int lx;
         int ly;
         int x = m.x;
@@ -2010,7 +2089,13 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         return 0;
     }
     case 81: {
+        Task *focus = task_of_ctx(ctx);
         InputMouse m = input_mouse_snapshot();
+        if (focus && !task_is_focused(focus)) {
+            if (!clvm_vm_push(vm, -1))
+                return -1;
+            return 0;
+        }
         int lx;
         int ly;
         int y = m.y;
@@ -2026,6 +2111,11 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         Task *t = task_of_ctx(ctx);
         int top;
         int32_t btn = 0;
+        if (t && !task_is_focused(t)) {
+            if (!clvm_vm_push(vm, 0))
+                return -1;
+            return 0;
+        }
         if (m.left_down) {
             btn |= 1;
         }
@@ -2051,6 +2141,48 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         if (!clvm_vm_push(vm, btn)) {
             return -1;
         }
+        return 0;
+    }
+    case 240: {
+        Task *t = task_of_ctx(ctx);
+        int id = -1;
+        if (t && task_is_focused(t))
+            id = t->id;
+        else if (t)
+            input_capture_release_task(t->id);
+        if (!clvm_vm_push(vm, input_mouse_axis(id, 0)))
+            return -1;
+        return 0;
+    }
+    case 241: {
+        Task *t = task_of_ctx(ctx);
+        int id = -1;
+        if (t && task_is_focused(t))
+            id = t->id;
+        else if (t)
+            input_capture_release_task(t->id);
+        if (!clvm_vm_push(vm, input_mouse_axis(id, 1)))
+            return -1;
+        return 0;
+    }
+    case 242: {
+        Task *t = task_of_ctx(ctx);
+        if (!t || !task_is_focused(t)) {
+            if (!clvm_vm_push(vm, -1))
+                return -1;
+            return 0;
+        }
+        input_capture_set(t->id);
+        if (!clvm_vm_push(vm, 0))
+            return -1;
+        return 0;
+    }
+    case 243: {
+        Task *t = task_of_ctx(ctx);
+        if (t)
+            input_capture_release_task(t->id);
+        if (!clvm_vm_push(vm, 0))
+            return -1;
         return 0;
     }
     case 83: {

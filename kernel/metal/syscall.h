@@ -21,5 +21,15 @@ void panic_user_fault(struct irq_frame *frame, uint64_t cr2);
 
 int user_exited(void);
 int user_exit_code(void);
+void syscall_close_owner(int pid);
+
+/* Place the NUL for SYS_WRITE. n == 80 needs cap >= 81. */
+static inline int syscall_write_term(uint8_t *dst, int cap, uint32_t n) {
+    if (!dst || n > 80u || cap < (int)n + 1) {
+        return -1;
+    }
+    dst[n] = 0;
+    return 0;
+}
 
 #endif

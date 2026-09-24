@@ -1,106 +1,138 @@
-# ChrisOS Stability Campaign — Report
+# ChrisOS stability report
 
-## Scope of this pass
+The campaign is not finished. Items below are stable only where a test is
+named. Everything else stays experimental.
 
-This report covers the first executed slice of the stabilization campaign,
-following the mandated methodology (reproduce → root-cause → failing test →
-minimal correct fix → re-test → run related gates → check regressions →
-document). It does **not** claim the whole 38-section campaign is complete;
-remaining work is listed explicitly below and tracked in
-`docs/STABILITY_AUDIT.md`.
+## Heads
 
-- **Initial HEAD (`feat/os2`):** `2550b9cab06c3ee2e81a292691031935ec5613df`
-  (confirmed as the current HEAD; no later commits existed to consider).
-- **Work branch:** `cursor/stability-campaign-78d0` (off `feat/os2`).
+- Previously analyzed: `2550b9cab06c3ee2e81a292691031935ec5613df`
+- `feat/os2` at the start of this branch: `92ec452178d7e3e7ae34546504a16e3f565e0c05`
+  (phase 1 already present: ChrisC float pointers, SYS_WRITE buffer)
+- Work branch: `cursor/stability-campaign-7c6f`
 
-## Completed (with regression tests)
+## P0 fixed in code, with a host test
 
-### FASE 1 — ChrisC type system / float pointers / Mine movement
+- CHRISC-01/02 and CHRISC-03 (phase 1, already on `feat/os2`): `float *` is a
+  pointer, `*p` of a float is a float, compound assignment keeps float-ness.
+  Tests: `test_chrisc_ptr_float`, `test_chrisc_move`. `LIB/SIM.CC` unchanged.
+- PMM-HEAP-01: PMM and heap locks. Test: `host-pmm-heap-smp-test` and the
+  ASan/UBSan build in `host-sanitize`.
+- KTHREAD-01: per-CPU thread context. Test: `host-kthread-smp-test`.
+- ELF-01: validation and rollback. Test: `host-elf-malformed-test`.
+- CLVM-ISO-01: mutex/cond identity is `(slot, address)`. Test:
+  `host-clvm-sync-test`.
+- USERCOPY-01: copy walks the process page tables. No dedicated host test.
+- JIT-01/02: per-CPU trampoline, serialized compile, unmap before free.
+  `host-jit-test` passed. No new differential stress.
 
-Root cause of the Mine movement failure was in the **language**, not the app,
-so `LIB/SIM.CC` was **not** modified. Three coupled ChrisC defects:
+## P1 fixed in code, with a host test where noted
 
-- **CHRISC-01 (P0):** `float *` parameters were flagged as by-value floats
-  (`arg_float = dt.isf`), truncating pointer arguments through the
-  `FSTORE`/`FLOAD` path. Fixed to `dt.isf && !ptr`.
-- **CHRISC-02 (P0):** `*p` on a float pointer was not typed float, so mixed
-  arithmetic inserted a spurious `ITOF` that reinterpreted float bits as int.
-  `N_DEREF.is_float` now derives from the pointee (new `deref_pointee_float`).
-- **CHRISC-03 (P1):** compound assignment (`*p += x`, `f += x`) built its
-  binary node without `is_float`, emitting integer ops on floats. Now
-  propagated via `value_is_float` (keeps pointer arithmetic integer).
+- MINE-01 movement math via ChrisC (phase 1): `test_chrisc_move`.
+- MINE-PITCH-01: positive pitch looks down, matching `math3d`. Captured mouse
+  deltas, extended arrow codes. Test: `test_math3d_view`. `MINE.CLV` rebuilt.
+  Not booted.
+- INPUT-FOCUS-01: extended scancodes, capture, focus gate in `key()`. Test:
+  `test_keystate`, `host-input-test`. The focus gate itself is not in that host
+  binary.
+- JOB-01: full queue returns 0. Test: `host-job-saturate-test`.
+- NET-01: socket owner and CLVM slot. Test: `host-sock-owner-test`.
+- FD-OWN-01: native owner and CLVM slot checks. No two-app FD test.
+- AC97-01: DMA failure cleanup, IRQ-safe ring, event sequence. No host test.
+- SYS-01: `buf[81]` plus `syscall_write_term`. Test: `host-sys-write-test`.
 
-Verified by the campaign's exact minimal reproducer and surrounding cases.
+## Fixed in this continuation, with a host test
 
-### FASE 4 (partial) — syscall stack overflow
+- FS-LOCK-01: yielding CFS lock, kernel holder is the CPU id. Tests:
+  `host-cfs-lock-test`, `host-cfs-test`.
+- GFX3D-CTX-01: per-app camera, light, and texture. First load uses defaults,
+  not the previous app. Voxel world has one owner. Test:
+  `host-gfx3d-ctx-test`.
+- SYS-01: `host-sys-write-test`.
+- DOOM-RERUN-01: `test_doom_compile`, `test_doom_engine` (85 files). The
+  missing-file diagnostic names the path (`host-chrisc-read-diag-test`).
+- FUZZ-01 (partial): CFS, ELF, ChrisC, CLVM. BMP and packets are not fuzzed.
+- TOOLKIT-01 (partial): 24 task open/close cycles in `host-task-window-test`.
+  No heap/PMM comparison.
+- DRV-TIMEOUT-01: block paths return `BD_ETIMEOUT` when the poll budget ends.
+  QEMU covers the success path when those gates pass. No injected timeout.
 
-- **SYS-01 (P0):** `SYS_WRITE` wrote `buf[80]` on an 80-byte buffer when
-  `n == 80`. Fixed by sizing `buf[81]`; guard unchanged.
+## Still open
 
-## Tests added (wired into `host-gfx3d` → `host-gates`)
+See the OPEN table in `docs/STABILITY_AUDIT.md`. Still without a runtime test:
+AC97 waiter, hardware PMM leak loop, TLB poll timeout, `LIB/STRING.CC`
+`memmove` narrowing, BMP/packet fuzz, Mine boot, and a full `static g_*`
+inventory.
 
-- `tools/test_chrisc_ptr_float.c` (`test_chrisc_ptr_float`): float*/int*
-  parameters, deref, deref-assign, compound assign, multiple float* args.
-- `tools/test_chrisc_move.c` (`test_chrisc_move`): `sim_move`-style velocity
-  integration + `0.72` damping through `float*` out-params; asserts finite,
-  coherent forward motion, damping on release, no cross-axis contamination,
-  no NaN/Inf.
+## Gates run in this session
 
-## Gates executed / results
+Host, passed:
 
-- New tests: `test_chrisc_ptr_float: ok`, `test_chrisc_move: ok`.
-- ChrisC/CLVM/DOOM correctness suite (no regressions): `test_chrisc_arrays`,
-  `test_chrisc_float`, `test_chrisc_fn`, `test_chrisc_struct`,
-  `test_chrisc_trig`, `test_chrisc_games`, `test_chrisc_include`,
-  `test_chrisc_string`, `test_chrisc_c17`, `test_chrisc_lang`,
-  `test_chrisc_apps`, `test_chrisc_doom`, `test_doom_compile`,
-  `test_doom_engine`, `host-jit-vm-test`, `host-jit-native-test` — all `ok`.
-- Kernel builds clean under `-Wall -Wextra -Werror` (`make iso`, exit 0),
-  including `compiler/chrisc/chrisc.c` at `-O2`.
+- `host-cfs-test` (`host cfs tests passed`)
+- `host-cfs-lock-test`, `host-gfx3d-ctx-test`, `host-sys-write-test`
+- `host-fuzz-cfs-test`, `host-fuzz-elf-test`, `host-fuzz-chrisc-test`,
+  `host-fuzz-clvm-test`, `host-chrisc-read-diag-test`, `host-task-window-test`
+- `test_doom_compile` (`code=15627`, plus `test_phys_compile`)
+- `test_doom_engine` (`code=1209611`, 85 files)
+- `tools/check_test_gates.py` (`ok (209 reachable)`)
+- Freestanding compile of `cfs.c`, `clvm_sys.c`, `ac97.c`, `ahci.c`, `nvme.c`,
+  `virtio_blk.c`, `usb_msc.c`, and a full kernel link to `build/os.iso`
 
-Toolchain note: the project builds cleanly with **gcc-11**; gcc-12+ emit a
-false-positive `-Werror=array-bounds` in `chrisc.c` at `-O2`.
+Host, not run as one target:
 
-## ChrisC compatibility status
+- `host-gates` / `host-stress` / `host-sanitize` were not repeated as a single
+  `make` after these targets were added. The new tests above were run on
+  their own.
 
-Pointer-to-float semantics now correct for: `float*`/`int*` parameters, `*p`
-read, `*p = v`, `*p += v`/`*p *= v`, multiple `float*` args, `&arr[i].field`,
-arrays of structs. Existing ChrisC/DOOM gates continue to pass.
+QEMU, passed (markers required by `tools/qemu_gate.py`):
 
-## Mine Chris status
+- `test-qemu-ata` at 4 CPUs: `cpu_online_count=4`, `root ata`, `cfs mounted`,
+  and the log also contains `desktop 60Hz`
+- `test-qemu-smp1`: `cpu_online_count=1`, `root ata`, `cfs mounted`
+- `test-qemu-ahci`, `test-qemu-nvme`, `test-qemu-vblk`, `test-qemu-usb`,
+  `test-qemu-gpu`
+- `test-qemu-noata`: `ata missing`, `root ahci`, `cfs mounted`,
+  `install selftest ok`, `desktop 60Hz`
 
-Physics/movement math (velocity integration + damping) is correct at the
-language/runtime level and covered by `test_chrisc_move`. **Not yet verified
-end-to-end:** voxel collision, gravity/ground/jump against a live world, input
-focus/mouse capture, and the vertical-camera/pitch convention (MINE-PITCH-01).
-These require the input-focus work and a QEMU Mine smoke test.
+QEMU, not passed:
 
-## Doom status
+- `test-qemu-install`: serial reached `install backup gpt` and did not contain
+  `install auto`, `install tree copied`, or `install gpt+esp+cfs disk=ahci`
+  before the 300s gate ended. The installed-disk OVMF boot was not started.
+- `test-qemu-riscv`: `qemu-system-riscv64` is installed.
+  `riscv64-unknown-elf-gcc` is not, so the RISC-V kernel was not built.
 
-`test_doom_compile` and `test_doom_engine` pass (compile of the full engine
-source). No Doom-specific hacks were added. Deeper runtime Doom validation is
-part of the pending QEMU integration matrix.
+## SMP
 
-## Not done in this pass (explicit)
+Host tests use 4 pthreads. The kernel was also booted under QEMU with
+`-smp 4` and `-smp 1`. Both printed the matching `cpu_online_count`. There is
+no separate 2-CPU rule.
 
-The following campaign areas were **audited** (confirmed in code where noted in
-`docs/STABILITY_AUDIT.md`) but **not fixed** here, and must not be considered
-stable: SMP-safety of PMM/heap (PMM-HEAP-01), kthread per-CPU context
-(KTHREAD-01), MM unmap/TLB shootdown, process teardown leak accounting, ELF
-loader transactional cleanup (ELF-01), full `copy_from_user`/`copy_to_user`
-validation (USERCOPY-01), native/CLVM FD ownership (FD-OWN-01), CLVM
-mutex/cond isolation by `(VM, addr)` (CLVM-ISO-01), JIT per-context state and
-executable-mapping lifetime (JIT-01/02), filesystem/CFS concurrency, storage
-driver matrix (ATA/AHCI/NVMe/VirtIO/USB), AC97 IRQ sync, network socket
-ownership, 3D render contexts (GFX3D-CTX-01), toolkit/app teardown stress,
-`LIB/` audits, the QEMU 1/4-CPU gate matrix and non-ignored QEMU failure
-detection (GATES-01), host sanitizer gates, and fuzz/property tests.
+## Mine Chris
 
-## Remaining limitations / still experimental
+Language-level integration matches the specified `float *` case (phase 1).
+Look uses the math3d convention: pointer down increases pitch (look down),
+pointer up decreases it, world +Y stays above the horizon in
+`test_math3d_view`. WASD key codes are unchanged. The image was recompiled.
+Mine was not launched from the desktop, so collision, gravity, jump, and
+ground were not executed in a world.
 
-- ChrisC still overloads a single `is_float` flag to mean "pointee is float"
-  on pointer symbols; a small internal type descriptor would make the compiler
-  provably coherent (CHRISC-TYPE-REFACTOR, P3).
-- SYS-01 has no automated regression yet (needs a QEMU user-process test).
-- Multicore correctness is unverified; gates currently exercise limited CPU
-  counts.
+## Doom
+
+`test_doom_compile` and `test_doom_engine` passed after checking out the
+pinned `third_party/doomgeneric_src` gitlink (`dcb7a8d`). The earlier failure
+named `I_INPUT.CC` because the next list entry was missing and the diagnostic
+still pointed at the previous file.
+
+## Drivers
+
+ATA, AHCI, NVMe, VirtIO Block, and USB MSC completed their QEMU read/write
+markers. An empty ATA status no longer uses the full identify budget. VirtIO
+waits up to 4096 yields for the status byte after the used index. No test
+injects a device that never completes.
+
+## ChrisC
+
+Float-pointer behavior from phase 1 stands. This branch adds `mouse_dx`,
+`mouse_dy`, `mouse_cap`, and `mouse_rel` builtins so games can read captured
+deltas. `int` is 4 bytes and a pointer is 8; `LIB/STRING.CC` `memmove` still
+casts pointers to `int`. `LIB/SIM.CC` was not modified.

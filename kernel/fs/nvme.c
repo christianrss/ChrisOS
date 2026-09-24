@@ -59,7 +59,7 @@ static int wait_cq(Nvme *n, int admin) {
             return status == 0 ? 0 : -1;
         }
     }
-    return -1;
+    return -2;
 }
 
 static int admin_cmd(Nvme *n, uint32_t op, uint32_t nsid, uint32_t prp_lo,
@@ -112,8 +112,13 @@ static int nvme_rw(void *ctx, uint32_t lba, uint32_t count, void *buf, int write
                 hw_dma_w32(n->data, i, v);
             }
         }
-        if (io_rw(n, write, lba, nsec) != 0)
-            return BD_EIO;
+        {
+            int rc = io_rw(n, write, lba, nsec);
+            if (rc == -2)
+                return BD_ETIMEOUT;
+            if (rc != 0)
+                return BD_EIO;
+        }
         if (!write) {
             for (i = 0; i < nsec * 512u; i += 4) {
                 uint32_t v = hw_dma_r32(n->data, i);

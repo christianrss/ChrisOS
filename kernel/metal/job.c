@@ -1,4 +1,5 @@
 #include "job.h"
+#include "mm.h"
 #include "panic.h"
 #include "serial.h"
 #include "smp.h"
@@ -47,6 +48,7 @@ int job_submit(JobFn fn, void *arg) {
 void job_worker_once(uint32_t cpu_index) {
     Job job;
 
+    mm_tlb_poll();
     job.fn = 0;
     job.arg = 0;
     spin_lock(&g_q_lock);
@@ -99,8 +101,12 @@ void smp_job_selftest(void) {
         return;
     }
     for (i = 0; i < 16u; ++i) {
-        if (!job_submit(add_one, 0)) {
-            panic("job_submit failed");
+        uint32_t spins = 0u;
+        while (!job_submit(add_one, 0)) {
+            job_worker_once(0);
+            if (++spins > 1000000u) {
+                panic("job_submit failed");
+            }
         }
     }
     job_wait_idle();
@@ -113,8 +119,12 @@ void smp_job_selftest(void) {
     for (wave = 0u; wave < 32u; ++wave) {
         g_job_sum = 0u;
         for (i = 0u; i < 128u; ++i) {
-            if (!job_submit(add_one, 0)) {
-                panic("job_submit failed");
+            uint32_t spins = 0u;
+            while (!job_submit(add_one, 0)) {
+                job_worker_once(0);
+                if (++spins > 1000000u) {
+                    panic("job_submit failed");
+                }
             }
         }
         job_wait_idle();

@@ -1,6 +1,22 @@
 /* LEARN:WS64-W05 */
 #include <stdint.h>
 #include "cfs.h"
+#include "fs_lock.h"
+
+FsLock g_cfs_lock;
+
+#ifdef __freestanding__
+#include "smp.h"
+
+uint32_t fs_lock_holder(void) {
+    return smp_current_cpu() + 1u;
+}
+#else
+uint32_t fs_lock_holder(void) __attribute__((weak));
+uint32_t fs_lock_holder(void) {
+    return 1u;
+}
+#endif
 
 #ifdef __freestanding__
 #include "heap.h"
@@ -199,10 +215,12 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
 }
 
 uint64_t cfs_cache_hits(const Cfs *fs) {
+    CFS_LOCK();
     return fs ? fs->cache_hits : 0u;
 }
 
 uint64_t cfs_cache_misses(const Cfs *fs) {
+    CFS_LOCK();
     return fs ? fs->cache_misses : 0u;
 }
 
@@ -428,6 +446,7 @@ static int ptr_block_set(Cfs *fs, uint32_t lba, uint32_t index, uint32_t val) {
 static uint64_t g_cfs_clock = 1;
 
 void cfs_set_now(uint64_t now) {
+    CFS_LOCK();
     if (now != 0)
         g_cfs_clock = now;
 }
@@ -947,6 +966,7 @@ static int walk_full(Cfs *fs, const PathParts *p, uint32_t *id_out) {
 }
 
 int cfs_format(BlockDevice *dev) {
+    CFS_LOCK();
     uint8_t sector[STOR_SECTOR_SIZE];
     CfsSuper super;
     CfsInode inode;
@@ -1005,6 +1025,7 @@ int cfs_format(BlockDevice *dev) {
 }
 
 int cfs_mount(Cfs *fs, BlockDevice *dev) {
+    CFS_LOCK();
     CfsInode root;
     uint8_t jhdr[STOR_SECTOR_SIZE];
     uint32_t jstate = JNL_EMPTY;
@@ -1045,11 +1066,13 @@ int cfs_mount(Cfs *fs, BlockDevice *dev) {
 }
 
 int cfs_sync(Cfs *fs) {
+    CFS_LOCK();
     if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
     return io_error(bd_flush(fs->dev));
 }
 
 int cfs_create(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id, existing;
     CfsInode empty;
@@ -1083,6 +1106,7 @@ int cfs_create(Cfs *fs, const char *path) {
 }
 
 int cfs_mkdir(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id, existing;
     CfsInode node;
@@ -1129,6 +1153,7 @@ mkdir_out:
 }
 
 int cfs_rmdir(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id, n;
     CfsInode node;
@@ -1165,6 +1190,7 @@ int cfs_rmdir(Cfs *fs, const char *path) {
 }
 
 int cfs_unlink(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id;
     CfsInode node;
@@ -1204,6 +1230,7 @@ unlink_out:
 }
 
 int cfs_rename(Cfs *fs, const char *old_path, const char *new_path) {
+    CFS_LOCK();
     PathParts a, b;
     uint32_t pa, pb, la, lb, id, clash;
     CfsInode node;
@@ -1246,6 +1273,7 @@ int cfs_rename(Cfs *fs, const char *old_path, const char *new_path) {
 }
 
 int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     CfsInode inode;
@@ -1265,6 +1293,7 @@ int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type) {
 
 int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
                 uint32_t capacity) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id, done = 0u, amount, block, sector_off;
     uint8_t *dst = out;
@@ -1309,10 +1338,12 @@ int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
 }
 
 int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
+    CFS_LOCK();
     return cfs_read_at(fs, path, 0u, out, capacity);
 }
 
 int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size) {
+    CFS_LOCK();
     CfsInode old_inode, inode;
     PathParts p;
     uint32_t id, need, old_count, i, done, lba;
@@ -1386,6 +1417,7 @@ out:
 }
 
 int cfs_mtime(Cfs *fs, const char *path, uint64_t *out) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     CfsInode inode;
@@ -1403,6 +1435,7 @@ int cfs_mtime(Cfs *fs, const char *path, uint64_t *out) {
 
 int cfs_write_at(Cfs *fs, const char *path, uint32_t offset,
                  const void *data, uint32_t size) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id, done, block, sector_off, end;
     const uint8_t *src = data;
@@ -1474,6 +1507,7 @@ int cfs_write_at(Cfs *fs, const char *path, uint32_t offset,
 }
 
 int cfs_truncate(Cfs *fs, const char *path, uint32_t size) {
+    CFS_LOCK();
     uint32_t old_size;
     uint32_t i;
     uint16_t type;
@@ -1548,6 +1582,7 @@ static int list_dir_inode(Cfs *fs, uint32_t dir_id, CfsListFn fn, void *ctx) {
 }
 
 int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     int rc;
@@ -1562,10 +1597,12 @@ int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx) {
 }
 
 int cfs_list(Cfs *fs, CfsListFn fn, void *ctx) {
+    CFS_LOCK();
     return cfs_list_at(fs, "", fn, ctx);
 }
 
 int cfs_perm(Cfs *fs, const char *path, uint32_t bit) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     CfsInode inode;
@@ -1583,6 +1620,7 @@ int cfs_perm(Cfs *fs, const char *path, uint32_t bit) {
 }
 
 int cfs_chmod(Cfs *fs, const char *path, uint32_t mode) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     CfsInode inode;

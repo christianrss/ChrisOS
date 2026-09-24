@@ -145,16 +145,16 @@ void main() {
       if (key(32)) {
         eye.x = eye.x + 0.25;
       }
-      if (key(72)) {
+      if (key(200)) {
         eye.z = eye.z - 0.25;
       }
-      if (key(80)) {
+      if (key(208)) {
         eye.z = eye.z + 0.25;
       }
-      if (key(75)) {
+      if (key(203)) {
         eye.x = eye.x - 0.25;
       }
-      if (key(77)) {
+      if (key(205)) {
         eye.x = eye.x + 0.25;
       }
       if (key(16)) {

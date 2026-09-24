@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include "../compiler/clvm/clvm_vm.h"
+#include "../gfx/gfx3d_ctx.h"
 
 #define CLVM_SYS_GAME_W 320
 #define CLVM_SYS_GAME_H 200
@@ -15,6 +16,7 @@ typedef struct ClvmGfxCtx {
     int w;
     int h;
     int slot_id;
+    Gfx3DCtx view3d;
 } ClvmGfxCtx;
 
 void clvm_gfx_native_size(int *w, int *h);

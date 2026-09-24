@@ -31,6 +31,7 @@ typedef struct Sock {
     uint32_t last_tick;
     uint8_t have_mac;
     int owner;
+    int slot;
 } Sock;
 
 static Sock g_sk[SOCK_MAX];
@@ -52,7 +53,7 @@ static void put_ip(uint8_t *p, uint32_t ip) {
     p[3] = (uint8_t)ip;
 }
 
-static int alloc_sk(void) {
+static int alloc_sk(int owner, int slot) {
     int i;
     for (i = 1; i < SOCK_MAX; ++i) {
         if (g_sk[i].state == SK_FREE) {
@@ -60,11 +61,23 @@ static int alloc_sk(void) {
             g_sk[i].rx_len = 0;
             g_sk[i].last_len = 0;
             g_sk[i].parent = 0;
-            g_sk[i].owner = 0;
+            g_sk[i].owner = owner;
+            g_sk[i].slot = slot;
             return i;
         }
     }
     return -1;
+}
+
+/* slot >= 0: CLVM app. slot < 0: native process that created the socket. */
+static int fd_visible(int fd, int slot) {
+    if (fd <= 0 || fd >= SOCK_MAX || g_sk[fd].state == SK_FREE) {
+        return 0;
+    }
+    if (slot >= 0) {
+        return g_sk[fd].slot == slot;
+    }
+    return g_sk[fd].slot < 0 && g_sk[fd].owner == proc_current();
 }
 
 void sock_init(void) {
@@ -136,8 +149,8 @@ static void xmit(Sock *s, uint8_t flags, const uint8_t *pay, int n) {
     }
 }
 
-int sock_listen(uint16_t port) {
-    int fd = alloc_sk();
+int sock_listen_for(uint16_t port, int slot) {
+    int fd = alloc_sk(proc_current(), slot);
     if (fd < 0) {
         return -1;
     }
@@ -147,9 +160,13 @@ int sock_listen(uint16_t port) {
     return fd;
 }
 
-int sock_accept(int fd) {
+int sock_listen(uint16_t port) {
+    return sock_listen_for(port, -1);
+}
+
+int sock_accept_for(int fd, int slot) {
     int i;
-    if (fd <= 0 || fd >= SOCK_MAX || g_sk[fd].state != SK_LISTEN) {
+    if (!fd_visible(fd, slot) || g_sk[fd].state != SK_LISTEN) {
         return -1;
     }
     for (i = 1; i < SOCK_MAX; ++i) {
@@ -162,8 +179,12 @@ int sock_accept(int fd) {
     return -1;
 }
 
-int sock_connect(uint32_t ip, uint16_t port) {
-    int fd = alloc_sk();
+int sock_accept(int fd) {
+    return sock_accept_for(fd, -1);
+}
+
+int sock_connect_for(uint32_t ip, uint16_t port, int slot) {
+    int fd = alloc_sk(proc_current(), slot);
     uint8_t mac[6];
     int i;
     if (fd < 0) {
@@ -189,8 +210,12 @@ int sock_connect(uint32_t ip, uint16_t port) {
     return fd;
 }
 
-int sock_send(int fd, const uint8_t *buf, int n) {
-    if (fd <= 0 || fd >= SOCK_MAX || g_sk[fd].state != SK_ESTABLISHED) {
+int sock_connect(uint32_t ip, uint16_t port) {
+    return sock_connect_for(ip, port, -1);
+}
+
+int sock_send_for(int fd, const uint8_t *buf, int n, int slot) {
+    if (!fd_visible(fd, slot) || g_sk[fd].state != SK_ESTABLISHED) {
         return -1;
     }
     if (n < 0) {
@@ -203,10 +228,14 @@ int sock_send(int fd, const uint8_t *buf, int n) {
     return n;
 }
 
-int sock_recv(int fd, uint8_t *buf, int n) {
+int sock_send(int fd, const uint8_t *buf, int n) {
+    return sock_send_for(fd, buf, n, -1);
+}
+
+int sock_recv_for(int fd, uint8_t *buf, int n, int slot) {
     int i;
     int take;
-    if (fd <= 0 || fd >= SOCK_MAX || !buf || n <= 0) {
+    if (!fd_visible(fd, slot) || !buf || n <= 0) {
         return -1;
     }
     if (g_sk[fd].state != SK_ESTABLISHED) {
@@ -229,15 +258,56 @@ int sock_recv(int fd, uint8_t *buf, int n) {
     return take;
 }
 
-int sock_close(int fd) {
-    if (fd <= 0 || fd >= SOCK_MAX || g_sk[fd].state == SK_FREE) {
+int sock_recv(int fd, uint8_t *buf, int n) {
+    return sock_recv_for(fd, buf, n, -1);
+}
+
+int sock_close_for(int fd, int slot) {
+    if (!fd_visible(fd, slot)) {
         return -1;
     }
     if (g_sk[fd].state == SK_ESTABLISHED) {
         xmit(&g_sk[fd], 0x11u, 0, 0);
     }
     g_sk[fd].state = SK_FREE;
+    g_sk[fd].slot = -1;
     return 0;
+}
+
+int sock_close(int fd) {
+    return sock_close_for(fd, -1);
+}
+
+static void sock_close_matching(int (*match)(const Sock *s, int key), int key) {
+    int i;
+    for (i = 1; i < SOCK_MAX; ++i) {
+        if (g_sk[i].state != SK_FREE && match(&g_sk[i], key)) {
+            if (g_sk[i].state == SK_ESTABLISHED) {
+                xmit(&g_sk[i], 0x11u, 0, 0);
+            }
+            g_sk[i].state = SK_FREE;
+            g_sk[i].slot = -1;
+        }
+    }
+}
+
+static int match_slot(const Sock *s, int key) {
+    return s->slot == key;
+}
+
+static int match_proc(const Sock *s, int key) {
+    return s->owner == key;
+}
+
+void sock_close_slot(int slot) {
+    if (slot < 0) {
+        return;
+    }
+    sock_close_matching(match_slot, slot);
+}
+
+void sock_close_proc(int pid) {
+    sock_close_matching(match_proc, pid);
 }
 
 int sock_on_tcp(const uint8_t *frame, uint32_t n) {
@@ -282,7 +352,7 @@ int sock_on_tcp(const uint8_t *frame, uint32_t n) {
         return 0;
     }
     if (fd < 0 && (flags & 0x02u) && !(flags & 0x10u)) {
-        fd = alloc_sk();
+        fd = alloc_sk(g_sk[listen].owner, g_sk[listen].slot);
         if (fd < 0) {
             return 1;
         }
@@ -432,7 +502,7 @@ int sock_dns(const char *name, uint32_t *ip_out) {
         }
     }
     if (dns_fd < 0) {
-        dns_fd = alloc_sk();
+        dns_fd = alloc_sk(proc_current(), -1);
         if (dns_fd < 0) {
             return -1;
         }

@@ -1,5 +1,6 @@
 /* LEARN:WS64-W05 */
 #include "cfs.h"
+#include "fs_lock.h"
 #include "storage_limits.h"
 
 static char g_reason[80];
@@ -211,6 +212,7 @@ static int walk_dir(BlockDevice *dev, uint32_t id, int *errors) {
 }
 
 int cfs_fsck(Cfs *fs) {
+    CFS_LOCK();
     CfsSuper super;
     CfsInode inode;
     uint32_t i, b, need, id, per;

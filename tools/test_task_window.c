@@ -89,6 +89,26 @@ int main(void) {
             return 1;
     }
 
+    {
+        int n;
+        int closed = 0;
+        for (n = 0; n < 24; ++n) {
+            TaskRect box = {10 + n, 10, 80, 40};
+            int spawned = task_spawn(TASK_APP, box, run_task);
+            if (spawned < 0) {
+                break;
+            }
+            task_close(spawned);
+            closed++;
+            if (task_get(spawned) != 0 && task_get(spawned)->type != TASK_NONE) {
+                fprintf(stderr, "test_task_window: close left a live task\n");
+                return 1;
+            }
+        }
+        if (!check(closed == 24, "open/close stress"))
+            return 1;
+    }
+
     puts("test_task_window: ok");
     return 0;
 }

@@ -51,7 +51,15 @@ static bool g_altgr;
 static InputLayout g_layout = INPUT_LAYOUT_US;
 
 /* LEARN:F5P02 */
-static volatile uint8_t g_keys[128];
+static volatile uint8_t g_keys[256];
+static int g_acc_dx;
+static int g_acc_dy;
+static int g_snap_dx;
+static int g_snap_dy;
+static int g_snap_valid;
+static int g_snap_got_x;
+static int g_snap_got_y;
+static int g_capture_task = -1;
 
 static const char us_normal[128] = {
     [0x02] = '1', [0x03] = '2', [0x04] = '3', [0x05] = '4',
@@ -246,60 +254,137 @@ int input_save_layout_file(const char *path) {
 
 void input_keystate_clear(void) {
     unsigned i;
-    for (i = 0; i < 128u; ++i)
+    for (i = 0; i < 256u; ++i)
         g_keys[i] = 0;
+    g_extended = false;
 }
 
 void input_keystate_note(uint8_t scancode) {
     uint8_t code;
-    if (scancode == 0xE0u)
+    int idx;
+    int ext;
+    if (scancode == 0xE0u) {
+        g_extended = true;
         return;
+    }
+    ext = g_extended ? 1 : 0;
+    g_extended = false;
     code = (uint8_t)(scancode & 0x7Fu);
-    g_keys[code] = (scancode & 0x80u) ? 0 : 1;
+    idx = ext ? (INPUT_SCAN_EXT + (int)code) : (int)code;
+    if (idx >= 0 && idx < 256)
+        g_keys[idx] = (scancode & 0x80u) ? 0 : 1;
 }
 
 int input_key_down(int scancode) {
-    if (scancode < 0 || scancode > 127)
+    if (scancode < 0 || scancode > 255)
         return 0;
     return g_keys[scancode] ? 1 : 0;
+}
+
+void input_mouse_delta(int *dx, int *dy) {
+    if (dx)
+        *dx = g_acc_dx;
+    if (dy)
+        *dy = g_acc_dy;
+    g_acc_dx = 0;
+    g_acc_dy = 0;
+}
+
+void input_capture_set(int task_id) {
+    if (g_capture_task == task_id)
+        return;
+    g_capture_task = task_id;
+    g_acc_dx = 0;
+    g_acc_dy = 0;
+}
+
+void input_capture_release_task(int task_id) {
+    if (g_capture_task == task_id)
+        g_capture_task = -1;
+}
+
+int input_capture_owner(void) {
+    return g_capture_task;
+}
+
+int input_mouse_delta_for(int task_id, int *dx, int *dy) {
+    if (g_capture_task < 0 || task_id != g_capture_task) {
+        if (dx)
+            *dx = 0;
+        if (dy)
+            *dy = 0;
+        return 0;
+    }
+    input_mouse_delta(dx, dy);
+    g_snap_valid = 0;
+    return 1;
+}
+
+int input_mouse_axis(int task_id, int y_axis) {
+    if (g_capture_task < 0 || task_id != g_capture_task) {
+        return 0;
+    }
+    if (!g_snap_valid) {
+        g_snap_dx = g_acc_dx;
+        g_snap_dy = g_acc_dy;
+        g_acc_dx = 0;
+        g_acc_dy = 0;
+        g_snap_valid = 1;
+        g_snap_got_x = 0;
+        g_snap_got_y = 0;
+    }
+    if (y_axis) {
+        g_snap_got_y = 1;
+        if (g_snap_got_x) {
+            g_snap_valid = 0;
+        }
+        return g_snap_dy;
+    }
+    g_snap_got_x = 1;
+    if (g_snap_got_y) {
+        g_snap_valid = 0;
+    }
+    return g_snap_dx;
 }
 
 void input_keyboard_irq(uint8_t scancode) {
     bool released;
     uint8_t code;
     bool shifted;
+    bool extended;
     char character;
     InputKey key;
     const char *normal_map;
     const char *shifted_map;
 
-    input_keystate_note(scancode);
-
     if (scancode == 0xE0u) {
-        g_extended = true;
+        input_keystate_note(scancode);
         return;
     }
+    extended = g_extended;
+    input_keystate_note(scancode);
 
     released = (scancode & 0x80u) != 0;
     code = (uint8_t)(scancode & 0x7Fu);
+    if (!released && !extended && code == 0x01u) {
+        g_capture_task = -1;
+    }
 
-    if (!g_extended && code == 0x2A) {
+    if (!extended && code == 0x2A) {
         g_left_shift = !released;
         return;
     }
-    if (!g_extended && code == 0x36) {
+    if (!extended && code == 0x36) {
         g_right_shift = !released;
         return;
     }
-    if (g_extended && code == 0x38) {
+    if (extended && code == 0x38) {
         g_altgr = !released;
-        g_extended = false;
         return;
     }
 
-    if (g_extended) {
+    if (extended) {
         key = extended_key(code);
-        g_extended = false;
         if (!released && key != INPUT_KEY_NONE) {
             push_key(key);
         }
@@ -372,6 +457,12 @@ static void apply_mouse_packet(void) {
     dx = (int)(int8_t)g_mouse_packet[1];
     dy = (int)(int8_t)g_mouse_packet[2];
     left = (flags & 0x01u) != 0;
+    /* Packet Y is positive up. Screen delta Y is positive down.
+     * Absolute tablets feed deltas from successive positions instead. */
+    if (!g_abs) {
+        g_acc_dx += dx;
+        g_acc_dy += -dy;
+    }
 
     ++g_mouse.version;
     compiler_barrier();
@@ -416,6 +507,10 @@ void input_pointer_absolute(int x, int y, int xmax, int ymax, int buttons) {
     }
     sx = (int)(((uint32_t)x * (uint32_t)(g_screen_width - 1)) / (uint32_t)xmax);
     sy = (int)(((uint32_t)y * (uint32_t)(g_screen_height - 1)) / (uint32_t)ymax);
+    if (g_capture_task >= 0) {
+        g_acc_dx += sx - g_mouse.x;
+        g_acc_dy += sy - g_mouse.y;
+    }
     g_abs = 1;
     ++g_mouse.version;
     compiler_barrier();

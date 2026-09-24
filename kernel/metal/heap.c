@@ -3,6 +3,7 @@
 #include "panic.h"
 #include "pmm.h"
 #include "serial.h"
+#include "spin.h"
 
 #define HEAP_ALIGN          16ull
 #define HEAP_USER_OFF       16ull
@@ -23,6 +24,7 @@ struct heap_arena {
 static struct heap_arena arenas[HEAP_ARENA_MAX];
 static int narenas;
 static int heap_ready;
+static Spinlock heap_lock;
 
 static uint64_t align_up(uint64_t value, uint64_t align) {
     return (value + align - 1ull) & ~(align - 1ull);
@@ -187,6 +189,7 @@ void heap_init(void) {
     uint64_t used;
     uint64_t free_size;
 
+    spin_init(&heap_lock);
     narenas = 0;
     heap_ready = 0;
 
@@ -252,17 +255,19 @@ void *kmalloc(uint64_t size) {
         return 0;
     }
     need = align_up(size, HEAP_ALIGN);
+    /* heap lock then PMM lock. PMM must not allocate from the heap. */
+    spin_lock(&heap_lock);
     p = kmalloc_in_arenas(need);
-    if (p) {
-        return p;
+    if (!p && heap_grow(need)) {
+        p = kmalloc_in_arenas(need);
     }
-    if (!heap_grow(need)) {
+    spin_unlock(&heap_lock);
+    if (!p) {
         serial_puts("kmalloc OOM need=");
         serial_write_u64(need);
         serial_puts("\n");
-        return 0;
     }
-    return kmalloc_in_arenas(need);
+    return p;
 }
 
 void kfree(void *ptr) {
@@ -280,16 +285,20 @@ void kfree(void *ptr) {
     if (((uint64_t)user & (HEAP_ALIGN - 1ull)) != 0) {
         panic("kfree ponteiro desalinhado");
     }
+    spin_lock(&heap_lock);
     a = arena_of_user(user);
     if (a == 0) {
+        spin_unlock(&heap_lock);
         panic("kfree fora da arena");
     }
     block = block_from_user(user);
     if (block->used == 0) {
+        spin_unlock(&heap_lock);
         panic("kfree double-free");
     }
     block->used = 0;
     coalesce_forward(a, block);
+    spin_unlock(&heap_lock);
 }
 
 uint64_t heap_used_bytes(void) {
@@ -299,7 +308,9 @@ uint64_t heap_used_bytes(void) {
     if (!heap_ready) {
         panic("heap_used_bytes antes de heap_init");
     }
+    spin_lock(&heap_lock);
     heap_tally(&used, &free_size);
+    spin_unlock(&heap_lock);
     return used;
 }
 
@@ -310,12 +321,19 @@ uint64_t heap_free_bytes(void) {
     if (!heap_ready) {
         panic("heap_free_bytes antes de heap_init");
     }
+    spin_lock(&heap_lock);
     heap_tally(&used, &free_size);
+    spin_unlock(&heap_lock);
     return free_size;
 }
 
 uint64_t heap_arena_count(void) {
-    return (uint64_t)narenas;
+    uint64_t n;
+
+    spin_lock(&heap_lock);
+    n = (uint64_t)narenas;
+    spin_unlock(&heap_lock);
+    return n;
 }
 
 void heap_selftest(void) {

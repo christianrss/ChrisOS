@@ -66,7 +66,9 @@ static int kick(Vblk *b, int write, uint32_t lba, uint32_t bytes) {
     }
     /* Disk writes finish on QEMU's iothread. serial_putc exits TCG long
        enough for that thread to post status 0. */
-    for (spins = 0; spins < 256; ++spins) {
+    /* 256 yields was not enough when the host was busy: the used index
+     * arrived while status was still 0xFF. The budget stays finite. */
+    for (spins = 0; spins < 4096; ++spins) {
         uint32_t used;
         serial_putc(0);
         used = hw_dma_r32(b->q, 2048);
@@ -85,7 +87,7 @@ static int kick(Vblk *b, int write, uint32_t lba, uint32_t bytes) {
     serial_puts(" st=");
     serial_write_u64(hw_dma_r32(b->cmd, 32) & 0xFFu);
     serial_puts("\n");
-    return -1;
+    return -2;
 }
 
 static int vblk_rw(void *ctx, uint32_t lba, uint32_t count, void *buf, int write) {
@@ -102,8 +104,13 @@ static int vblk_rw(void *ctx, uint32_t lba, uint32_t count, void *buf, int write
                 hw_dma_w32(b->data, i, v);
             }
         }
-        if (kick(b, write, lba, n * 512u) != 0)
-            return BD_EIO;
+        {
+            int rc = kick(b, write, lba, n * 512u);
+            if (rc == -2)
+                return BD_ETIMEOUT;
+            if (rc != 0)
+                return BD_EIO;
+        }
         if (!write) {
             for (i = 0; i < n * 512u; i += 4) {
                 uint32_t v = hw_dma_r32(b->data, i);

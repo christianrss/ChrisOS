@@ -82,7 +82,7 @@ static int issue(AhciPort *p, int write, uint8_t cmd, uint32_t lba,
             return 0;
         }
     }
-    return -1;
+    return -2;
 }
 
 static int ahci_rw(void *ctx, uint32_t lba, uint32_t count, void *buf, int write) {
@@ -99,8 +99,13 @@ static int ahci_rw(void *ctx, uint32_t lba, uint32_t count, void *buf, int write
                 hw_dma_w32(p->data, i, v);
             }
         }
-        if (issue(p, write, write ? 0x35 : 0x25, lba, n) != 0)
-            return BD_EIO;
+        {
+            int rc = issue(p, write, write ? 0x35 : 0x25, lba, n);
+            if (rc == -2)
+                return BD_ETIMEOUT;
+            if (rc != 0)
+                return BD_EIO;
+        }
         if (!write) {
             for (i = 0; i < n * 512u; i += 4) {
                 uint32_t v = hw_dma_r32(p->data, i);

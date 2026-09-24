@@ -96,6 +96,25 @@ static void mark_chunk(int cx, int cy, int cz) {
     g_dirty[chunk_index(cx, cy, cz)] = 1;
 }
 
+static int g_voxel_owner = -1;
+
+int voxel_claim(int slot) {
+    if (slot < 0) {
+        return -1;
+    }
+    if (g_voxel_owner < 0 || g_voxel_owner == slot) {
+        g_voxel_owner = slot;
+        return 0;
+    }
+    return -1;
+}
+
+void voxel_release(int slot) {
+    if (g_voxel_owner == slot) {
+        g_voxel_owner = -1;
+    }
+}
+
 int voxel_set(int x, int y, int z, int id) {
     int cx;
     int cy;

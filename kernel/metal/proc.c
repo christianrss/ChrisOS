@@ -2,8 +2,12 @@
 
 #include "bootinfo.h"
 #include "mm.h"
+#include "panic.h"
 #include "pmm.h"
 #include "serial.h"
+#include "smp.h"
+#include "sock.h"
+#include "syscall.h"
 
 #define PROC_PAGES 288
 
@@ -29,6 +33,8 @@ static Proc g_proc[PROC_MAX];
 static int g_current;
 static volatile int g_slice;
 static ProcFault g_fault;
+
+static int page_owned(const Proc *p, uint64_t virt);
 
 static void copy_name(char *dst, const char *src) {
     int i = 0;
@@ -86,7 +92,10 @@ int proc_create(const char *name) {
         g_proc[i].npages = 0;
         g_proc[i].fb_pages = 0;
         copy_name(g_proc[i].name, name);
-        (void)proc_commit(i, PROC_STACK_VIRT);
+        if (proc_commit(i, PROC_STACK_VIRT) != 0) {
+            proc_destroy(i);
+            return -1;
+        }
         return i;
     }
     return -1;
@@ -100,6 +109,11 @@ void proc_destroy(int pid) {
         proc_switch(PROC_KERNEL);
     }
     proc_release_user(pid);
+    if (g_proc[pid].cr3 != 0 && g_proc[pid].cr3 != mm_kernel_cr3()) {
+        mm_free_user_space(g_proc[pid].cr3);
+    }
+    syscall_close_owner(pid);
+    sock_close_proc(pid);
     g_proc[pid].used = 0;
     g_proc[pid].state = PROC_ST_FREE;
     g_proc[pid].alive = 0;
@@ -112,6 +126,11 @@ int proc_current(void) {
 
 void proc_switch(int pid) {
     uint64_t cr3;
+    /* Invariant: user processes run only on the BSP. Scheduler state is
+     * global and is not safe to mutate from an AP. */
+    if (smp_current_cpu() != 0u) {
+        panic("process switch off BSP");
+    }
     if (pid < 0 || pid >= PROC_MAX || !g_proc[pid].used) {
         return;
     }
@@ -137,6 +156,25 @@ int proc_map_user(int pid, uint64_t virt, uint64_t phys, uint64_t flags) {
         return -1;
     }
     return mm_map_cr3(g_proc[pid].cr3, virt, phys, flags | MM_USER);
+}
+
+int proc_map_owned(int pid, uint64_t virt, uint64_t phys, uint64_t flags) {
+    Proc *p;
+    if (pid <= 0 || pid >= PROC_MAX || !g_proc[pid].used) {
+        return -1;
+    }
+    p = &g_proc[pid];
+    virt &= ~(PMM_PAGE - 1ull);
+    if (page_owned(p, virt) || p->npages >= PROC_PAGES) {
+        return -1;
+    }
+    if (proc_map_user(pid, virt, phys, flags) != 0) {
+        return -1;
+    }
+    p->pages[p->npages].virt = virt;
+    p->pages[p->npages].phys = phys;
+    p->npages++;
+    return 0;
 }
 
 void proc_on_tick(void) {
@@ -325,6 +363,9 @@ void proc_release_user(int pid) {
     p = &g_proc[pid];
     for (i = 0; i < p->npages; ++i) {
         if (p->pages[i].phys) {
+            if (p->cr3 != 0) {
+                mm_unmap_cr3(p->cr3, p->pages[i].virt);
+            }
             pmm_free(p->pages[i].phys);
             p->pages[i].phys = 0;
             p->pages[i].virt = 0;
