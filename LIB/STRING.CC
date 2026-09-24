@@ -38,11 +38,9 @@ void memcpy(char *d, char *s, int n) {
 
 void memmove(char *d, char *s, int n) {
     int i;
-    int dl;
-    int sl;
-    dl = (int)d;
-    sl = (int)s;
-    if (dl < sl) {
+    /* Pointer compare keeps the full guest address. Casting to int keeps
+     * 32 bits and reverses overlap direction at bit 31. */
+    if (d < s) {
         i = 0;
         while (i < n) {
             d[i] = s[i];

@@ -374,6 +374,16 @@ test_chrisc_string: tools/test_chrisc_string.c compiler/chrisc/chrisc.c \
 		-o $(HOST_BIN)/test_chrisc_string
 	$(HOST_BIN)/test_chrisc_string
 
+test_chrisc_ptrwidth: tools/test_chrisc_ptrwidth.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		LIB/STRING.CC
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_ptrwidth.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_chrisc_ptrwidth
+	$(HOST_BIN)/test_chrisc_ptrwidth
+
 test_chrisc_lang: tools/test_chrisc_lang.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
 	mkdir -p $(HOST_BIN)
@@ -1058,7 +1068,8 @@ host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-clvm-sync-test host-elf-malformed-test host-sock-owner-test \
 	host-cfs-lock-test host-gfx3d-ctx-test host-sys-write-test \
 	host-fuzz-cfs-test host-fuzz-elf-test host-fuzz-chrisc-test \
-	host-fuzz-clvm-test host-chrisc-read-diag-test host-gate-audit
+	host-fuzz-clvm-test host-chrisc-read-diag-test test_chrisc_ptrwidth \
+	host-gate-audit
 
 host-gate-audit:
 	python3 tools/check_test_gates.py
