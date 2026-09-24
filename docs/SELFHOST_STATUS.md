@@ -46,6 +46,10 @@ These gates are about the toolkit base, not about a self-host level:
 
 They are part of `make host-gates`. None of them flips SH1 or higher.
 
+`host-kcc-kernel-l0` is an alias of `host-kcc-test`. It accepts
+`tools/kcc_fixtures/level0.c` and rejects `kernel/metal/serial.c`.
+That is the level-0 subset in `docs/KCC_STATUS.md`. It does not flip SH4.
+
 ## Next gate that would move a level
 
 SH1 moves only after a QEMU (or equivalent in-OS) run compiles a ChrisC

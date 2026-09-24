@@ -1175,6 +1175,8 @@ host-kcc-test: tools/test_kcc.c compiler/kcc/kcc.c compiler/chrisasm/chrisasm.c 
 		compiler/chrisld/chriso.c -o $(HOST_BIN)/test_kcc
 	$(HOST_BIN)/test_kcc
 
+host-kcc-kernel-l0: host-kcc-test
+
 host-kcc: tools/kcc_main.c compiler/kcc/kcc.c compiler/chrisasm/chrisasm.c \
 		compiler/chrisld/chriso.c
 	mkdir -p $(HOST_BIN)

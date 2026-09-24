@@ -1,5 +1,9 @@
 # Native toolchain audit
 
+`host-kcc-kernel-l0` now rejects `kernel/metal/serial.c`. The sections
+below describe the tree at the start of this campaign. Current KCC
+behavior is `docs/KCC_STATUS.md`.
+
 Snapshot of `894aed92e48e764e2627ecfc2514684f50809f59` on
 `cursor/native-toolchain-7c6f`. `origin/feat/os2` is
 `07e115fc4852bd0f7243997ad2120d3b9c21ba8a`. That commit squashes the

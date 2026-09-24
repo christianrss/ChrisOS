@@ -8,7 +8,7 @@ starting tree is `docs/NATIVE_TOOLCHAIN_AUDIT.md`.
 
 | Level | Input | Gate | Status |
 | --- | --- | --- | --- |
-| 0 | one function, literal `outb`, integer `return` | `host-kcc-kernel-l0` | not run |
+| 0 | one function, literal `outb`, integer `return` | `host-kcc-kernel-l0` | gate rejects `serial.c`; no kernel C file is in this level |
 | 1 | `kernel/metal/serial.c` and a port unit ChrisAsm can assemble | `host-kcc-kernel-l1` | not started |
 | 2 | further small `kernel/metal` C files that stay inside the profile | `host-kcc-kernel-l2` | not started |
 | 3 | PMM | `host-kcc-kernel-l3` | not started |
