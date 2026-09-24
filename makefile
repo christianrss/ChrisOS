@@ -79,7 +79,8 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/fs/ahci.o kernel/fs/nvme.o kernel/fs/virtio_blk.o \
 	kernel/fs/usb_msc.o kernel/fs/install.o kernel/metal/acpi.o \
 	kernel/lang/lang_sys.o kernel/lang/clvm_sys.o \
-	compiler/lang_pipeline.o compiler/chrisc/chrisc.o \
+	compiler/lang_pipeline.o compiler/debug/cdbg.o compiler/debug/dbg_session.o \
+	compiler/chrisc/chrisc.o \
 	compiler/clvm/clasm.o compiler/clvm/clvm_format.o \
 	compiler/clvm/clvm_vm.o kernel/tools/app_window.o \
 	compiler/jit/jit.o compiler/jit/jit_emit.o compiler/jit/jit_compile.o \
@@ -354,14 +355,15 @@ test_chrisc_apps: tools/test_chrisc_apps.c compiler/chrisc/chrisc.c compiler/clv
 
 test_editor_vi: tools/test_editor_vi.c tools/jit_host_stub.c compiler/jit/jit_emit.c \
 		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
-		compiler/chrisc/chrisc.c compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
-		compiler/clvm/clvm_vm.c
+		compiler/chrisc/chrisc.c 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c \
+		compiler/clvm/clvm_vm.c kernel/metal/spin.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/jit -Icompiler/chrisc \
 		-Icompiler/clvm -Icompiler -Ikernel/lang -Ikernel/metal \
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_editor_vi.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		kernel/metal/spin.c \
 		-o $(HOST_BIN)/test_editor_vi
 	$(HOST_BIN)/test_editor_vi
 
@@ -383,6 +385,39 @@ test_chrisc_ptrwidth: tools/test_chrisc_ptrwidth.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
 		-o $(HOST_BIN)/test_chrisc_ptrwidth
 	$(HOST_BIN)/test_chrisc_ptrwidth
+
+test_editor_path: tools/test_editor_path.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		APPS/EDITOR/EDITOR.CC
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_editor_path.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-o $(HOST_BIN)/test_editor_path
+	$(HOST_BIN)/test_editor_path
+
+test_cdbg: tools/test_cdbg.c compiler/debug/cdbg.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_cdbg.c compiler/debug/cdbg.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c \
+		-o $(HOST_BIN)/test_cdbg
+	$(HOST_BIN)/test_cdbg
+
+test_dbg_step: tools/test_dbg_step.c compiler/debug/dbg_session.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler \
+		tools/test_dbg_step.c compiler/debug/dbg_session.c \
+		-o $(HOST_BIN)/test_dbg_step
+	$(HOST_BIN)/test_dbg_step
+
+test_editmodel: tools/test_editmodel.c compiler/edit/editmodel.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler \
+		tools/test_editmodel.c compiler/edit/editmodel.c \
+		-o $(HOST_BIN)/test_editmodel
+	$(HOST_BIN)/test_editmodel
 
 test_chrisc_lang: tools/test_chrisc_lang.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
@@ -783,6 +818,7 @@ host-doom-jit-entry-test: doom-engine-clv tools/test_doom_jit_entry.c tools/jit_
 		compiler/jit/jit_compile.c compiler/jit/jit_runtime.c \
 		compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
 		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c kernel/gfx/zbuf.c \
+		kernel/metal/spin.c \
 		tools/test_doom_jit_entry.c -o $(HOST_BIN)/test_doom_jit_entry
 	$(HOST_BIN)/test_doom_jit_entry
 
@@ -1069,6 +1105,7 @@ host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-lock-test host-gfx3d-ctx-test host-sys-write-test \
 	host-fuzz-cfs-test host-fuzz-elf-test host-fuzz-chrisc-test \
 	host-fuzz-clvm-test host-chrisc-read-diag-test test_chrisc_ptrwidth \
+	test_editor_path test_cdbg test_dbg_step test_editmodel \
 	host-gate-audit
 
 host-gate-audit:
