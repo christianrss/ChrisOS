@@ -1,5 +1,7 @@
 #include "install.h"
 
+#include <string.h>
+
 #include "bdev.h"
 #include "cfs.h"
 #include "fs.h"
@@ -460,14 +462,19 @@ static int install_device(BlockDevice *disk, const char *label, int copy_os) {
     wr32(g_sec + 16, header_crc);
     if (put_sec(disk, 1, g_sec) != BD_OK)
         return -1;
+    serial_puts("GPT PRIMARY OK\n");
     if (write_gpt_backup(disk, sectors) != 0)
         return -1;
+    serial_puts("GPT BACKUP OK\n");
     if (write_esp(disk, 2048u, esp, spf) != 0)
         return -1;
+    serial_puts("ESP FORMAT OK\n");
+    serial_puts("EFI BOOT INSTALLED\n");
     if (part_open(&part, disk, cfs_lba, sectors - cfs_lba - 34u) != 0)
         return -1;
     if (cfs_format(&part.dev) != 0)
         return -1;
+    serial_puts("CFS FORMAT OK\n");
     if (cfs_mount(&g_fs, &part.dev) != 0)
         return -1;
     if (copy_os) {
@@ -476,9 +483,12 @@ static int install_device(BlockDevice *disk, const char *label, int copy_os) {
             return -1;
         }
         serial_puts("install tree copied\n");
+        serial_puts("SYSTEM TREE COPIED\n");
         /* The marker is an instruction to this boot, not part of the
          * installed system. Leaving it made the next boot try again. */
         (void)cfs_unlink(&g_fs, "BOOT/INSTALL.AUTO");
+        (void)cfs_unlink(&g_fs, "BOOT/INSTALL.TARGET");
+        (void)cfs_unlink(&g_fs, "BOOT/INSTALL.DRY");
     } else {
         cfs_mkdir(&g_fs, "BOOT");
         cfs_mkdir(&g_fs, "INSTALL");
@@ -488,6 +498,7 @@ static int install_device(BlockDevice *disk, const char *label, int copy_os) {
     serial_puts("install gpt+esp+cfs disk=");
     serial_puts(label ? label : "disk");
     serial_puts("\n");
+    serial_puts("INSTALL COMPLETE\n");
     return 0;
 }
 
@@ -595,20 +606,72 @@ int install_selftest(void) {
     return 0;
 }
 
+static int target_name(char *out, int cap) {
+    int n;
+    int i;
+
+    if (cap < 2)
+        return -1;
+    n = fs_read("BOOT/INSTALL.TARGET", out, cap - 1);
+    if (n <= 0)
+        return -1;
+    out[n] = 0;
+    for (i = 0; i < n; ++i) {
+        if (out[i] == '\n' || out[i] == '\r' || out[i] == ' ') {
+            out[i] = 0;
+            break;
+        }
+    }
+    return out[0] ? 0 : -1;
+}
+
 int install_auto(void) {
     uint32_t size = 0;
     uint16_t type = 0;
+    char want[32];
     int i;
+    int found = -1;
     if (fs_stat("BOOT/INSTALL.AUTO", &size, &type) != 0)
         return 0;
+    if (target_name(want, (int)sizeof(want)) != 0) {
+        serial_puts("INSTALL FAIL: name the disk in BOOT/INSTALL.TARGET\n");
+        for (i = 0; i < bd_count(); ++i) {
+            BlockDevice *d = bd_get(i);
+            serial_puts("install disk ");
+            serial_puts(bd_name(i));
+            if (d) {
+                serial_puts(" sectors ");
+                serial_write_u64(d->sector_count);
+            }
+            serial_puts("\n");
+        }
+        return -1;
+    }
     for (i = 0; i < bd_count(); ++i) {
         if (!bd_installable(i))
             continue;
-        serial_puts("install auto ");
-        serial_puts(bd_name(i));
-        serial_puts("\n");
-        return install_disk(i);
+        if (bd_name(i)[0] && strcmp(bd_name(i), want) == 0) {
+            if (found >= 0) {
+                serial_puts("INSTALL FAIL: ambiguous disk\n");
+                return -1;
+            }
+            found = i;
+        }
     }
-    serial_puts("INSTALL FAIL: no target\n");
-    return -1;
+    if (found < 0) {
+        serial_puts("INSTALL FAIL: disk not selected\n");
+        return -1;
+    }
+    serial_puts("INSTALL DISK SELECTED\n");
+    serial_puts("WARNING: ALL DATA ON THIS DISK WILL BE LOST\n");
+    serial_puts(bd_name(found));
+    serial_puts("\n");
+    if (fs_stat("BOOT/INSTALL.DRY", &size, &type) == 0) {
+        serial_puts("install dry-run\n");
+        return 0;
+    }
+    serial_puts("install auto ");
+    serial_puts(bd_name(found));
+    serial_puts("\n");
+    return install_disk(found);
 }

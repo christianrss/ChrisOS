@@ -13,8 +13,9 @@ Level 0 accepts comments, a function whose type word is `void`, `bool`,
 `int`, or `uint8_t` / `uint16_t` / `uint32_t` / `uint64_t`, a body of
 literal `outb` and `return` of an integer literal or a bare `return`, and
 braces. `outb` is lowered to a call with the port in RDI and the value in
-RSI. That call is still a defined symbol and a zero displacement.
-`img.nrel` stays 0. This is not a relocation.
+RSI. ChrisAsm records that call as an undefined symbol and an
+`R_X86_64_PLT32` relocation. ChrisLd applies it when another object
+defines the symbol.
 
 A preprocessor line, `static`, a declaration, and any other statement
 fail the compile. The assembly buffer no longer truncates in silence.
