@@ -37,8 +37,14 @@ uses a shootdown before the frame returns to the PMM.
 
 ## Filesystem
 
-Not locked in this pass. Do not add a spinlock that is held while a driver
-polls the disk. See FS-LOCK-01.
+`g_cfs_lock` is a yielding lock. Waiters pause with interrupts left enabled,
+so the holder may poll a disk and the IRQ path is not wedged. The same holder
+may re-enter (`cfs_read` calls `cfs_read_at`). On the kernel the holder id is
+`smp_current_cpu()+1`, so two CPUs do not look like the same owner. Host
+builds keep a weak holder of 1; `host-cfs-lock-test` overrides it per thread.
+Do not call `job_worker_once` while waiting: the same CPU would look like the
+owner. Do not take this lock from an interrupt handler. It is not part of the
+PMM/heap/MM rank.
 
 ## Tasks and windows
 
@@ -55,11 +61,17 @@ if an AP ever receives a packet while the BSP mutates the same slot.
 
 `g_ac97_lock` plus `irq_save` on the writer. The ISR takes the same spinlock
 and must not sleep. Port I/O that restarts the engine happens after the lock
-is dropped.
+is dropped. The process woken by the ISR is `g_ac97_waiter`, stored and loaded
+with atomics. `ac97_arm_waiter` runs before `proc_block` on the PCM syscall.
 
 ## Drivers
 
-Storage queue locks were not changed. See DRV-TIMEOUT-01.
+ATA already returned `BD_ETIMEOUT`. AHCI, NVMe, and VirtIO Block map a
+finished poll budget to `BD_ETIMEOUT` (`-2` from the issue/wait/kick helper,
+device errors stay `-1` / `BD_EIO`). USB MSC `td_wait` returns `-2` on its
+frame/guard budget and `usb_rw` maps that to `BD_ETIMEOUT`. Identify and
+probe paths may still treat a timeout as a generic failure. HID polling
+returns no report when its short budget ends.
 
 ## JIT
 

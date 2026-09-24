@@ -97,13 +97,10 @@ Status: `FIXED` (with regression test), `OPEN` (confirmed, not yet fixed),
 - **Root cause:** `uint8_t buf[80];` with guard `n > 80u` (accepts `n == 80`),
   then `buf[n] = 0` writes `buf[80]` — out of bounds.
 - **Files:** `kernel/metal/syscall.c` (`SYS_WRITE`).
-- **Fix:** Size the buffer `buf[81]` so the NUL at `buf[n]` (n ≤ 80) is in
-  bounds; guard unchanged.
-- **Verification:** By inspection + reasoning; kernel rebuilds clean under
-  `-Wall -Wextra -Werror`. Automated regression requires a QEMU user-process
-  write test (see QEMU-GATES OPEN) which is not yet in the gates.
-- **Residual risk:** No automated SYS_WRITE regression (SYS-01-TEST). User
-  copy itself is covered by USERCOPY-01.
+- **Fix:** Size the buffer `buf[81]`. `syscall_write_term` rejects `n > 80` or a
+  capacity shorter than `n+1` before it writes the NUL.
+- **Regression test:** `host-sys-write-test` (ASan/UBSan).
+- **Residual risk:** The host test calls the helper, not a user process in QEMU.
 
 ---
 
@@ -200,33 +197,71 @@ Status: `FIXED` (with regression test), `OPEN` (confirmed, not yet fixed),
 
 - **Subsystem:** AC97.
 - **Fix:** If the second DMA page fails, the first is freed. The ring and event sequence use an IRQ-safe spinlock; the event flag is a sequence counter so a second IRQ is not lost behind a boolean.
-- **Residual risk:** `proc_unblock_why(PROC_ST_BLOCK_IRQ)` still wakes every IRQ-blocked process. No host test (port I/O).
+- **Residual risk:** The waiter is one pid (`g_ac97_waiter`), published with an atomic store and read by the ISR. No host test (port I/O). See AC97-WAKE-01.
 
 ### GATES-01 — QEMU failures were ignored (P2)
 
 - **Subsystem:** build.
 - **Fix:** `tools/qemu_gate.py` requires every `--expect` marker and rejects panic, unexpected exception, double fault, general protection, heap corruption, and PMM corruption. Exit 124 (timeout while the kernel keeps running) is a pass only when those checks hold. `QEMU_SMP` defaults to 4. `full-gates` also runs ATA at 1 CPU. `test-qemu-install` is in `qemu-gates`. Disk images are recreated each run. `tools/check_test_gates.py` fails `host-gates` if a `test_*` or `host-*-test` target is unreachable. `host-stress` and `host-sanitize` exist.
-- **Residual risk:** QEMU is not installed in this environment, and `third_party/limine` is absent, so no QEMU gate was executed. A 2-CPU target is not a separate rule.
+- **Residual risk:** See QEMU-RUN-01 for which boots were actually executed. A 2-CPU target is not a separate rule; the makefile runs 1 and 4.
 
 ---
+
+### FS-LOCK-01 — CFS metadata had no owner (P1)
+
+- **Subsystem:** CFS.
+- **Root cause:** Public CFS operations ran with no lock. A spinlock held across disk polling would also stall IRQs, so the lock yields with interrupts enabled.
+- **Fix:** `g_cfs_lock` in `kernel/fs/fs_lock.h`. The kernel holder is `smp_current_cpu()+1` (a weak host default of 1 let every CPU look like the owner). Same holder re-enters.
+- **Regression test:** `host-cfs-lock-test` (two threads, full reads are all A or all B, then fsck). `host-cfs-test` still passes.
+- **Residual risk:** Syscall CFS stays on the BSP. An AP that calls CFS is excluded by the lock, but that path has no QEMU stress. Waiters pause; they do not drain the job queue.
+
+### GFX3D-CTX-01 — 3D globals leaked across apps (P1)
+
+- **Subsystem:** math3d / shade / tex / voxel.
+- **Root cause:** Camera, light, and texture slot were process-wide. A first load that snapshotted the live globals copied the previous app into a context that had never run.
+- **Fix:** `Gfx3DCtx` on `ClvmGfxCtx`. Dispatch loads it and saves it on every return. The first load installs the default camera `(0, 1.5, 5)`, the default light, and texture slot 1, and keeps the current viewport size. `voxel_claim` allows one slot; close releases it. The z-buffer storage was already per gfx slot.
+- **Regression test:** `host-gfx3d-ctx-test`.
+- **Residual risk:** One voxel world for the machine. Two apps cannot both own it.
+
+### SYS-01-TEST — SYS_WRITE terminator (P2)
+
+- **Subsystem:** syscalls.
+- **Fix:** `syscall_write_term` rejects `n > 80` or a buffer shorter than `n+1` before writing the NUL.
+- **Regression test:** `host-sys-write-test` under ASan/UBSan.
+
+### DOOM-RERUN-01 — engine list could not be read (P2)
+
+- **Subsystem:** Doom host suite / ChrisC diagnostics.
+- **Symptom:** `test_doom_engine` reported `GAMES/DOOM/I_INPUT.CC:1:1 cannot read source file` even though that file exists.
+- **Root cause:** `third_party/doomgeneric_src` is a gitlink and was not checked out, so the next list entry was missing. `fail()` named the previous translation unit because the read happened before that file was entered in the line map.
+- **Fix:** A missing read now records the path that failed. The pinned doomgeneric tree (`dcb7a8d`) is what `ENGINE.LST` compiles.
+- **Regression test:** `host-chrisc-read-diag-test`. `test_doom_compile` and `test_doom_engine` (85 files, `code=1209611`).
+
+### FUZZ-01 — parsers had no garbage input (P2, partial)
+
+- **Tests:** `host-fuzz-cfs-test` (random paths, then fsck), `host-fuzz-elf-test` (random bytes, page budget unchanged on failure), `host-fuzz-chrisc-test` (random source must return 0 or 1, then a valid `main`), `host-fuzz-clvm-test` (random images stay inside `ClvmLoadError`, a written image still parses).
+- **Residual risk:** No fuzzer for BMP (`LIB/BMP.H` is ChrisC) or for network packets.
+
+### TOOLKIT-01 — task slots after repeated close (P1, partial)
+
+- **Test:** `host-task-window-test` opens and closes 24 `TASK_APP` windows and requires the slot to be empty.
+- **Residual risk:** The host task test does not compare heap or PMM counts. Editor, Explorer, Shell, and Mine are not in that loop.
+
+### DRV-TIMEOUT-01 — storage polls (P1, code + QEMU success path)
+
+- **Fix:** AHCI `issue`, NVMe `wait_cq`, and VirtIO `kick` return `-2` when the spin budget ends. The block helpers map `-2` to `BD_ETIMEOUT`. ATA already returned `BD_ETIMEOUT`. USB MSC `td_wait` returns `-2` on its frame/guard limit and `usb_rw` maps it. Device errors stay `BD_EIO`. VirtIO's yield loop is 4096 `serial_putc` calls: 256 returned while QEMU had posted the used index and status was still `0xFF`.
+- **Regression:** QEMU `bdev rw ok` markers for the drivers that the gates boot. There is no injected timeout fault.
 
 ## OPEN
 
 | ID | Sev | Subsystem | Summary |
 | --- | --- | --- | --- |
-| GFX3D-CTX-01 | P1 | 3D / voxel | Camera, z-buffer, texture, shade, and the voxel world are still process-wide. Two 3D apps can still contaminate each other. No `Gfx3DContext` and no enforced single-world lock. |
-| FS-LOCK-01 | P1 | CFS / fs | Filesystem operations are not serialized by a sleepable lock or a single worker. A spinlock must not be held across disk polling; that hierarchy is not implemented. |
-| AC97-WAKE-01 | P2 | AC97 | IRQ completion still wakes every `PROC_ST_BLOCK_IRQ` waiter. |
-| SYS-01-TEST | P2 | syscalls | The 81-byte `SYS_WRITE` buffer has no automated regression. |
-| PROC-LEAK-01 | P1 | processes | `proc_create` failure destroys the address space in code, but there is no create/run/destroy PMM counter test on hardware. |
-| TLB-POLL-01 | P2 | MM | Shootdown panics if an online CPU is not in `mm_tlb_poll`. |
-| LIB-AUDIT-01 | P2 | `LIB/` | No new C-equivalent audit of STDIO/STRING/MATH and the rest. |
-| DOOM-RERUN-01 | P2 | Doom | Doom host suite was not re-run after the mouse builtins. |
-| FUZZ-01 | P2 | parsers | No fuzz/property tests for ChrisC, CLVM, ELF, CFS, BMP, or packets. |
-| DRV-TIMEOUT-01 | P1 | storage | ATA/AHCI/NVMe/VirtIO/USB poll loops were not re-audited for a finite timeout in this pass. |
-| QEMU-RUN-01 | P1 | gates | Gate wrapper exists. The matrix was not executed (no QEMU, no Limine blobs). |
-| TOOLKIT-01 | P1 | window manager | Repeated open/close vs heap/PMM accounting is not tested. |
-| GLOB-AUDIT-01 | P3 | kernel globals | Classification below covers the globals this pass touched. A full `static g_*` inventory is not finished. |
+| AC97-WAKE-01 | P2 | AC97 | The ISR unblocks only `g_ac97_waiter`. No host test; port I/O is not stubbed. |
+| PROC-LEAK-01 | P1 | processes | `host-elf-malformed-test` checks the host page stub. There is no create/run/destroy PMM counter loop on hardware. |
+| TLB-POLL-01 | P2 | MM | Shootdown panics if an online CPU stops calling `mm_tlb_poll`. |
+| LIB-AUDIT-01 | P2 | `LIB/` | `int` is 4 bytes and pointers are 8. `LIB/STRING.CC` `memmove` casts both pointers to `int`, and that cast narrows (`gen_narrow`). Guest heap offsets used today sit below 2GB, so the overlap direction matches. A guest address at or above 2^31 is still wrong. STDIO/MATH were not re-audited line by line. `LIB/SIM.CC` was not modified. |
+| QEMU-RUN-01 | P1 | gates | Passed: ATA at 4 CPUs and at 1 CPU, AHCI, NVMe, VirtIO Block, USB MSC, virtio-gpu, and the no-ATA boot (`install selftest ok`, `desktop 60Hz`). `test-qemu-install` printed `install backup gpt` and did not reach `install auto` within 300s. RISC-V QEMU is installed; `riscv64-unknown-elf-gcc` is not, so `test-qemu-riscv` was not built. |
+| GLOB-AUDIT-01 | P3 | kernel globals | The table below is the set this campaign touched. A full `static g_*` inventory is not finished. |
 
 ## Global state touched in this pass
 
@@ -247,6 +282,10 @@ Status: `FIXED` (with regression test), `OPEN` (confirmed, not yet fixed),
 | `g_keys[256]`, capture task, mouse deltas | device-local; CLVM reads gated by focus |
 | `Sock.owner` + `Sock.slot` | process-local or VM-local |
 | AC97 ring | device-local, IRQ-safe spinlock |
-| math3d camera, zbuf, voxel world | bug if two 3D apps run (GFX3D-CTX-01) |
+| `g_ac97_waiter` | one pid, atomic publish, ISR reads it |
+| `g_cfs_lock` | globally shared; holder is the CPU id on the kernel |
+| `ClvmGfxCtx.view3d` | per app slot (camera, light, texture) |
+| z-buffer bytes | per gfx slot; global pointer is the binding |
+| `g_voxel_owner` | one slot, or -1 when unclaimed |
 
 See `docs/LOCKING.md`, `docs/RESOURCE_OWNERSHIP.md`, and `docs/STABILITY_REPORT.md`.

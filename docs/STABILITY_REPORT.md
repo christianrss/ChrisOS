@@ -38,49 +38,74 @@ named. Everything else stays experimental.
 - NET-01: socket owner and CLVM slot. Test: `host-sock-owner-test`.
 - FD-OWN-01: native owner and CLVM slot checks. No two-app FD test.
 - AC97-01: DMA failure cleanup, IRQ-safe ring, event sequence. No host test.
-- SYS-01: `buf[81]` from phase 1. No automated regression.
+- SYS-01: `buf[81]` plus `syscall_write_term`. Test: `host-sys-write-test`.
+
+## Fixed in this continuation, with a host test
+
+- FS-LOCK-01: yielding CFS lock, kernel holder is the CPU id. Tests:
+  `host-cfs-lock-test`, `host-cfs-test`.
+- GFX3D-CTX-01: per-app camera, light, and texture. First load uses defaults,
+  not the previous app. Voxel world has one owner. Test:
+  `host-gfx3d-ctx-test`.
+- SYS-01: `host-sys-write-test`.
+- DOOM-RERUN-01: `test_doom_compile`, `test_doom_engine` (85 files). The
+  missing-file diagnostic names the path (`host-chrisc-read-diag-test`).
+- FUZZ-01 (partial): CFS, ELF, ChrisC, CLVM. BMP and packets are not fuzzed.
+- TOOLKIT-01 (partial): 24 task open/close cycles in `host-task-window-test`.
+  No heap/PMM comparison.
+- DRV-TIMEOUT-01: block paths return `BD_ETIMEOUT` when the poll budget ends.
+  QEMU covers the success path when those gates pass. No injected timeout.
 
 ## Still open
 
-See the OPEN table in `docs/STABILITY_AUDIT.md`. The largest gaps are
-filesystem locking, 3D/voxel contexts, storage-driver timeouts, toolkit
-teardown, `LIB/` audit, fuzz tests, and actually running QEMU.
+See the OPEN table in `docs/STABILITY_AUDIT.md`. Still without a runtime test:
+AC97 waiter, hardware PMM leak loop, TLB poll timeout, `LIB/STRING.CC`
+`memmove` narrowing, BMP/packet fuzz, Mine boot, and a full `static g_*`
+inventory.
 
 ## Gates run in this session
 
-Passed:
+Host, passed:
 
-- `host-pmm-heap-smp-test`
-- `host-kthread-smp-test`
-- `host-job-saturate-test`
-- `host-clvm-sync-test`
-- `host-elf-malformed-test`
-- `host-sock-owner-test`
-- `test_keystate`
-- `test_math3d_view`
-- `host-input-test`
-- `host-jit-test`
-- `host-sanitize` (ASan+UBSan on PMM/heap, kthread, job, keystate)
-- `tools/check_test_gates.py` (reachable from `host-gates`)
-- `mk_clv` rebuilt `GAMES/MINE/MINE.CLV` and `GAMES/WORLD.CLV`
-- Freestanding compile of `mm.c`, `proc.c`, `elf.c`, `syscall.c`, `kthread.c`,
-  `job.c`, `jit.c`, `jit_compile.c`, `ac97.c`, `clvm_sys.c`, `input.c`,
-  `wm/main.c`
+- `host-cfs-test` (`host cfs tests passed`)
+- `host-cfs-lock-test`, `host-gfx3d-ctx-test`, `host-sys-write-test`
+- `host-fuzz-cfs-test`, `host-fuzz-elf-test`, `host-fuzz-chrisc-test`,
+  `host-fuzz-clvm-test`, `host-chrisc-read-diag-test`, `host-task-window-test`
+- `test_doom_compile` (`code=15627`, plus `test_phys_compile`)
+- `test_doom_engine` (`code=1209611`, 85 files)
+- `tools/check_test_gates.py` (`ok (209 reachable)`)
+- Freestanding compile of `cfs.c`, `clvm_sys.c`, `ac97.c`, `ahci.c`, `nvme.c`,
+  `virtio_blk.c`, `usb_msc.c`, and a full kernel link to `build/os.iso`
 
-Not run:
+Host, not run as one target:
 
-- `host-gates` as a whole (ChrisC/Doom/CFS suite not repeated this session)
-- any QEMU target (`qemu-system-x86_64` is absent, `third_party/limine` is absent)
-- `make stability` / `make qemu-stress` (those targets are not fully defined;
-  `host-stress` exists)
+- `host-gates` / `host-stress` / `host-sanitize` were not repeated as a single
+  `make` after these targets were added. The new tests above were run on
+  their own.
+
+QEMU, passed (markers required by `tools/qemu_gate.py`):
+
+- `test-qemu-ata` at 4 CPUs: `cpu_online_count=4`, `root ata`, `cfs mounted`,
+  and the log also contains `desktop 60Hz`
+- `test-qemu-smp1`: `cpu_online_count=1`, `root ata`, `cfs mounted`
+- `test-qemu-ahci`, `test-qemu-nvme`, `test-qemu-vblk`, `test-qemu-usb`,
+  `test-qemu-gpu`
+- `test-qemu-noata`: `ata missing`, `root ahci`, `cfs mounted`,
+  `install selftest ok`, `desktop 60Hz`
+
+QEMU, not passed:
+
+- `test-qemu-install`: serial reached `install backup gpt` and did not contain
+  `install auto`, `install tree copied`, or `install gpt+esp+cfs disk=ahci`
+  before the 300s gate ended. The installed-disk OVMF boot was not started.
+- `test-qemu-riscv`: `qemu-system-riscv64` is installed.
+  `riscv64-unknown-elf-gcc` is not, so the RISC-V kernel was not built.
 
 ## SMP
 
-Host tests use 4 pthreads and per-CPU signatures. No two of those threads
-received the same physical page. This is not a boot of the kernel with 4
-vCPUs. `QEMU_HEAD` now passes `-smp $(QEMU_SMP)` with default 4, and
-`full-gates` also runs the ATA test at 1 CPU. That configuration was not
-executed.
+Host tests use 4 pthreads. The kernel was also booted under QEMU with
+`-smp 4` and `-smp 1`. Both printed the matching `cpu_online_count`. There is
+no separate 2-CPU rule.
 
 ## Mine Chris
 
@@ -88,21 +113,26 @@ Language-level integration matches the specified `float *` case (phase 1).
 Look uses the math3d convention: pointer down increases pitch (look down),
 pointer up decreases it, world +Y stays above the horizon in
 `test_math3d_view`. WASD key codes are unchanged. The image was recompiled.
-Collision, gravity, jump, and ground were not executed in a world.
+Mine was not launched from the desktop, so collision, gravity, jump, and
+ground were not executed in a world.
 
 ## Doom
 
-Not re-run after this branch's ChrisC builtin additions. Phase 1 reported
-`test_doom_compile` and `test_doom_engine` passing on `feat/os2`. That result
-is not repeated here.
+`test_doom_compile` and `test_doom_engine` passed after checking out the
+pinned `third_party/doomgeneric_src` gitlink (`dcb7a8d`). The earlier failure
+named `I_INPUT.CC` because the next list entry was missing and the diagnostic
+still pointed at the previous file.
 
 ## Drivers
 
-The QEMU makefile recreates ATA/AHCI/NVMe/VirtIO/USB images and routes them
-through `tools/qemu_gate.py`. No driver was booted.
+ATA, AHCI, NVMe, VirtIO Block, and USB MSC completed their QEMU read/write
+markers. An empty ATA status no longer uses the full identify budget. VirtIO
+waits up to 4096 yields for the status byte after the used index. No test
+injects a device that never completes.
 
 ## ChrisC
 
 Float-pointer behavior from phase 1 stands. This branch adds `mouse_dx`,
 `mouse_dy`, `mouse_cap`, and `mouse_rel` builtins so games can read captured
-deltas. `MINE.CC` compiled with those builtins.
+deltas. `int` is 4 bytes and a pointer is 8; `LIB/STRING.CC` `memmove` still
+casts pointers to `int`. `LIB/SIM.CC` was not modified.
