@@ -96,6 +96,10 @@ docs/*
 !docs/STABILITY_REPORT.md
 !docs/LOCKING.md
 !docs/RESOURCE_OWNERSHIP.md
+!docs/FOUNDATION_AUDIT.md
+!docs/FOUNDATION_FINAL_REPORT.md
+!docs/CLVM_ABI.md
+!docs/CHRISC_SYSTEM_ABI.md
 backup/
 tools/gen_fase*.py
 tools/write_learn_book.py
