@@ -4613,6 +4613,30 @@ static int sizeof_expr_node(Compiler *c, int v) {
     return 4;
 }
 
+/* Determine whether dereferencing operand `v` yields a float value, i.e.
+ * whether its pointee type is float. Mirrors the pointer-classification used
+ * by the N_DEREF codegen: unwrap pointer casts (CAST_PFL marks float pointee),
+ * consult the symbol for a plain pointer variable (its is_float records the
+ * pointee's float-ness), follow &lvalue, else fall back to the node's own
+ * float flag (fields/index results already carry pointee float-ness). */
+static int deref_pointee_float(Compiler *c, int v) {
+    while (v >= 0 && c->nodes[v].kind == N_CAST) {
+        int32_t cv = c->nodes[v].value;
+        if (cv & CAST_PTR)
+            return (cv & CAST_PFL) ? 1 : 0;
+        v = c->nodes[v].left;
+    }
+    if (v < 0)
+        return 0;
+    if (c->nodes[v].kind == N_VAR) {
+        Symbol *s = &c->syms[c->nodes[v].value];
+        return (s->is_ptr && s->is_float) ? 1 : 0;
+    }
+    if (c->nodes[v].kind == N_ADDR)
+        return c->nodes[v].left >= 0 ? c->nodes[c->nodes[v].left].is_float : 0;
+    return c->nodes[v].is_float;
+}
+
 static int unary(Compiler *c) {
     Token *t = cur(c);
     int id;
@@ -4641,6 +4665,10 @@ static int unary(Compiler *c) {
             if (c->nodes[id].sid < 0 && c->nodes[v].kind == N_VAR) {
                 c->nodes[id].sid = c->syms[c->nodes[v].value].struct_id;
             }
+            /* A dereferenced float pointer yields a float value; without this
+             * the deref was treated as int and mixed float/int arithmetic
+             * inserted a spurious ITOF that reinterpreted the float bits. */
+            c->nodes[id].is_float = (uint8_t)deref_pointee_float(c, v);
         }
         return postfix_expr(c, id);
     }
@@ -4932,6 +4960,21 @@ static int logical_or(Compiler *c) {
     return binary(c, logical_and, k, n, 1);
 }
 
+/* Float-ness of a node's *value* (not its pointee). A pointer variable holds
+ * an integer address, so pointer arithmetic stays integer; a dereferenced
+ * float pointer or a float scalar/field yields a float. Used by compound
+ * assignment, which builds its binary node by hand and must classify operands
+ * the same way the normal binary() path does. */
+static int value_is_float(Compiler *c, int id) {
+    if (id < 0)
+        return 0;
+    if (c->nodes[id].kind == N_VAR) {
+        Symbol *s = &c->syms[c->nodes[id].value];
+        return (s->is_float && !s->is_ptr) ? 1 : 0;
+    }
+    return c->nodes[id].is_float ? 1 : 0;
+}
+
 static int make_assign(Compiler *c, int lhs, int rhs, Token *t) {
     int id;
     if (lhs < 0 || rhs < 0) {
@@ -5125,6 +5168,11 @@ static int assignment_expr(Compiler *c) {
         }
         c->nodes[bin].left = left;
         c->nodes[bin].right = right;
+        /* Propagate float-ness like the normal binary() path; otherwise
+         * compound assignment such as `*p += 2.5` or `f += 2.5` generated
+         * integer ops. value_is_float keeps pointer arithmetic integer. */
+        c->nodes[bin].is_float =
+            (uint8_t)(value_is_float(c, left) || value_is_float(c, right));
         return make_assign(c, left, bin, t);
     }
     return left;
@@ -6635,6 +6683,8 @@ static int statement(Compiler *c) {
                 return -1;
             }
             c->nodes[var].value = sym;
+            c->nodes[var].is_float =
+                (uint8_t)(c->syms[sym].is_float && !c->syms[sym].is_ptr);
             v = expression(c);
             if (v < 0) {
                 return -1;
@@ -6649,9 +6699,14 @@ static int statement(Compiler *c) {
             bin = node(c, bk, name);
             c->nodes[bin].left = var;
             c->nodes[bin].right = v;
+            /* Compound assignment must keep float arithmetic when the target
+             * or operand is float; otherwise `f += x` emitted integer ops. */
+            c->nodes[bin].is_float =
+                (uint8_t)(c->nodes[var].is_float || value_is_float(c, v));
             id = node(c, N_ASSIGN, name);
             c->nodes[id].value = sym;
             c->nodes[id].left = bin;
+            c->nodes[id].is_float = c->nodes[bin].is_float;
         } else {
             if (!expect(c, T_ASSIGN, "expected =")) {
                 return -1;
@@ -6856,7 +6911,13 @@ static int parse_function(Compiler *c, uint8_t ret, Token *name, int16_t ret_sid
                     c->syms[sym].stride = sz ? sz : 8;
                 }
             }
-            f->arg_float[f->argc] = dt.isf;
+            /* A pointer argument's *value* is a 64-bit address, never a float,
+             * even when its pointee is float (e.g. `float *`). Only a by-value
+             * float scalar uses the float register/FSTORE path; conflating the
+             * two truncated pointer arguments through FSTORE/FLOAD. The pointee
+             * float-ness is preserved separately on the symbol (is_float) and
+             * consumed when dereferencing. */
+            f->arg_float[f->argc] = (uint8_t)(dt.isf && !ptr);
             f->arg_width[f->argc] = c->syms[sym].width;
             f->arg_addr[f->argc] = c->syms[sym].address;
             f->argc++;

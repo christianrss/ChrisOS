@@ -290,6 +290,24 @@ test_chrisc_float: tools/test_chrisc_float.c compiler/chrisc/chrisc.c \
 		-o $(HOST_BIN)/test_chrisc_float
 	$(HOST_BIN)/test_chrisc_float
 
+test_chrisc_ptr_float: tools/test_chrisc_ptr_float.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_ptr_float.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-lm -o $(HOST_BIN)/test_chrisc_ptr_float
+	$(HOST_BIN)/test_chrisc_ptr_float
+
+test_chrisc_move: tools/test_chrisc_move.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		tools/test_chrisc_move.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		-lm -o $(HOST_BIN)/test_chrisc_move
+	$(HOST_BIN)/test_chrisc_move
+
 test_chrisc_fn: tools/test_chrisc_fn.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c
 	mkdir -p $(HOST_BIN)
@@ -914,7 +932,7 @@ test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
 		-o $(HOST_BIN)/test_native_link
 	$(HOST_BIN)/test_native_link
 
-host-gfx3d: test_sse_init test_math3d test_math3d_view test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_editor_vi test_chrisc_string test_chrisc_lang test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
+host-gfx3d: test_sse_init test_math3d test_math3d_view test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_ptr_float test_chrisc_move test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_editor_vi test_chrisc_string test_chrisc_lang test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
