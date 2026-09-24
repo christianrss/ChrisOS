@@ -468,6 +468,52 @@ host-input-test: tools/test_input.c kernel/gfx/input.c kernel/gfx/input.h
 		-o $(HOST_BIN)/test_input tools/test_input.c kernel/gfx/input.c
 	$(HOST_BIN)/test_input
 
+host-pmm-heap-smp-test: tools/test_pmm_heap_smp.c tools/host_metal/metal_stub.c \
+		kernel/metal/pmm.c kernel/metal/heap.c kernel/metal/spin.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DCHRIS_HOST_METAL -pthread \
+		-Itools/host_metal -Ikernel/metal \
+		-o $(HOST_BIN)/test_pmm_heap_smp tools/test_pmm_heap_smp.c \
+		tools/host_metal/metal_stub.c kernel/metal/pmm.c kernel/metal/heap.c \
+		kernel/metal/spin.c
+	$(HOST_BIN)/test_pmm_heap_smp
+
+host-kthread-smp-test: tools/test_kthread_smp.c tools/host_metal/metal_stub.c \
+		kernel/metal/kthread.c kernel/metal/job.c kernel/metal/spin.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DCHRIS_HOST_METAL -pthread \
+		-Ikernel/metal \
+		-o $(HOST_BIN)/test_kthread_smp tools/test_kthread_smp.c \
+		tools/host_metal/metal_stub.c kernel/metal/kthread.c kernel/metal/job.c \
+		kernel/metal/spin.c
+	$(HOST_BIN)/test_kthread_smp
+
+host-job-saturate-test: tools/test_job_saturate.c kernel/metal/job.c kernel/metal/spin.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
+		-o $(HOST_BIN)/test_job_saturate tools/test_job_saturate.c \
+		kernel/metal/job.c kernel/metal/spin.c
+	$(HOST_BIN)/test_job_saturate
+
+host-clvm-sync-test: tools/test_clvm_sync.c kernel/lang/clvm_sync.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/lang \
+		-o $(HOST_BIN)/test_clvm_sync tools/test_clvm_sync.c
+	$(HOST_BIN)/test_clvm_sync
+
+host-sock-owner-test: tools/test_sock_owner.c kernel/net/sock.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/net -Ikernel/metal \
+		-o $(HOST_BIN)/test_sock_owner tools/test_sock_owner.c kernel/net/sock.c
+	$(HOST_BIN)/test_sock_owner
+
+host-elf-malformed-test: tools/test_elf_malformed.c kernel/metal/elf.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
+		-o $(HOST_BIN)/test_elf_malformed tools/test_elf_malformed.c \
+		kernel/metal/elf.c
+	$(HOST_BIN)/test_elf_malformed
+
 host-editor-test: host/test_editor64.c kernel/tools/editor.c kernel/tools/editor.h
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) $(HOST_CFLAGS) -o $(HOST_BIN)/test_editor64 \
@@ -505,10 +551,12 @@ test_gfx2d: kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c tools/test_gfx2d.c kernel/g
 		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c tools/test_gfx2d.c \
 		-o $(HOST_BIN)/test_gfx2d
 
-test_keystate: tools/test_keystate.c
+test_keystate: tools/test_keystate.c kernel/gfx/input.c kernel/gfx/input.h
 	mkdir -p $(HOST_BIN)
-	$(HOST_CC) -std=c11 -Wall -Wextra -Werror tools/test_keystate.c \
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx \
+		tools/test_keystate.c kernel/gfx/input.c \
 		-o $(HOST_BIN)/test_keystate
+	$(HOST_BIN)/test_keystate
 
 host-cfs-paths-test: tools/test_cfs_paths.c kernel/fs/cfs.c kernel/fs/cfs_fsck.c
 	mkdir -p $(HOST_BIN)
@@ -936,8 +984,43 @@ host-gfx3d: test_sse_init test_math3d test_math3d_view test_zbuf test_tri test_m
 
 host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
+	host-cfs-maxwrite-test \
 	host-jit-test host-jit-vm-test host-jit-native-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
-	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates
+	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates \
+	host-input-test test_keystate test_gfx2d \
+	host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
+	host-clvm-sync-test host-elf-malformed-test host-sock-owner-test host-gate-audit
+
+host-gate-audit:
+	python3 tools/check_test_gates.py
+
+host-stress: host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test
+
+host-sanitize: tools/test_pmm_heap_smp.c tools/host_metal/metal_stub.c \
+		kernel/metal/pmm.c kernel/metal/heap.c kernel/metal/spin.c \
+		tools/test_kthread_smp.c kernel/metal/kthread.c kernel/metal/job.c \
+		tools/test_job_saturate.c tools/test_keystate.c kernel/gfx/input.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DCHRIS_HOST_METAL -pthread \
+		-fsanitize=address,undefined -Itools/host_metal -Ikernel/metal \
+		-o $(HOST_BIN)/test_pmm_heap_smp_asan tools/test_pmm_heap_smp.c \
+		tools/host_metal/metal_stub.c kernel/metal/pmm.c kernel/metal/heap.c \
+		kernel/metal/spin.c
+	$(HOST_BIN)/test_pmm_heap_smp_asan
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DCHRIS_HOST_METAL -pthread \
+		-fsanitize=address,undefined -Ikernel/metal \
+		-o $(HOST_BIN)/test_kthread_smp_asan tools/test_kthread_smp.c \
+		tools/host_metal/metal_stub.c kernel/metal/kthread.c kernel/metal/job.c \
+		kernel/metal/spin.c
+	$(HOST_BIN)/test_kthread_smp_asan
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+		-Ikernel/metal -o $(HOST_BIN)/test_job_saturate_asan \
+		tools/test_job_saturate.c kernel/metal/job.c kernel/metal/spin.c
+	$(HOST_BIN)/test_job_saturate_asan
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+		-Ikernel/gfx -o $(HOST_BIN)/test_keystate_asan \
+		tools/test_keystate.c kernel/gfx/input.c
+	$(HOST_BIN)/test_keystate_asan
 
 host-chrisasm-test: tools/test_chrisasm.c compiler/chrisasm/chrisasm.c \
 		compiler/chrisld/chriso.c
@@ -1008,7 +1091,8 @@ host-jit-vm-test: tools/test_jit_vm.c tools/jit_host_stub.c compiler/jit/jit_emi
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_jit_vm.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
-		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c 		kernel/gfx/zbuf.c \
+		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c kernel/gfx/zbuf.c \
+		kernel/metal/spin.c \
 		-o $(HOST_BIN)/test_jit_vm
 	$(HOST_BIN)/test_jit_vm
 
@@ -1022,6 +1106,7 @@ host-jit-native-test: tools/test_jit_native.c tools/jit_host_stub.c compiler/jit
 		tools/jit_host_stub.c compiler/jit/jit_emit.c compiler/jit/jit_compile.c \
 		compiler/jit/jit_runtime.c tools/test_jit_native.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
+		kernel/metal/spin.c \
 		-o $(HOST_BIN)/test_jit_native
 	$(HOST_BIN)/test_jit_native
 
@@ -1037,6 +1122,7 @@ host-jit-bench-test: tools/test_jit_bench.c tools/jit_host_stub.c compiler/jit/j
 		compiler/jit/jit_runtime.c tools/test_jit_bench.c compiler/chrisc/chrisc.c \
 		compiler/clvm/clasm.c compiler/clvm/clvm_format.c compiler/clvm/clvm_vm.c \
 		kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c kernel/gfx/zbuf.c \
+		kernel/metal/spin.c \
 		-o $(HOST_BIN)/test_jit_bench
 	$(HOST_BIN)/test_jit_bench
 
