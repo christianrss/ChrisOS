@@ -88,7 +88,13 @@ test-qemu-riscv: $(RISCV_ELF)
 		-drive if=none,id=vd,file=$(BUILD_DIR)/vblk.img,format=raw,file.locking=off \
 		-device virtio-blk-device,drive=vd -device virtio-gpu-device
 
-test-qemu-noata: $(ISO) $(DISK_IMG)
+disk-boot-payload: $(DISK_IMG) $(KERNEL) host-cfs-put-file \
+		$(LIMINE_DIR)/BOOTX64.EFI $(LIMINE_CONF_SRC)
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) BOOT/KERNEL.ELF $(KERNEL)
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) EFI/BOOT/BOOTX64.EFI $(LIMINE_DIR)/BOOTX64.EFI
+	$(HOST_BIN)/cfs_put_file $(DISK_IMG) BOOT/LIMINE.CFG $(LIMINE_CONF_SRC)
+
+test-qemu-noata: $(ISO) $(DISK_IMG) disk-boot-payload
 	rm -f $(BUILD_DIR)/qemu-test.txt
 	$(QEMU_GATE) --timeout 90 \
 		--expect "ata missing" --expect "root ahci" --expect "cfs mounted" \

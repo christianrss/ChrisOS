@@ -46,6 +46,7 @@ GFX_3D_OBJS := \
 	kernel/gfx/shade.o \
 	kernel/gfx/tex.o \
 	kernel/gfx/voxel.o \
+	kernel/gfx/gfx3d_ctx.o \
 	kernel/gfx/scene.o \
 	kernel/gfx/phys.o
 
@@ -149,6 +150,10 @@ $(OBJ_DIR)/kernel/gfx/tex.o: kernel/gfx/tex.c
 	$(CC) $(GFX_SSE2_CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/kernel/gfx/voxel.o: kernel/gfx/voxel.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/gfx3d_ctx.o: kernel/gfx/gfx3d_ctx.c
 	@mkdir -p $(dir $@)
 	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
 
@@ -506,6 +511,67 @@ host-sock-owner-test: tools/test_sock_owner.c kernel/net/sock.c
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/net -Ikernel/metal \
 		-o $(HOST_BIN)/test_sock_owner tools/test_sock_owner.c kernel/net/sock.c
 	$(HOST_BIN)/test_sock_owner
+
+host-cfs-lock-test: tools/test_cfs_lock.c kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -pthread -Ikernel/fs -Itools \
+		-o $(HOST_BIN)/test_cfs_lock tools/test_cfs_lock.c \
+		kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	$(HOST_BIN)/test_cfs_lock
+
+host-gfx3d-ctx-test: tools/test_gfx3d_ctx.c kernel/gfx/gfx3d_ctx.c \
+		kernel/gfx/math3d.c kernel/gfx/shade.c kernel/gfx/tex.c kernel/gfx/voxel.c \
+		kernel/gfx/zbuf.c kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -Icompiler/clvm -Icompiler \
+		-ffast-math -msse2 -mfpmath=sse \
+		-o $(HOST_BIN)/test_gfx3d_ctx tools/test_gfx3d_ctx.c \
+		kernel/gfx/gfx3d_ctx.c kernel/gfx/math3d.c kernel/gfx/shade.c \
+		kernel/gfx/tex.c kernel/gfx/voxel.c kernel/gfx/zbuf.c \
+		kernel/gfx/gfx_fast.c kernel/gfx/tri.c kernel/gfx/gfx2d.c -lm
+	$(HOST_BIN)/test_gfx3d_ctx
+
+host-sys-write-test: tools/test_sys_write.c kernel/metal/syscall.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+		-Ikernel/metal -o $(HOST_BIN)/test_sys_write tools/test_sys_write.c
+	$(HOST_BIN)/test_sys_write
+
+host-fuzz-cfs-test: tools/test_fuzz_cfs.c kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/fs -Itools \
+		-o $(HOST_BIN)/test_fuzz_cfs tools/test_fuzz_cfs.c \
+		kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	$(HOST_BIN)/test_fuzz_cfs
+
+host-chrisc-read-diag-test: tools/test_chrisc_read_diag.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		-o $(HOST_BIN)/test_chrisc_read_diag tools/test_chrisc_read_diag.c \
+		compiler/chrisc/chrisc.c compiler/clvm/clasm.c
+	$(HOST_BIN)/test_chrisc_read_diag
+
+host-fuzz-chrisc-test: tools/test_fuzz_chrisc.c compiler/chrisc/chrisc.c \
+		compiler/clvm/clasm.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/chrisc -Icompiler/clvm \
+		-o $(HOST_BIN)/test_fuzz_chrisc tools/test_fuzz_chrisc.c \
+		compiler/chrisc/chrisc.c compiler/clvm/clasm.c
+	$(HOST_BIN)/test_fuzz_chrisc
+
+host-fuzz-clvm-test: tools/test_fuzz_clvm.c compiler/clvm/clvm_format.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Icompiler/clvm \
+		-o $(HOST_BIN)/test_fuzz_clvm tools/test_fuzz_clvm.c \
+		compiler/clvm/clvm_format.c
+	$(HOST_BIN)/test_fuzz_clvm
+
+host-fuzz-elf-test: tools/test_fuzz_elf.c kernel/metal/elf.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
+		-o $(HOST_BIN)/test_fuzz_elf tools/test_fuzz_elf.c kernel/metal/elf.c
+	$(HOST_BIN)/test_fuzz_elf
 
 host-elf-malformed-test: tools/test_elf_malformed.c kernel/metal/elf.c
 	mkdir -p $(HOST_BIN)
@@ -989,12 +1055,26 @@ host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
 	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates \
 	host-input-test test_keystate test_gfx2d \
 	host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
-	host-clvm-sync-test host-elf-malformed-test host-sock-owner-test host-gate-audit
+	host-clvm-sync-test host-elf-malformed-test host-sock-owner-test \
+	host-cfs-lock-test host-gfx3d-ctx-test host-sys-write-test \
+	host-fuzz-cfs-test host-fuzz-elf-test host-fuzz-chrisc-test \
+	host-fuzz-clvm-test host-chrisc-read-diag-test host-gate-audit
 
 host-gate-audit:
 	python3 tools/check_test_gates.py
 
-host-stress: host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test
+host-stress: host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
+	host-cfs-lock-test host-fuzz-cfs-test host-fuzz-elf-test \
+	host-fuzz-chrisc-test host-fuzz-clvm-test host-task-window-test
+
+qemu-stress: qemu-gates test-qemu-smp1
+
+stability: host-gates host-sanitize
+	@if command -v qemu-system-x86_64 >/dev/null 2>&1; then \
+		$(MAKE) qemu-stress; \
+	else \
+		echo "stability: qemu-system-x86_64 absent, host gates only"; \
+	fi
 
 host-sanitize: tools/test_pmm_heap_smp.c tools/host_metal/metal_stub.c \
 		kernel/metal/pmm.c kernel/metal/heap.c kernel/metal/spin.c \

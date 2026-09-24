@@ -9490,6 +9490,12 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
             progress(progress_user, 0, 1, paths[0]);
         n = read(user, paths[0], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
+            text(result->diag.file, sizeof(result->diag.file),
+                 paths[0] ? paths[0] : "");
+            result->diag.line = 1;
+            result->diag.column = 1;
+            text(result->diag.message, sizeof(result->diag.message),
+                 "cannot read source file");
             return 0;
         }
         g_tu[n] = 0;
@@ -9554,7 +9560,13 @@ int chrisc_compile_files_ex(const char **paths, int npaths, ChriscReadFn read,
             progress(progress_user, i, npaths, paths[i]);
         n = read(user, paths[i], g_tu, (int)CHRIS_SOURCE_MAX - 1);
         if (n < 0) {
-            return fail(c, 1, 1, "cannot read source file");
+            text(result->diag.file, sizeof(result->diag.file),
+                 paths[i] ? paths[i] : "");
+            result->diag.line = 1;
+            result->diag.column = 1;
+            text(result->diag.message, sizeof(result->diag.message),
+                 "cannot read source file");
+            return 0;
         }
         g_tu[n] = 0;
         n = (int)compact_line_cont(g_tu, (size_t)n);
