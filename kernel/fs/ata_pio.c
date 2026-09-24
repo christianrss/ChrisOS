@@ -165,10 +165,22 @@ static int ata_wait_not_busy(const AtaPio *a) {
 static int ata_poll(const AtaPio *a, int need_drq) {
     uint32_t i;
     uint8_t s;
+    uint32_t idle = 0;
+    int saw_bsy = 0;
     for (i = 0; i < a->poll_limit; i++) {
         s = inb((uint16_t)(a->io + ATA_REG_STATUS));
         if (s == 0xffu)
             return BD_ENODEV;
+        if (s & ATA_SR_BSY)
+            saw_bsy = 1;
+        /* An empty bus stays 0 and never raises BSY. Burning poll_limit
+         * here kept the no-disk boot inside identify until the gate timed out. */
+        if (s == 0 && !saw_bsy) {
+            if (++idle > 256u)
+                return BD_ENODEV;
+        } else {
+            idle = 0;
+        }
         if (s & (ATA_SR_ERR | ATA_SR_DF))
             return BD_EIO;
         if (!(s & ATA_SR_BSY)) {

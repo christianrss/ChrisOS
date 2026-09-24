@@ -184,7 +184,11 @@ void syscall_dispatch(struct irq_frame *frame) {
             frame->rip += 2;
             return;
         }
-        buf[n] = 0;
+        if (syscall_write_term(buf, (int)sizeof(buf), n) != 0) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
         serial_puts((const char *)buf);
         frame->rax = n;
         frame->rip += 2;

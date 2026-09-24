@@ -113,7 +113,7 @@ static int td_wait(uint32_t at) {
             serial_putc(0);
         }
         if (frames > 200 || ++guard > 100000)
-            return -1;
+            return -2;
     }
 }
 
@@ -164,12 +164,21 @@ static int control(uint8_t addr, uint8_t reqtype, uint8_t req, uint16_t value,
                  token(data_in ? 0x69 : 0xE1, addr, 0, 1, len), payload);
     }
     td_write(4192u, 1u, token(data_in ? 0xE1 : 0x69, addr, 0, 1, 0), 0);
-    if (run_qh(td0) != 0)
-        return -1;
-    if (len > 0 && td_wait(4160u) != 0)
-        return -1;
-    if (td_wait(4192u) != 0)
-        return -1;
+    {
+        int rc = run_qh(td0);
+        if (rc != 0)
+            return rc;
+    }
+    if (len > 0) {
+        int rc = td_wait(4160u);
+        if (rc != 0)
+            return rc;
+    }
+    {
+        int rc = td_wait(4192u);
+        if (rc != 0)
+            return rc;
+    }
     if (data_in && data) {
         for (i = 0; i < len; i += 4) {
             uint32_t v = hw_dma_r32(g_usb.pages, 8208u + (uint32_t)i);
@@ -201,8 +210,11 @@ static int bulk(int is_in, uint8_t *data, int len) {
             }
         }
         td_write(4224u, 1u, token(is_in ? 0x69 : 0xE1, g_usb.addr, ep, *tog, n), buf);
-        if (run_qh(page_phys() + 4224u) != 0)
-            return -1;
+        {
+            int rc = run_qh(page_phys() + 4224u);
+            if (rc != 0)
+                return rc;
+        }
         *tog = (uint8_t)(*tog ^ 1u);
         if (is_in) {
             for (i = 0; i < n; i += 4) {
@@ -234,12 +246,21 @@ static int scsi(const uint8_t *cb, int cblen, uint8_t *data, int len, int data_i
     cbw[14] = (uint8_t)cblen;
     for (i = 0; i < cblen && i < 16; ++i)
         cbw[15 + i] = cb[i];
-    if (bulk(0, cbw, 31) != 0)
-        return -1;
-    if (len > 0 && bulk(data_in ? 1 : 0, data, len) != 0)
-        return -1;
-    if (bulk(1, csw, 13) != 0)
-        return -1;
+    {
+        int rc = bulk(0, cbw, 31);
+        if (rc != 0)
+            return rc;
+    }
+    if (len > 0) {
+        int rc = bulk(data_in ? 1 : 0, data, len);
+        if (rc != 0)
+            return rc;
+    }
+    {
+        int rc = bulk(1, csw, 13);
+        if (rc != 0)
+            return rc;
+    }
     return csw[12] == 0 ? 0 : -1;
 }
 
@@ -260,8 +281,13 @@ static int usb_rw(void *ctx, uint32_t lba, uint32_t count, void *buf, int write)
         cb[5] = (uint8_t)lba;
         cb[7] = (uint8_t)(n >> 8);
         cb[8] = (uint8_t)n;
-        if (scsi(cb, 10, bytes, (int)(n * 512u), write ? 0 : 1) != 0)
-            return BD_EIO;
+        {
+            int rc = scsi(cb, 10, bytes, (int)(n * 512u), write ? 0 : 1);
+            if (rc == -2)
+                return BD_ETIMEOUT;
+            if (rc != 0)
+                return BD_EIO;
+        }
         bytes += n * 512u;
         lba += n;
         count -= n;

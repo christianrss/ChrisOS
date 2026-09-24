@@ -18,6 +18,7 @@ static int g_ready;
 static volatile uint32_t g_event_seq;
 static uint32_t g_event_seen;
 static Spinlock g_ac97_lock;
+static int g_ac97_waiter = -1;
 static uint64_t g_buf_phys;
 static int16_t *g_buf;
 static uint64_t g_bdl_phys;
@@ -56,13 +57,22 @@ static void ac97_on_irq(struct irq_frame *frame) {
         ac97_fill();
     }
     spin_unlock(&g_ac97_lock);
-    proc_unblock_why(PROC_ST_BLOCK_IRQ);
+    {
+        int waiter = __atomic_load_n(&g_ac97_waiter, __ATOMIC_ACQUIRE);
+        if (waiter > 0) {
+            proc_unblock(waiter);
+        }
+    }
     if (idle) {
         outb((uint8_t)(g_nabm + 0x1Bu), 0);
         return;
     }
     outb((uint8_t)(g_nabm + 0x15u), 0);
     outb((uint8_t)(g_nabm + 0x1Bu), 0x11u);
+}
+
+void ac97_arm_waiter(int pid) {
+    __atomic_store_n(&g_ac97_waiter, pid, __ATOMIC_RELEASE);
 }
 
 int ac97_take_event(int irq) {
