@@ -59,8 +59,11 @@ int main(int argc, char **argv) {
         fprintf(stderr, "cannot read %s\n", argv[1]);
         return 1;
     }
-    if (kcc_compile_source(src, &img) != 0) {
-        fprintf(stderr, "compile failed\n");
+    if (kcc_compile_named(argv[1], src, &img) != 0) {
+        const KccDiag *d = kcc_last_error();
+        fprintf(stderr, "%s:%d:%d: error: %s\n",
+                d->file[0] ? d->file : argv[1], d->line, d->column,
+                d->message[0] ? d->message : "compile failed");
         free(src);
         return 1;
     }

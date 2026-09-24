@@ -36,6 +36,8 @@ void serial_write_u64(uint64_t value) {
     (void)value;
 }
 
+void apic_enable_local(void) {}
+
 uint64_t bootinfo_phys_to_virt(uint64_t phys) {
     if (phys >= HOST_RAM) {
         fprintf(stderr, "phys_to_virt out of host ram %llu\n",
