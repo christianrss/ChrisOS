@@ -83,6 +83,8 @@ typedef struct Val {
     int func;
     int lv;
     int frame;
+    int has_imm;
+    uint64_t imm;
     char gname[64];
 } Val;
 
@@ -111,6 +113,9 @@ static int g_dead_ok;
 static int g_dead_at;
 static char g_dead_sym[64];
 static int g_storage_extern;
+static char g_break_lab[16];
+static char g_cont_lab[16];
+static int g_loop_depth;
 
 static void diag_clear(void) {
     memset(&g_diag, 0, sizeof(g_diag));
@@ -454,6 +459,18 @@ static int pp_include(const char *from, const char *name, int quoted, int depth)
     char *buf;
     int rc;
     if (!quoted && builtin_hdr(name)) {
+        /* Types are built in. These limits are the header's real macros. */
+        if (strcmp(name, "stdint.h") == 0 || strcmp(name, "stddef.h") == 0) {
+            if (macro_add("UINT8_MAX", "255u") != 0 ||
+                macro_add("UINT16_MAX", "65535u") != 0 ||
+                macro_add("UINT32_MAX", "4294967295u") != 0 ||
+                macro_add("UINT64_MAX", "18446744073709551615ull") != 0 ||
+                macro_add("SIZE_MAX", "18446744073709551615ull") != 0 ||
+                macro_add("INT32_MAX", "2147483647") != 0 ||
+                macro_add("INT64_MAX", "9223372036854775807ll") != 0) {
+                return -1;
+            }
+        }
         return 0;
     }
     dir_of(from, dir, (int)sizeof(dir));
@@ -841,12 +858,19 @@ static int take_number(uint64_t *out) {
             } else {
                 d = 10 + *g_p - 'A';
             }
+            if (v > (18446744073709551615ull >> 4)) {
+                return fail("integer constant overflow");
+            }
             v = (v << 4) + (uint64_t)d;
             g_p++;
         }
     } else {
         while (*g_p >= '0' && *g_p <= '9') {
-            v = v * 10ull + (uint64_t)(*g_p - '0');
+            unsigned d = (unsigned)(*g_p - '0');
+            if (v > (18446744073709551615ull - d) / 10ull) {
+                return fail("integer constant overflow");
+            }
+            v = v * 10ull + d;
             g_p++;
         }
     }
@@ -1350,6 +1374,15 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
     return 0;
 }
 
+static void lab_copy(char *dst, const char *src) {
+    int i = 0;
+    while (src[i] && i < 15) {
+        dst[i] = src[i];
+        i++;
+    }
+    dst[i] = 0;
+}
+
 static int new_lab(char *buf) {
     char num[16];
     int i = 0;
@@ -1373,7 +1406,7 @@ static void asm_label(const char *name) {
 static int alloc_slot(int size) {
     int s = size < 8 ? 8 : size;
     s = (s + 7) & ~7;
-    if (g_frame + s > 300) {
+    if (g_frame + s > 1536) {
         return 0;
     }
     g_frame += s;
@@ -1381,7 +1414,7 @@ static int alloc_slot(int size) {
 }
 
 static int temp_slot(void) {
-    int off = -320 - g_ntemp * 8;
+    int off = -1600 - g_ntemp * 8;
     g_ntemp++;
     return off;
 }
@@ -1455,6 +1488,15 @@ static void dead_store_note(const char *sym) {
 
 static void load_val(Val *v) {
     if (v->func) {
+        return;
+    }
+    /* A literal is emitted while it is parsed. Later code may clobber rax
+     * before this value is consumed, so reload it from the literal. */
+    if (v->has_imm) {
+        asm_mov_imm("rax", v->imm);
+        v->has_imm = 0;
+        v->lvalue = 0;
+        v->lv = LV_NONE;
         return;
     }
     if (v->type.array_len >= 0 && v->lvalue) {
@@ -1581,6 +1623,7 @@ static int emit_ro_string(const char *s, int n, char *lab) {
 static int parse_unary(Val *out);
 static int parse_postfix(Val *out);
 static int postfix_tail(Val *out);
+static int parse_sizeof_type(Type *t);
 
 static int parse_primary(Val *out) {
     uint64_t num;
@@ -1591,21 +1634,35 @@ static int parse_primary(Val *out) {
     out->type.array_len = -1;
     if (eat_kw("true")) {
         asm_mov_imm("rax", 1);
+        out->has_imm = 1;
+        out->imm = 1;
         out->type = type_make(TY_BOOL, 1, 1);
         return 0;
     }
     if (eat_kw("false")) {
         asm_mov_imm("rax", 0);
+        out->has_imm = 1;
+        out->imm = 0;
         out->type = type_make(TY_BOOL, 1, 1);
         return 0;
     }
-    if (take_number(&num)) {
-        asm_mov_imm("rax", num);
-        out->type = type_make(TY_U64, 8, 8);
-        return 0;
+    {
+        int nr = take_number(&num);
+        if (nr < 0) {
+            return -1;
+        }
+        if (nr) {
+            asm_mov_imm("rax", num);
+            out->has_imm = 1;
+            out->imm = num;
+            out->type = type_make(TY_U64, 8, 8);
+            return 0;
+        }
     }
     if (take_char(&num)) {
         asm_mov_imm("rax", num);
+        out->has_imm = 1;
+        out->imm = num;
         out->type = type_make(TY_CHAR, 1, 1);
         return 0;
     }
@@ -1633,6 +1690,10 @@ static int parse_primary(Val *out) {
         if (id < 0) {
             skip();
             if (*g_p == '(') {
+                if (strncmp(ident, "__sync", 6) == 0 || strncmp(ident, "__atomic", 8) == 0 ||
+                    strncmp(ident, "__builtin", 9) == 0) {
+                    return fail("builtin is outside this subset");
+                }
                 out->func = 1;
                 copy_str(out->gname, 64, ident);
                 out->type = type_make(TY_INT, 8, 8);
@@ -1802,6 +1863,7 @@ static int postfix_tail(Val *out) {
             } else if (out->type.is_ptr) {
                 elem = out->type.pointee_size < 1 ? 1 : out->type.pointee_size;
                 elem_ty = type_make(out->type.kind, elem, elem < 8 ? elem : 8);
+                elem_ty.is_volatile = out->type.pointee_volatile;
             } else {
                 return fail("indexed value is not an array");
             }
@@ -1904,6 +1966,21 @@ static int postfix_tail(Val *out) {
 }
 
 static int parse_unary(Val *out) {
+    if (eat_kw("sizeof")) {
+        Type t;
+        if (parse_sizeof_type(&t) != 0) {
+            return -1;
+        }
+        memset(out, 0, sizeof(*out));
+        out->type.array_len = -1;
+        out->has_imm = 1;
+        out->imm = (uint64_t)t.size;
+        asm_mov_imm("rax", (uint64_t)t.size);
+        out->type = type_make(TY_U64, 8, 8);
+        out->has_imm = 1;
+        out->imm = (uint64_t)t.size;
+        return 0;
+    }
     if (eat_op("++")) {
         if (parse_unary(out) != 0) {
             return -1;
@@ -1926,6 +2003,17 @@ static int parse_unary(Val *out) {
         asm_line("mov rcx, rax");
         asm_mov_imm("rax", 0);
         asm_line("sub rax, rcx");
+        out->lvalue = 0;
+        out->lv = LV_NONE;
+        return 0;
+    }
+    if (g_p[0] == '~') {
+        g_p++;
+        if (parse_unary(out) != 0) {
+            return -1;
+        }
+        load_val(out);
+        asm_line("not rax");
         out->lvalue = 0;
         out->lv = LV_NONE;
         return 0;
@@ -2291,6 +2379,465 @@ static int parse_binary(Val *out, int prec) {
     return 0;
 }
 
+static int parse_sizeof_type(Type *t) {
+    int paren;
+    skip();
+    paren = eat_op("(");
+    if (paren && peek_type_start()) {
+        int is_static = 0;
+        int is_inline = 0;
+        if (parse_base(t, &is_static, &is_inline) != 0) {
+            return -1;
+        }
+        if (eat_op("[")) {
+            uint64_t n = 0;
+            int elem = t->size < 1 ? 1 : t->size;
+            if (!take_number(&n) || n == 0u || !eat_op("]")) {
+                return fail("bad array bound");
+            }
+            t->size = elem * (int)n;
+        }
+        if (!eat_op(")")) {
+            return fail("expected closing parenthesis");
+        }
+        if (t->size < 1) {
+            return fail("sizeof incomplete type");
+        }
+        return 0;
+    }
+    {
+        int alen = g_asm_len;
+        int aov = g_asm_overflow;
+        int dok = g_dead_ok;
+        int dat = g_dead_at;
+        int ntemp = g_ntemp;
+        int frame = g_frame;
+        char dsym[64];
+        Val v;
+        memcpy(dsym, g_dead_sym, sizeof(dsym));
+        if (paren) {
+            if (parse_expr(&v) != 0) {
+                return -1;
+            }
+            if (!eat_op(")")) {
+                return fail("expected closing parenthesis");
+            }
+        } else if (parse_unary(&v) != 0) {
+            return -1;
+        }
+        g_asm_len = alen;
+        g_asm_overflow = aov;
+        g_dead_ok = dok;
+        g_dead_at = dat;
+        g_ntemp = ntemp;
+        g_frame = frame;
+        memcpy(g_dead_sym, dsym, sizeof(dsym));
+        *t = v.type;
+        if (t->size < 1) {
+            return fail("sizeof incomplete type");
+        }
+        return 0;
+    }
+}
+
+static int ce_primary(uint64_t *v);
+static int ce_unary(uint64_t *v);
+
+static int ce_bin(uint64_t *v, int min_prec) {
+    static const char *ops[] = {"||", "&&", "|",  "^",  "&",  "==", "!=", "<",  ">",
+                                "<=", ">=", "<<", ">>", "+",  "-",  "*",  "/",  "%"};
+    static const int prec_of[] = {1, 2, 3, 4, 5, 6, 6, 7, 7, 7, 7, 8, 8, 9, 9, 10, 10, 10};
+    int nops = 18;
+    if (ce_unary(v) != 0) {
+        return -1;
+    }
+    for (;;) {
+        int i;
+        int matched = -1;
+        skip();
+        for (i = 0; i < nops; i++) {
+            int n = (int)strlen(ops[i]);
+            if (prec_of[i] < min_prec) {
+                continue;
+            }
+            if (strncmp(g_p, ops[i], (size_t)n) != 0) {
+                continue;
+            }
+            if (n == 1 && (g_p[1] == '=' || g_p[1] == ops[i][0])) {
+                continue;
+            }
+            if (matched >= 0 && (int)strlen(ops[matched]) >= n) {
+                continue;
+            }
+            matched = i;
+        }
+        if (matched < 0) {
+            break;
+        }
+        g_p += strlen(ops[matched]);
+        {
+            uint64_t rhs;
+            uint64_t lhs = *v;
+            const char *op = ops[matched];
+            if (ce_bin(&rhs, prec_of[matched] + 1) != 0) {
+                return -1;
+            }
+            if (strcmp(op, "||") == 0) {
+                *v = (lhs != 0u) || (rhs != 0u);
+            } else if (strcmp(op, "&&") == 0) {
+                *v = (lhs != 0u) && (rhs != 0u);
+            } else if (strcmp(op, "|") == 0) {
+                *v = lhs | rhs;
+            } else if (strcmp(op, "^") == 0) {
+                *v = lhs ^ rhs;
+            } else if (strcmp(op, "&") == 0) {
+                *v = lhs & rhs;
+            } else if (strcmp(op, "==") == 0) {
+                *v = lhs == rhs;
+            } else if (strcmp(op, "!=") == 0) {
+                *v = lhs != rhs;
+            } else if (strcmp(op, "<") == 0) {
+                *v = lhs < rhs;
+            } else if (strcmp(op, ">") == 0) {
+                *v = lhs > rhs;
+            } else if (strcmp(op, "<=") == 0) {
+                *v = lhs <= rhs;
+            } else if (strcmp(op, ">=") == 0) {
+                *v = lhs >= rhs;
+            } else if (strcmp(op, "<<") == 0) {
+                if (rhs >= 64u) {
+                    return fail("constant expression expected");
+                }
+                *v = lhs << rhs;
+            } else if (strcmp(op, ">>") == 0) {
+                if (rhs >= 64u) {
+                    return fail("constant expression expected");
+                }
+                *v = lhs >> rhs;
+            } else if (strcmp(op, "+") == 0) {
+                *v = lhs + rhs;
+            } else if (strcmp(op, "-") == 0) {
+                *v = lhs - rhs;
+            } else if (strcmp(op, "*") == 0) {
+                *v = lhs * rhs;
+            } else if (strcmp(op, "/") == 0 || strcmp(op, "%") == 0) {
+                if (rhs == 0u) {
+                    return fail("constant expression expected");
+                }
+                *v = strcmp(op, "/") == 0 ? lhs / rhs : lhs % rhs;
+            } else {
+                return fail("constant expression expected");
+            }
+        }
+    }
+    return 0;
+}
+
+static int ce_primary(uint64_t *v) {
+    uint64_t num;
+    if (eat_kw("sizeof")) {
+        Type t;
+        if (parse_sizeof_type(&t) != 0) {
+            return -1;
+        }
+        *v = (uint64_t)t.size;
+        return 0;
+    }
+    {
+        int nr = take_number(v);
+        if (nr < 0) {
+            return -1;
+        }
+        if (nr) {
+            return 0;
+        }
+    }
+    if (take_char(&num)) {
+        *v = num;
+        return 0;
+    }
+    if (eat_op("(")) {
+        if (peek_type_start()) {
+            Type t;
+            int is_static = 0;
+            int is_inline = 0;
+            if (parse_base(&t, &is_static, &is_inline) != 0) {
+                return -1;
+            }
+            if (!eat_op(")")) {
+                return fail("expected closing parenthesis");
+            }
+            return ce_unary(v);
+        }
+        if (ce_bin(v, 0) != 0) {
+            return -1;
+        }
+        if (!eat_op(")")) {
+            return fail("expected closing parenthesis");
+        }
+        return 0;
+    }
+    return fail("constant expression expected");
+}
+
+static int ce_unary(uint64_t *v) {
+    skip();
+    if (g_p[0] == '+' && g_p[1] != '+' && g_p[1] != '=') {
+        g_p++;
+        return ce_unary(v);
+    }
+    if (g_p[0] == '-' && g_p[1] != '-' && g_p[1] != '=' && g_p[1] != '>') {
+        g_p++;
+        if (ce_unary(v) != 0) {
+            return -1;
+        }
+        *v = 0ull - *v;
+        return 0;
+    }
+    if (g_p[0] == '~') {
+        g_p++;
+        if (ce_unary(v) != 0) {
+            return -1;
+        }
+        *v = ~*v;
+        return 0;
+    }
+    if (g_p[0] == '!' && g_p[1] != '=') {
+        g_p++;
+        if (ce_unary(v) != 0) {
+            return -1;
+        }
+        *v = *v == 0u;
+        return 0;
+    }
+    return ce_primary(v);
+}
+
+static int ce_expr(uint64_t *v) {
+    return ce_bin(v, 0);
+}
+
+static int parse_static_assert(void) {
+    uint64_t v = 0;
+    char msg[128];
+    int n = 0;
+    if (!eat_op("(")) {
+        return fail("bad static assert");
+    }
+    if (ce_expr(&v) != 0) {
+        return -1;
+    }
+    if (!eat_op(",")) {
+        return fail("bad static assert");
+    }
+    if (!take_string(msg, 128, &n)) {
+        return fail("static assert message expected");
+    }
+    (void)msg;
+    if (!eat_op(")") || !eat_op(";")) {
+        return fail("bad static assert");
+    }
+    if (v == 0u) {
+        return fail("static assert failed");
+    }
+    return 0;
+}
+
+static int constraint_has(const char *c, char ch) {
+    while (*c) {
+        if (*c == ch) {
+            return 1;
+        }
+        c++;
+    }
+    return 0;
+}
+
+static int skip_asm_clobbers(void) {
+    int depth = 0;
+    while (*g_p) {
+        if (*g_p == '(') {
+            depth++;
+        } else if (*g_p == ')') {
+            if (depth == 0) {
+                return 0;
+            }
+            depth--;
+        } else if (*g_p == '\n') {
+            g_line++;
+        }
+        g_p++;
+    }
+    return fail("bad asm");
+}
+
+static int parse_asm_operand(char *constraint, int ccap, Val *v) {
+    char buf[32];
+    int n = 0;
+    skip();
+    if (*g_p == '[') {
+        return fail("asm operand is outside this subset");
+    }
+    if (!take_string(buf, 32, &n) || n < 1 || n >= ccap) {
+        return fail("asm constraint expected");
+    }
+    copy_str(constraint, ccap, buf);
+    if (!eat_op("(") || parse_expr(v) != 0 || !eat_op(")")) {
+        return fail("asm operand expected");
+    }
+    return 0;
+}
+
+static int emit_port_io(int is_out, int width, Val *outs, const char oc[][8], int nout, Val *ins,
+                        const char ic[][8], int nin) {
+    int slot;
+    if (is_out) {
+        if (nout != 0 || nin != 2 || !constraint_has(ic[0], 'a')) {
+            return fail("asm operands are outside this subset");
+        }
+        load_val(&ins[0]);
+        slot = save_rax();
+        load_val(&ins[1]);
+        asm_line("mov rdx, rax");
+        load_frame_rax(slot);
+        if (width == 1) {
+            asm_line("out dx, al");
+        } else if (width == 2) {
+            asm_line("out dx, ax");
+        } else {
+            asm_line("out dx, eax");
+        }
+        return 0;
+    }
+    if (nout != 1 || nin != 1 || !outs[0].lvalue || !constraint_has(oc[0], '=') ||
+        !constraint_has(oc[0], 'a')) {
+        return fail("asm operands are outside this subset");
+    }
+    load_val(&ins[0]);
+    asm_line("mov rdx, rax");
+    asm_line("xor rax, rax");
+    if (width == 1) {
+        asm_line("in al, dx");
+    } else if (width == 2) {
+        asm_line("in ax, dx");
+    } else {
+        asm_line("in eax, dx");
+    }
+    store_val(&outs[0]);
+    return 0;
+}
+
+static int parse_asm_stmt(void) {
+    char tmpl[160];
+    int n = 0;
+    int kind;
+    int nout = 0;
+    int nin = 0;
+    Val outs[2];
+    Val ins[2];
+    char oc[2][8];
+    char ic[2][8];
+    if (eat_kw("volatile") || eat_kw("__volatile__")) {
+        /* accepted; every asm in this subset is a compiler barrier */
+    }
+    if (!eat_op("(")) {
+        return fail("bad asm");
+    }
+    if (!take_string(tmpl, 160, &n) || n >= 159) {
+        return fail("asm template is outside this subset");
+    }
+    if (n < 159) {
+        tmpl[n] = 0;
+    }
+    if (tmpl[0] == 0) {
+        kind = 1;
+    } else if (strcmp(tmpl, "cli") == 0) {
+        kind = 2;
+    } else if (strcmp(tmpl, "sti") == 0) {
+        kind = 3;
+    } else if (strcmp(tmpl, "hlt") == 0) {
+        kind = 4;
+    } else if (strcmp(tmpl, "pause") == 0) {
+        kind = 5;
+    } else if (strcmp(tmpl, "inb %1, %0") == 0) {
+        kind = 10;
+    } else if (strcmp(tmpl, "inw %1, %0") == 0) {
+        kind = 11;
+    } else if (strcmp(tmpl, "inl %1, %0") == 0) {
+        kind = 12;
+    } else if (strcmp(tmpl, "outb %0, %1") == 0) {
+        kind = 13;
+    } else if (strcmp(tmpl, "outw %0, %1") == 0) {
+        kind = 14;
+    } else if (strcmp(tmpl, "outl %0, %1") == 0) {
+        kind = 15;
+    } else {
+        return fail("asm template is outside this subset");
+    }
+    if (eat_op(":")) {
+        skip();
+        if (*g_p != ':' && *g_p != ')') {
+            do {
+                if (nout >= 2) {
+                    return fail("asm operands are outside this subset");
+                }
+                if (parse_asm_operand(oc[nout], 8, &outs[nout]) != 0) {
+                    return -1;
+                }
+                nout++;
+            } while (eat_op(","));
+        }
+        if (eat_op(":")) {
+            skip();
+            if (*g_p != ':' && *g_p != ')') {
+                do {
+                    if (nin >= 2) {
+                        return fail("asm operands are outside this subset");
+                    }
+                    if (parse_asm_operand(ic[nin], 8, &ins[nin]) != 0) {
+                        return -1;
+                    }
+                    nin++;
+                } while (eat_op(","));
+            }
+            if (eat_op(":")) {
+                if (skip_asm_clobbers() != 0) {
+                    return -1;
+                }
+            }
+        }
+    }
+    if (!eat_op(")") || !eat_op(";")) {
+        return fail("bad asm");
+    }
+    dead_store_clear();
+    if (kind == 1) {
+        if (nout != 0 || nin != 0) {
+            return fail("asm operands are outside this subset");
+        }
+        return 0;
+    }
+    if (kind >= 2 && kind <= 5) {
+        if (nout != 0 || nin != 0) {
+            return fail("asm operands are outside this subset");
+        }
+        if (kind == 2) {
+            asm_line("cli");
+        } else if (kind == 3) {
+            asm_line("sti");
+        } else if (kind == 4) {
+            asm_line("hlt");
+        } else {
+            asm_line("pause");
+        }
+        return 0;
+    }
+    if (kind >= 10 && kind <= 12) {
+        return emit_port_io(0, kind == 10 ? 1 : kind == 11 ? 2 : 4, outs, oc, nout, ins, ic, nin);
+    }
+    return emit_port_io(1, kind == 13 ? 1 : kind == 14 ? 2 : 4, outs, oc, nout, ins, ic, nin);
+}
+
 static int grab_until(char *dst, int cap, char stop) {
     int depth = 0;
     int n = 0;
@@ -2353,7 +2900,13 @@ static int parse_stmt(void) {
         char end_lab[16];
         new_lab(else_lab);
         new_lab(end_lab);
-        if (!eat_op("(") || parse_expr(&cond) != 0 || !eat_op(")")) {
+        if (!eat_op("(")) {
+            return fail("bad if");
+        }
+        if (parse_expr(&cond) != 0) {
+            return -1;
+        }
+        if (!eat_op(")")) {
             return fail("bad if");
         }
         load_val(&cond);
@@ -2378,8 +2931,16 @@ static int parse_stmt(void) {
         Val cond;
         char head[16];
         char end_lab[16];
+        char old_b[16];
+        char old_c[16];
+        int old_d = g_loop_depth;
+        lab_copy(old_b, g_break_lab);
+        lab_copy(old_c, g_cont_lab);
         new_lab(head);
         new_lab(end_lab);
+        lab_copy(g_break_lab, end_lab);
+        lab_copy(g_cont_lab, head);
+        g_loop_depth = old_d + 1;
         if (!eat_op("(")) {
             return fail("bad while");
         }
@@ -2395,6 +2956,9 @@ static int parse_stmt(void) {
         }
         asm_cat("jmp ", head, 0, 0);
         asm_label(end_lab);
+        lab_copy(g_break_lab, old_b);
+        lab_copy(g_cont_lab, old_c);
+        g_loop_depth = old_d;
         return 0;
     }
     if (eat_kw("for")) {
@@ -2402,9 +2966,16 @@ static int parse_stmt(void) {
         char condb[192];
         char stepb[192];
         char head[16];
+        char step_lab[16];
         char end_lab[16];
+        char old_b[16];
+        char old_c[16];
+        int old_d = g_loop_depth;
         Val discard;
+        lab_copy(old_b, g_break_lab);
+        lab_copy(old_c, g_cont_lab);
         new_lab(head);
+        new_lab(step_lab);
         new_lab(end_lab);
         if (!eat_op("(")) {
             return fail("bad for");
@@ -2421,6 +2992,10 @@ static int parse_stmt(void) {
         if (initb[0] && parse_from(initb, &discard) != 0) {
             return -1;
         }
+        /* continue rechecks a while, but a for must run the step first. */
+        lab_copy(g_break_lab, end_lab);
+        lab_copy(g_cont_lab, step_lab);
+        g_loop_depth = old_d + 1;
         asm_label(head);
         if (condb[0]) {
             if (parse_from(condb, &discard) != 0) {
@@ -2433,11 +3008,15 @@ static int parse_stmt(void) {
         if (parse_stmt() != 0) {
             return -1;
         }
+        asm_label(step_lab);
         if (stepb[0] && parse_from(stepb, &discard) != 0) {
             return -1;
         }
         asm_cat("jmp ", head, 0, 0);
         asm_label(end_lab);
+        lab_copy(g_break_lab, old_b);
+        lab_copy(g_cont_lab, old_c);
+        g_loop_depth = old_d;
         return 0;
     }
     if (eat_kw("return")) {
@@ -2453,6 +3032,32 @@ static int parse_stmt(void) {
         }
         epilogue();
         return 0;
+    }
+    if (eat_kw("break")) {
+        if (g_loop_depth < 1) {
+            return fail("break outside loop");
+        }
+        if (!eat_op(";")) {
+            return fail("expected semicolon");
+        }
+        asm_cat("jmp ", g_break_lab, 0, 0);
+        return 0;
+    }
+    if (eat_kw("continue")) {
+        if (g_loop_depth < 1) {
+            return fail("continue outside loop");
+        }
+        if (!eat_op(";")) {
+            return fail("expected semicolon");
+        }
+        asm_cat("jmp ", g_cont_lab, 0, 0);
+        return 0;
+    }
+    if (eat_kw("_Static_assert")) {
+        return parse_static_assert();
+    }
+    if (eat_kw("__asm__") || eat_kw("asm")) {
+        return parse_asm_stmt();
     }
     if (eat_op(";")) {
         return 0;
@@ -2792,7 +3397,7 @@ static int parse_global(void) {
         asm_label(name);
         asm_line("push rbp");
         asm_line("mov rbp, rsp");
-        asm_line("sub rsp, 512");
+        asm_line("sub rsp, 2048");
         dead_store_clear();
         mark = g_nsym;
         for (i = 0; i < np; i++) {
@@ -2840,6 +3445,12 @@ static int compile_unit(void) {
         skip();
         if (*g_p == 0) {
             break;
+        }
+        if (eat_kw("_Static_assert")) {
+            if (parse_static_assert() != 0) {
+                return -1;
+            }
+            continue;
         }
         if (eat_kw("typedef")) {
             Type t;
@@ -2922,6 +3533,9 @@ int kcc_compile_named(const char *file, const char *src, ChrisoImage *out) {
     g_ntemp = 0;
     g_lab = 0;
     g_dead_ok = 0;
+    g_loop_depth = 0;
+    g_break_lab[0] = 0;
+    g_cont_lab[0] = 0;
     memset(g_mac, 0, sizeof(g_mac));
     memset(g_sym, 0, sizeof(g_sym));
     copy_str(g_file, 96, file ? file : "");
