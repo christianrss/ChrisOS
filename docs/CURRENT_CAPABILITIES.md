@@ -23,7 +23,7 @@ earlier boot. They were not repeated after the TLB change.
 | xHCI | IMPLEMENTED | no | earlier `test-qemu-xhci` is listed; not re-run | no | HID lifecycle was not re-audited line by line in this pass | `test-qemu-xhci` |
 | Framebuffer desktop | IMPLEMENTED | no | earlier desktop marker; not re-run | no | Pitch is not proven across 800x600 through 1920x1080 | QEMU desktop gates |
 | VirtIO-GPU 2D | EXPERIMENTAL | no | `test-qemu-gpu` exists; not re-run | no | Not a finished resource lifecycle. VirGL is unsupported | `test-qemu-gpu` |
-| KCC | EXPERIMENTAL | `host-kcc-test` compiles the level-0 fixture, fourteen `kernel/metal` files, a volatile MMIO fixture, and a packed-struct offset check | no | no | `limine.h`, `__sync_*`, and privileged asm beyond `cli`/`hlt`/`pause`/port `in`/`out` still stop the rest. SH4 is not proven | `host-kcc-test` |
+| KCC | EXPERIMENTAL | `host-kcc-test` compiles the level-0 fixture, every `kernel/metal` C file, a volatile MMIO fixture, and a packed-struct offset check | no | no | 50 of 112 makefile C units compile. `union`, numeric initializers, float arithmetic, and NASM stubs still stop a kernel link. SH4 is not proven | `host-kcc-test` |
 | ChrisAsm / ChrisLd | EXPERIMENTAL | host tests for the small assembler and linker | no | no | Do not assemble or link the real kernel | `host-chrisasm-test`, `host-chrisld-test` |
 | SH1–SH6 | UNSUPPORTED as a proven level | no in-OS gate | no | no | See `docs/CURRENT_SELFHOST_AUDIT.md` | none |
 | Physical machine | UNPROVEN | no | no | no | No `PROVEN-HARDWARE` | none |
