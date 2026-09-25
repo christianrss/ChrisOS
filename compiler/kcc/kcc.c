@@ -2249,6 +2249,38 @@ static int parse_global(void) {
     if (!take_ident(name, 64)) {
         return fail("declaration expected");
     }
+    if (eat_op("[")) {
+        uint64_t bound = 0;
+        int elem;
+        uint64_t bytes;
+        if (!take_number(&bound) || bound == 0u || !eat_op("]")) {
+            return fail("bad array bound");
+        }
+        if (!eat_op(";")) {
+            return fail("global array initializer is outside this subset");
+        }
+        elem = t.size < 1 ? 1 : t.size;
+        if (bound > (1ull << 20) / (uint64_t)elem) {
+            return fail("array is too large");
+        }
+        bytes = bound * (uint64_t)elem;
+        t.pointee_size = elem;
+        t.size = (int)bytes;
+        t.array_len = (int)bound;
+        memset(&s, 0, sizeof(s));
+        copy_str(s.name, 64, name);
+        copy_str(s.asm_name, 64, name);
+        s.type = t;
+        s.global = 1;
+        s.is_static = is_static;
+        if (emit_global_bss(name, (int)bytes, is_static) != 0) {
+            return -1;
+        }
+        if (sym_add(&s) < 0) {
+            return fail("too many symbols");
+        }
+        return 0;
+    }
     if (eat_op("(")) {
         Sym params[6];
         int np = 0;

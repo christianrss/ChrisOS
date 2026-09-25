@@ -1,8 +1,9 @@
 # Native toolchain audit
 
-`host-kcc-kernel-l0` now rejects `kernel/metal/serial.c`. The sections
-below describe the tree at the start of this campaign. Current KCC
-behavior is `docs/KCC_STATUS.md`.
+This file records the tree at the start of the native-toolchain campaign.
+It is not the current gate. Current KCC behavior is `docs/KCC_STATUS.md`.
+`host-kcc-test` compiles `kernel/metal/serial.c` and `kernel/metal/klog.c`
+and links them with stubs. That link is not SH4.
 
 Snapshot of `894aed92e48e764e2627ecfc2514684f50809f59` on
 `cursor/native-toolchain-7c6f`. `origin/feat/os2` is
@@ -262,6 +263,9 @@ second boot with the markers in `docs/REAL_HARDWARE_PLAN.md`, and
 `hardware-profile1`. Adding a name without a run does not pass it.
 
 ## Defects this audit treats as blocking
+
+Item 1 is closed by the current `host-kcc-test`, which requires the serial
+and klog symbols and a successful link. The list below is the snapshot.
 
 1. `host-kcc-test` succeeds on `serial.c` by skipping the file.
 2. `call` records a defined symbol and ChrisLd does not apply a relocation.

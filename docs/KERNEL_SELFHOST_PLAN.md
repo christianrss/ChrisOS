@@ -8,21 +8,23 @@ starting tree is `docs/NATIVE_TOOLCHAIN_AUDIT.md`.
 
 | Level | Input | Gate | Status |
 | --- | --- | --- | --- |
-| 0 | one function, literal `outb`, integer `return` | `host-kcc-kernel-l0` | gate rejects `serial.c`; no kernel C file is in this level |
-| 1 | `kernel/metal/serial.c` and a port unit ChrisAsm can assemble | `host-kcc-kernel-l1` | not started |
+| 0 | one function, literal `outb`, integer `return` | `host-kcc-kernel-l0` | fixture is `tools/kcc_fixtures/level0.c`; the target is an alias of `host-kcc-test` |
+| 1 | `kernel/metal/serial.c`, `kernel/metal/klog.c`, and port/spin stubs | `host-kcc-test` | host gate compiles both files and links them. `port.c` is not compiled |
 | 2 | further small `kernel/metal` C files that stay inside the profile | `host-kcc-kernel-l2` | not started |
 | 3 | PMM | `host-kcc-kernel-l3` | not started |
 | 4 | heap | `host-kcc-kernel-l4` | not started |
 | 5 | filesystem helpers | `host-kcc-kernel-l5` | not started |
 
-Level 0 must reject `kernel/metal/serial.c`. Accepting that file by
-skipping unrecognized lines is a failed gate, even if the process exits 0.
+The level-0 fixture stays `tools/kcc_fixtures/level0.c`. `host-kcc-test`
+also compiles `kernel/metal/serial.c` and `kernel/metal/klog.c` and links
+them with stubs for `inb`, `outb`, `spin_init`, `spin_lock`, and
+`spin_unlock`. Skipping unrecognized lines fails that gate: it requires
+the serial and klog symbols, rodata, a BSS ring of at least 8192 bytes,
+and a two-segment ELF.
 
-Level 1 cannot start from `port.c` as it stands. That file is GNU inline
-assembly. The `in`/`out` instructions belong in ChrisAsm, and the C
-callers belong in a profile translation unit. `serial.c` also needs
-includes, macros, `static`, `bool`, `if`, `while`, calls, and volatile
-atomics before it is an honest level-1 compile.
+`port.c` is still GNU inline assembly. The `in` and `out` instructions
+belong in ChrisAsm. The host gate does not compile `port.c`. This link
+does not mark SH4.
 
 ## Compiler shape
 

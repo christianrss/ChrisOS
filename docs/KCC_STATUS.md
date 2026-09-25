@@ -1,36 +1,35 @@
 # KCC status
 
-Audit snapshot: `894aed92e48e764e2627ecfc2514684f50809f59`.
 Profile: `docs/CHRIS_KERNEL_C_PROFILE.md`.
-Full gap: `docs/NATIVE_TOOLCHAIN_AUDIT.md`.
+The audit of the tree at the start of the native-toolchain campaign is
+`docs/NATIVE_TOOLCHAIN_AUDIT.md`. This page is the current host gate.
 
-## Implemented
+## What the host gate proves
 
-`kcc_compile_named` walks one line at a time and records a diagnostic
-(`file`, `line`, `column`, `severity`, `message`). Severity 1 is an error.
+`host-kcc-kernel-l0` runs `host-kcc-test`. `host-kcc-test` is a dependency
+of `host-gates`.
 
-Level 0 accepts comments, a function whose type word is `void`, `bool`,
-`int`, or `uint8_t` / `uint16_t` / `uint32_t` / `uint64_t`, a body of
-literal `outb` and `return` of an integer literal or a bare `return`, and
-braces. `outb` is lowered to a call with the port in RDI and the value in
-RSI. ChrisAsm records that call as an undefined symbol and an
-`R_X86_64_PLT32` relocation. ChrisLd applies it when another object
-defines the symbol.
+The test compiles `tools/kcc_fixtures/level0.c` and requires `kstart`, an
+undefined `outb`, and an `R_X86_64_PLT32` relocation.
 
-A preprocessor line, `static`, a declaration, and any other statement
-fail the compile. The assembly buffer no longer truncates in silence.
+It compiles `kernel/metal/serial.c` and requires `serial_init`,
+`serial_putc`, `serial_puts`, `serial_write_hex`, `serial_write_u64`,
+rodata, and BSS objects `serial_available` and `g_serial_lock`.
 
-## Not implemented
+It compiles `kernel/metal/klog.c` and requires `klog_init`, `klog_putc`,
+`klog_puts`, `klog_copy`, a BSS object named `g_log`, and a BSS section of
+at least 8192 bytes.
 
-Lexer, parser, AST, semantic analysis, IR, and an x86-64 code generator
-as separate units. The rest of the kernel C profile. Volatile. Struct
-layout. A comparison against host GCC. Real relocations.
-
-## Gate
-
-`host-kcc-kernel-l0` runs `host-kcc-test`. The test compiles
-`tools/kcc_fixtures/level0.c` and rejects `kernel/metal/serial.c` on its
-preprocessor line. `serial.c` is level 1 and is not compiled.
-`host-kcc-test` remains a dependency of `host-gates`.
+It links those two objects with ChrisAsm stubs for `inb`, `outb`,
+`spin_init`, `spin_lock`, and `spin_unlock`. The ELF has two program
+headers and passes `chrisld_validate`.
 
 Passing this gate does not mark SH4.
+
+## Still outside the gate
+
+`kernel/metal/port.c` is GNU inline assembly and is not compiled. `volatile`
+is discarded as a qualifier. A volatile MMIO load or store is not proven.
+A global array accepts a bound and a semicolon. An initializer on a global
+array is rejected. ChrisAsm does not implement `cli`, `hlt`, or `invlpg`.
+ChrisLd has not linked `BIN/KERNEL.ELF`.
