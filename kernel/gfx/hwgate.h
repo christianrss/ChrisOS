@@ -15,6 +15,8 @@ int hw_dma_alloc(int pages);
 int hw_dma_free(int id);
 uint32_t hw_dma_lo(int id);
 uint32_t hw_dma_hi(int id);
+uint8_t *hw_dma_ptr(int id);
+uint32_t hw_dma_bytes(int id);
 int hw_dma_w32(int id, uint32_t off, uint32_t val);
 uint32_t hw_dma_r32(int id, uint32_t off);
 uint32_t hw_disk_sectors(void);

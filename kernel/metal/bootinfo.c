@@ -58,6 +58,22 @@ static int g_noapic;
 static int g_noac97;
 static int g_nonet;
 static int g_nojit;
+static int g_gfx_fb;
+static int g_gfx3d;
+static int g_gfx_stress;
+static int g_gfx_debug;
+
+static int boot_prefix(const char *s, uint32_t n, const char *lit, uint32_t *rest) {
+    uint32_t i = 0u;
+    while (lit[i] != 0) {
+        if (i >= n || s[i] != lit[i]) {
+            return 0;
+        }
+        i++;
+    }
+    *rest = n - i;
+    return 1;
+}
 
 static int boot_tok(const char *s, uint32_t n, const char *lit) {
     uint32_t i = 0u;
@@ -107,6 +123,29 @@ static void bootflag_parse(const char *cmd) {
             g_nonet = 1;
         } else if (boot_tok(start, n, "nojit")) {
             g_nojit = 1;
+        } else if (boot_tok(start, n, "gfx.stress")) {
+            g_gfx_stress = 1;
+        } else if (boot_tok(start, n, "gfx.virgl.debug")) {
+            g_gfx_debug = 1;
+        } else {
+            uint32_t rest = 0;
+            if (boot_prefix(start, n, "gfx.backend=", &rest)) {
+                const char *v = start + (n - rest);
+                if (boot_tok(v, rest, "framebuffer")) {
+                    g_gfx_fb = 1;
+                } else if (boot_tok(v, rest, "virtio")) {
+                    g_gfx_fb = 0;
+                }
+            } else if (boot_prefix(start, n, "gfx.3d=", &rest)) {
+                const char *v = start + (n - rest);
+                if (boot_tok(v, rest, "auto")) {
+                    g_gfx3d = 0;
+                } else if (boot_tok(v, rest, "software")) {
+                    g_gfx3d = 1;
+                } else if (boot_tok(v, rest, "virgl")) {
+                    g_gfx3d = 2;
+                }
+            }
         }
     }
 }
@@ -117,6 +156,10 @@ int bootflag_noapic(void) { return g_noapic; }
 int bootflag_noac97(void) { return g_noac97; }
 int bootflag_nonet(void) { return g_nonet; }
 int bootflag_nojit(void) { return g_nojit; }
+int bootflag_gfx_fb(void) { return g_gfx_fb; }
+int bootflag_gfx3d(void) { return g_gfx3d; }
+int bootflag_gfx_stress(void) { return g_gfx_stress; }
+int bootflag_gfx_debug(void) { return g_gfx_debug; }
 
 static const char *memmap_type_name(uint64_t type) {
     switch (type) {

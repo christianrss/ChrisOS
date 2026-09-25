@@ -1,5 +1,6 @@
 #include "hwgate.h"
 
+#include "vgpu.h"
 #include "block_device.h"
 #include "bootinfo.h"
 #include "graphics.h"
@@ -258,6 +259,20 @@ uint32_t hw_dma_hi(int id) {
     return (uint32_t)(g_dma[id].phys >> 32);
 }
 
+uint8_t *hw_dma_ptr(int id) {
+    if (id < 0 || id >= HW_DMA || !g_dma[id].used) {
+        return 0;
+    }
+    return g_dma[id].virt;
+}
+
+uint32_t hw_dma_bytes(int id) {
+    if (id < 0 || id >= HW_DMA || !g_dma[id].used) {
+        return 0;
+    }
+    return (uint32_t)g_dma[id].pages * 4096u;
+}
+
 static uint8_t *dma_ptr(int id, uint32_t off, uint32_t n) {
     if (id < 0 || id >= HW_DMA || !g_dma[id].used) {
         return 0;
@@ -341,6 +356,9 @@ int hw_disk_format(void) {
 
 int hw_gpu_arm(int q_dma, int cmd_dma, int fb_dma, int w, int h,
                int notify_win, uint32_t notify_off) {
+    if (vgpu_ready()) {
+        return 0;
+    }
     if (q_dma < 0 || cmd_dma < 0 || fb_dma < 0 || w < 1 || h < 1) {
         return -1;
     }
@@ -442,11 +460,15 @@ static int gpu_submit(uint32_t type, int x, int y, int w, int h) {
 }
 
 int hw_gpu_ready(void) {
-    return g_gpu.live;
+    return vgpu_ready() || g_gpu.live;
 }
 
 void hw_gpu_flush_rect(int x, int y, int w, int h) {
     int row;
+    if (vgpu_ready()) {
+        vgpu_flush_rect(x, y, w, h);
+        return;
+    }
     int col;
     int x1;
     int y1;
@@ -497,218 +519,9 @@ void hw_gpu_flush(void) {
     hw_gpu_flush_rect(0, 0, g_gpu.w, g_gpu.h);
 }
 
-static int vg_find(int *bus_out, int *dev_out) {
-    int bus;
-    int dev;
-    uint32_t id;
-    for (bus = 0; bus < 8; ++bus) {
-        for (dev = 0; dev < 32; ++dev) {
-            id = pci_read((uint8_t)bus, (uint8_t)dev, 0, 0);
-            if ((id & 0xFFFFu) == 0xFFFFu) {
-                continue;
-            }
-            if ((id & 0xFFFFu) == 0x1AF4u && (id >> 16) == 0x1050u) {
-                *bus_out = bus;
-                *dev_out = dev;
-                return 1;
-            }
-        }
-    }
-    return 0;
-}
-
-static int vg_kick_cmd(int q, int cmd, int len) {
-    uint32_t lo = hw_dma_lo(cmd);
-    uint32_t hi = hw_dma_hi(cmd);
-    uint32_t qlo = hw_dma_lo(q);
-    (void)qlo;
-    hw_dma_w32(q, 0, lo);
-    hw_dma_w32(q, 4, hi);
-    hw_dma_w32(q, 8, (uint32_t)len);
-    hw_dma_w32(q, 12, 1u | (1u << 16));
-    hw_dma_w32(q, 16, lo + 256u);
-    hw_dma_w32(q, 20, hi);
-    hw_dma_w32(q, 24, 64u);
-    hw_dma_w32(q, 28, 2u);
-    return 0;
-}
-
-/*
- * Early scanout used before ChrisC is running. SYS/DRV/VIRTIOGPU.CC is the
- * driver once CLVM can call the hardware ABI. This function stays as the
- * bootstrap path so the desktop has a framebuffer before any guest driver.
- */
 int virtio_gpu_boot(void) {
-    int bus;
-    int dev;
-    int off;
-    int cwin = -1;
-    int nwin = -1;
-    uint32_t coff = 0;
-    uint32_t noff = 0;
-    uint32_t mult = 0;
-    uint32_t cmdreg;
-    int q;
-    int cbuf;
-    int fb;
-    int w;
-    int h;
-    int pages;
-    uint32_t qlo;
-    uint32_t qhi;
-    uint32_t flo;
-    uint32_t fhi;
-    uint16_t qnote;
-    uint32_t resp;
-
-    if (g_gpu.live) {
-        return 1;
-    }
-    g_gpu.isr_ok = 0;
-    g_gpu.isr_win = -1;
     if (!g_gfx.width || !g_gfx.height) {
         return 0;
     }
-    if (!vg_find(&bus, &dev)) {
-        serial_puts("virtio-gpu miss\n");
-        return 0;
-    }
-    cmdreg = pci_read((uint8_t)bus, (uint8_t)dev, 0, 4);
-    hw_pci_write(bus, dev, 0, 4, cmdreg | 6u);
-    off = (int)(pci_read((uint8_t)bus, (uint8_t)dev, 0, 0x34) & 0xFFu);
-    while (off > 0) {
-        uint32_t cap = pci_read((uint8_t)bus, (uint8_t)dev, 0, (uint8_t)off);
-        int typ = (int)((cap >> 24) & 0xFFu);
-        int next = (int)((cap >> 8) & 0xFFu);
-        if ((cap & 0xFFu) == 9u) {
-            int bar = (int)(pci_read((uint8_t)bus, (uint8_t)dev, 0,
-                                     (uint8_t)(off + 4)) &
-                            0xFFu);
-            uint32_t cfg = pci_read((uint8_t)bus, (uint8_t)dev, 0,
-                                     (uint8_t)(off + 8));
-            int win = hw_bar_map(bus, dev, 0, bar);
-            if (typ == 1) {
-                cwin = win;
-                coff = cfg;
-            }
-            if (typ == 2) {
-                nwin = win;
-                noff = cfg;
-                mult = pci_read((uint8_t)bus, (uint8_t)dev, 0,
-                                (uint8_t)(off + 16));
-            }
-            if (typ == 3 && win >= 0) {
-                g_gpu.isr_win = win;
-                g_gpu.isr_off = cfg;
-                g_gpu.isr_ok = 1;
-            }
-        }
-        off = next;
-    }
-    if (cwin < 0 || nwin < 0) {
-        serial_puts("virtio-gpu no cap\n");
-        return 0;
-    }
-    hw_mmio_w8(cwin, coff + 20, 0);
-    hw_mmio_w8(cwin, coff + 20, 1);
-    hw_mmio_w8(cwin, coff + 20, 3);
-    hw_mmio_w32(cwin, coff, 1);
-    hw_mmio_w32(cwin, coff + 8, 1);
-    hw_mmio_w32(cwin, coff + 12, 1);
-    hw_mmio_w8(cwin, coff + 20, 11);
-    if ((hw_mmio_r8(cwin, coff + 20) & 8u) == 0) {
-        serial_puts("virtio-gpu features\n");
-        return 0;
-    }
-    w = g_gfx.width;
-    h = g_gfx.height;
-    if (w > 1920)
-        w = 1920;
-    if (h > 1080)
-        h = 1080;
-    pages = (w * h * 4 + 4095) / 4096;
-    q = hw_dma_alloc(1);
-    cbuf = hw_dma_alloc(1);
-    fb = hw_dma_alloc(pages);
-    if (q < 0 || cbuf < 0 || fb < 0) {
-        serial_puts("virtio-gpu dma\n");
-        return 0;
-    }
-    qlo = hw_dma_lo(q);
-    qhi = hw_dma_hi(q);
-    flo = hw_dma_lo(fb);
-    fhi = hw_dma_hi(fb);
-    hw_mmio_w16(cwin, coff + 22, 0);
-    hw_mmio_w16(cwin, coff + 24, 4);
-    hw_mmio_w32(cwin, coff + 32, qlo);
-    hw_mmio_w32(cwin, coff + 36, qhi);
-    hw_mmio_w32(cwin, coff + 40, qlo + 64u);
-    hw_mmio_w32(cwin, coff + 44, qhi);
-    hw_mmio_w32(cwin, coff + 48, qlo + 2048u);
-    hw_mmio_w32(cwin, coff + 52, qhi);
-    hw_mmio_w16(cwin, coff + 28, 1);
-    qnote = (uint16_t)hw_mmio_r16(cwin, coff + 30);
-    noff = noff + (uint32_t)qnote * mult;
-    hw_mmio_w8(cwin, coff + 20, 15);
-    if (hw_gpu_arm(q, cbuf, fb, w, h, nwin, noff) != 0) {
-        return 0;
-    }
-    hw_dma_w32(cbuf, 0, 0x0101u);
-    hw_dma_w32(cbuf, 24, 1);
-    hw_dma_w32(cbuf, 28, 1);
-    hw_dma_w32(cbuf, 32, (uint32_t)w);
-    hw_dma_w32(cbuf, 36, (uint32_t)h);
-    vg_kick_cmd(q, cbuf, 40);
-    g_gpu.avail = 0;
-    if (gpu_kick(40u) != 0) {
-        serial_puts("virtio-gpu create used=");
-        serial_write_u64((uint64_t)hw_dma_r32(q, 2048));
-        serial_puts(" resp=");
-        serial_write_u64(hw_dma_r32(cbuf, 256));
-        serial_puts(" noff=");
-        serial_write_u64(g_gpu.notify_off);
-        serial_puts(" qlo=");
-        serial_write_u64(hw_mmio_r32(cwin, coff + 32));
-        serial_puts("\n");
-        return 0;
-    }
-    resp = hw_dma_r32(cbuf, 256);
-    if (resp != 0x1100u) {
-        serial_puts("virtio-gpu create resp\n");
-        g_gpu.live = 0;
-        return 0;
-    }
-    hw_dma_w32(cbuf, 256, 0);
-    hw_dma_w32(cbuf, 0, 0x0106u);
-    hw_dma_w32(cbuf, 4, 0);
-    hw_dma_w32(cbuf, 24, 1);
-    hw_dma_w32(cbuf, 28, 1);
-    hw_dma_w32(cbuf, 32, flo);
-    hw_dma_w32(cbuf, 36, fhi);
-    hw_dma_w32(cbuf, 40, (uint32_t)(w * h * 4));
-    if (gpu_kick(48u) != 0 || hw_dma_r32(cbuf, 256) != 0x1100u) {
-        serial_puts("virtio-gpu attach\n");
-        g_gpu.live = 0;
-        return 0;
-    }
-    hw_dma_w32(cbuf, 256, 0);
-    hw_dma_w32(cbuf, 0, 0x0103u);
-    hw_dma_w32(cbuf, 4, 0);
-    hw_dma_w32(cbuf, 24, 0);
-    hw_dma_w32(cbuf, 28, 0);
-    hw_dma_w32(cbuf, 32, (uint32_t)w);
-    hw_dma_w32(cbuf, 36, (uint32_t)h);
-    hw_dma_w32(cbuf, 40, 0);
-    hw_dma_w32(cbuf, 44, 1);
-    if (gpu_kick(48u) != 0 || hw_dma_r32(cbuf, 256) != 0x1100u) {
-        serial_puts("virtio-gpu scanout\n");
-        g_gpu.live = 0;
-        return 0;
-    }
-    serial_puts("virtio-gpu ready ");
-    serial_write_u64((uint64_t)w);
-    serial_puts("x");
-    serial_write_u64((uint64_t)h);
-    serial_puts("\n");
-    return 1;
+    return vgpu_boot(g_gfx.width, g_gfx.height);
 }
