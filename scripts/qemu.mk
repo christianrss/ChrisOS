@@ -1,7 +1,8 @@
 .PHONY: run-riscv qemu-gates full-gates \
 	test-qemu-ata test-qemu-ahci test-qemu-nvme test-qemu-vblk \
 	test-qemu-usb test-qemu-gpu test-qemu-install test-qemu-riscv \
-	test-qemu-noata test-qemu-smp1 test-qemu-safe test-qemu-xhci
+	test-qemu-noata test-qemu-smp1 test-qemu-safe test-qemu-xhci \
+	test-qemu-virgl
 
 run-riscv: $(RISCV_ELF)
 	@test -f $(BUILD_DIR)/vblk.img || dd if=/dev/zero of=$(BUILD_DIR)/vblk.img bs=1M count=32 status=none
@@ -68,6 +69,48 @@ test-qemu-usb: $(ISO) $(DISK_IMG)
 		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
 		-drive if=none,id=usbdisk,file=$(BUILD_DIR)/usb.img,format=raw,file.locking=off \
 		-device usb-storage,bus=usb-bus.0,port=1,drive=usbdisk
+
+$(BUILD_DIR)/os-virgl.iso: $(ISO)
+	python3 -c "import pathlib; p=pathlib.Path('$(ISO_ROOT)/boot/limine/limine.conf'); t=p.read_text(); needle='resolution: 1920x1080x32\n'; ins=needle+'    cmdline: gfx.3d=virgl gfx.stress gfx.virgl.debug\n'; p.write_text(t.replace(needle, ins, 1) if 'cmdline:' not in t else t)"
+	$(XORRISO) -as mkisofs -R -r -J \
+		-b boot/limine/limine-bios-cd.bin \
+		-no-emul-boot -boot-load-size 4 -boot-info-table \
+		-hfsplus -apm-block-size 2048 \
+		--efi-boot boot/limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image \
+		--protective-msdos-label $(ISO_ROOT) -o $@; \
+	st=$$?; cp $(LIMINE_CONF_SRC) $(ISO_ROOT)/boot/limine/limine.conf; exit $$st
+	$(LIMINE_DIR)/limine bios-install $@
+
+test-qemu-virgl: $(BUILD_DIR)/os-virgl.iso $(DISK_IMG)
+	@if ! $(QEMU) -device help 2>/dev/null | grep -q 'virtio-vga-gl\|virtio-gpu-gl'; then \
+		echo "SKIP: host QEMU lacks VirGL support"; exit 2; \
+	fi
+	@disp=""; \
+	if [ -e /dev/dri/renderD128 ] && $(QEMU) -display help 2>/dev/null | grep -q egl-headless; then \
+		disp="egl-headless"; \
+	elif [ -n "$$DISPLAY" ] && $(QEMU) -display help 2>/dev/null | grep -q gtk && ldconfig -p 2>/dev/null | grep -q libEGL; then \
+		disp="gtk,gl=on"; \
+	fi; \
+	if [ -z "$$disp" ]; then \
+		echo "SKIP: host QEMU lacks VirGL support"; exit 2; \
+	fi; \
+	echo "virgl display $$disp"; \
+	rm -f $(BUILD_DIR)/qemu-virgl.txt; \
+	$(QEMU_GATE) --timeout 180 --log $(BUILD_DIR)/qemu-virgl.txt \
+		--expect "VIRGL feature: yes" \
+		--expect "PASS: virgl clear" \
+		--expect "PASS: virgl triangle" \
+		--expect "PASS: virgl cube" \
+		--expect "PASS: virgl depth" \
+		--expect "PASS: virgl textured cube" \
+		--expect "PASS: virgl present" \
+		--expect "3D backend -> virgl" -- \
+		$(QEMU) -M pc -m 2048 -smp 1 -boot order=dc -display $$disp \
+		-serial file:$(BUILD_DIR)/qemu-virgl.txt -no-reboot -cpu qemu64 -accel tcg \
+		-device virtio-vga-gl \
+		-drive file=$(DISK_IMG),format=raw,if=ide,index=0,file.locking=off \
+		-drive file=$(BUILD_DIR)/os-virgl.iso,format=raw,if=ide,index=2,media=cdrom
 
 test-qemu-gpu: $(ISO) $(DISK_IMG)
 	rm -f $(BUILD_DIR)/qemu-test.txt

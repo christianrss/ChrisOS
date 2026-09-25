@@ -3,6 +3,7 @@
 
 #include "font.h"
 #include "graphics.h"
+#include "vgpu.h"
 #include "icons.h"
 #include "input.h"
 #include "pit.h"
@@ -508,6 +509,13 @@ void ui_draw_cursor(void) {
     int x = mouse.x;
     int y = mouse.y;
 
+    if (vgpu_cursor_active()) {
+        if (g_cur_saved) {
+            ui_undraw_cursor();
+        }
+        vgpu_cursor_move(x, y);
+        return;
+    }
     ui_undraw_cursor();
     for (row = 0; row < UI_CURSOR_H; ++row) {
         for (col = 0; col < UI_CURSOR_W; ++col) {

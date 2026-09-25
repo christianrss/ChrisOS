@@ -71,6 +71,8 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/net/virtio_net.o kernel/net/net.o kernel/net/sock.o \
 	kernel/crypto/sha256.o kernel/crypto/rng.o kernel/crypto/aes.o kernel/crypto/x25519.o \
 	kernel/gfx/ac97.o kernel/gfx/hwgate.o \
+	kernel/gfx/virtq.o kernel/gfx/gpures.o kernel/gfx/virtgpu_enc.o \
+	kernel/gfx/virgl_cmd.o kernel/gfx/vgpu.o kernel/gfx/virgl_demo.o \
 	kernel/gfx/graphics.o kernel/gfx/font.o kernel/gfx/icons_tab.o kernel/gfx/icons_bin.o \
 	kernel/gfx/input.o \
 	kernel/gfx/speaker.o kernel/gfx/gfx2d.o \
@@ -161,6 +163,10 @@ $(OBJ_DIR)/kernel/gfx/voxel.o: kernel/gfx/voxel.c
 	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/kernel/gfx/gfx3d_ctx.o: kernel/gfx/gfx3d_ctx.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/virgl_demo.o: kernel/gfx/virgl_demo.c
 	@mkdir -p $(dir $@)
 	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
 
@@ -705,6 +711,25 @@ host-cfs-migrate-v2v3: tools/cfs_migrate_v2v3.c kernel/fs/cfs.c
 	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/fs \
 		-o $(HOST_BIN)/cfs_migrate_v2v3 tools/cfs_migrate_v2v3.c kernel/fs/cfs.c
 
+host-virtq-test: tools/test_virtq.c kernel/gfx/virtq.c kernel/gfx/virtq.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx \
+		tools/test_virtq.c kernel/gfx/virtq.c -o $(HOST_BIN)/test_virtq
+	$(HOST_BIN)/test_virtq
+
+host-gpures-test: tools/test_gpures.c kernel/gfx/gpures.c kernel/gfx/gpures.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx \
+		tools/test_gpures.c kernel/gfx/gpures.c -o $(HOST_BIN)/test_gpures
+	$(HOST_BIN)/test_gpures
+
+host-virgl-cmd-test: tools/test_virgl_cmd.c kernel/gfx/virgl_cmd.c kernel/gfx/virtgpu_enc.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx \
+		tools/test_virgl_cmd.c kernel/gfx/virgl_cmd.c kernel/gfx/virtgpu_enc.c \
+		-o $(HOST_BIN)/test_virgl_cmd
+	$(HOST_BIN)/test_virgl_cmd
+
 test_gfx2d: kernel/gfx/gfx2d.c kernel/gfx/gfx_fast.c tools/test_gfx2d.c kernel/gfx/gfx2d.h
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/gfx -msse2 \
@@ -1156,6 +1181,7 @@ host-gates: host-cfs-test host-cfs-v5-test host-fsck-test host-cfs-paths-test \
 	host-jit-test host-jit-vm-test host-jit-native-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
 	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates \
 	host-input-test test_keystate test_gfx2d \
+	host-virtq-test host-gpures-test host-virgl-cmd-test \
 	host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
 	host-tlb-proto-test host-klog-test host-buildinfo-test \
 	host-buildstamp-test host-meminfo-test host-pmm-cycle-test \
@@ -1455,6 +1481,16 @@ $(ISO): $(KERNEL) $(ISO_ROOT)/boot/limine/limine.conf \
 		-efi-boot-part --efi-boot-image \
 		--protective-msdos-label $(ISO_ROOT) -o $@
 	$(LIMINE_DIR)/limine bios-install $@
+
+run-virgl: $(ISO) disk-ui run-stop
+	@test -f $(DISK_IMG) || $(MAKE) disk.img
+	$(QEMU) -M pc -m $(QEMU_MEM) -smp 4 -boot order=dc \
+		-display gtk,gl=on,zoom-to-fit=on \
+		-device virtio-vga-gl \
+		-drive file=$(DISK_IMG),format=raw,if=ide,index=0 \
+		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
+		-serial stdio -no-reboot -no-shutdown \
+		-cpu qemu64 -accel kvm
 
 run: $(ISO) disk-ui run-stop
 	@test -f $(DISK_IMG) || $(MAKE) disk.img
