@@ -254,27 +254,24 @@ static void mm_tlb_retire_mask(uint32_t mask) {
         if ((mask & (1u << cpu)) == 0u) {
             continue;
         }
-        int known = 0;
-        uint32_t lapic;
         serial_puts("tlb fence cpu ");
         serial_write_u64(cpu);
         serial_puts("\n");
+        /* The worker sees the fence and halts itself. An NMI here used the
+         * APIC id table, and a wrong id halted the BSP for good. */
         smp_retire_cpu(cpu);
-        lapic = smp_lapic_of(cpu, &known);
-        if (known && cpu != smp_current_cpu()) {
-            (void)apic_ipi_nmi(lapic);
-        }
     }
 }
 
-void mm_tlb_nmi_stop(void) {
+int mm_tlb_nmi_stop(void) {
     uint32_t cpu = smp_current_cpu();
     mm_tlb_poll_cpu(cpu);
     tlb_runtime_mark_halted(cpu);
-    for (;;) {
-        __asm__ volatile ("cli");
-        __asm__ volatile ("hlt");
+    /* CPU 0 is the desktop. Halting it is the close-program freeze. */
+    if (cpu == 0u) {
+        return 0;
     }
+    return 1;
 }
 
 static int mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
@@ -283,6 +280,7 @@ static int mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
     uint32_t n;
     uint32_t i;
     uint32_t extra;
+    uint32_t spins;
 
     if (self >= SMP_CPU_CAP) {
         self = 0u;
@@ -290,26 +288,68 @@ static int mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
     /* Do not hold mm_lock here. An interrupt on this CPU that maps a page
      * would spin on that lock forever, and the ack wait would never resume.
      * mm_tlb_busy only keeps two shootdowns from publishing at once. */
+    serial_puts("close: shootdown lock self=");
+    serial_write_u64(self);
+    serial_puts(" virt=");
+    serial_write_hex(virt);
+    serial_puts(" bytes=");
+    serial_write_u64(bytes);
+    serial_puts("\n");
     tlb_shoot_lock();
+    serial_puts("close: shootdown locked\n");
     mm_tlb_reap();
     tlb_runtime_publish(self, virt, bytes);
+    tlb_runtime_log("close: published");
     n = tlb_runtime_ipi_targets(self, targets, TLB_CPU_CAP);
+    serial_puts("close: ipi n=");
+    serial_write_u64(n);
+    serial_puts("\n");
     for (i = 0u; i < n; i++) {
         int known = 0;
         uint32_t lapic = smp_lapic_of(targets[i], &known);
+        serial_puts("close: ipi cpu=");
+        serial_write_u64(targets[i]);
+        serial_puts(" lapic=");
+        serial_write_u64(lapic);
+        serial_puts(" known=");
+        serial_write_u64((uint64_t)known);
+        serial_puts("\n");
         if (known) {
             (void)apic_ipi(lapic, 0xF0u);
         }
     }
+    serial_puts("close: ipi sent\n");
+    spins = 0u;
     for (;;) {
         uint32_t fenced = 0u;
         int step = tlb_runtime_wait_step(self, &fenced);
+        /* A CPU that keeps heartbeating but never acks used to spin here
+         * forever. Fence it and let the desktop continue. */
+        if (step == 1 && spins > 2000000u) {
+            fenced |= tlb_runtime_fence_unacked(self);
+            step = 2;
+        }
         if (fenced != 0u) {
             mm_tlb_retire_mask(fenced);
         }
         if (step == 0 || step == 2) {
+            serial_puts("close: wait done step=");
+            serial_write_u64((uint64_t)step);
+            serial_puts(" spins=");
+            serial_write_u64(spins);
+            serial_puts("\n");
+            tlb_runtime_log("close: wait");
             break;
         }
+        if (spins == 0u || (spins % 250000u) == 0u) {
+            serial_puts("close: waiting spins=");
+            serial_write_u64(spins);
+            serial_puts(" step=");
+            serial_write_u64((uint64_t)step);
+            serial_puts("\n");
+            tlb_runtime_log("close: waiting");
+        }
+        spins++;
         __asm__ volatile ("pause");
     }
     /* A fenced CPU halts from its worker, outside the job it was running.
@@ -319,7 +359,13 @@ static int mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
         extra++;
         __asm__ volatile ("pause");
     }
+    serial_puts("close: reuse=");
+    serial_write_u64((uint64_t)tlb_runtime_reuse_ok());
+    serial_puts(" extra=");
+    serial_write_u64(extra);
+    serial_puts("\n");
     tlb_shoot_unlock();
+    serial_puts("close: shootdown unlock\n");
     return tlb_runtime_reuse_ok() ? 0 : -1;
 }
 
@@ -328,10 +374,15 @@ void mm_tlb_shootdown(void) {
 }
 
 int mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes) {
+    serial_puts("close: invlpg begin bytes=");
+    serial_write_u64(bytes);
+    serial_puts("\n");
     if (!mm_ready || bytes == 0u) {
+        serial_puts("close: invlpg skip\n");
         return mm_tlb_shootdown_with(0, 0);
     }
     mm_invlpg_span(virt, bytes);
+    serial_puts("close: invlpg done\n");
     return mm_tlb_shootdown_with(virt, bytes);
 }
 

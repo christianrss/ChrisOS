@@ -1,5 +1,9 @@
 #include "tlb_proto.h"
 
+#ifdef __freestanding__
+#include "serial.h"
+#endif
+
 /* Quiet polls with no heartbeat before a silent CPU is fenced. A polling
  * CPU acks from its worker loop, so this budget is only the stuck case. */
 #define TLB_RUNTIME_QUIET 2000000u
@@ -288,6 +292,34 @@ int tlb_wait_step(TlbWorld *world, uint32_t self, uint32_t *newly_fenced) {
     return 2;
 }
 
+uint32_t tlb_fence_unacked(TlbWorld *world, uint32_t self) {
+    uint32_t i;
+    uint32_t mask = 0u;
+
+    if (!world) {
+        return 0u;
+    }
+    if (self >= TLB_CPU_CAP) {
+        self = 0u;
+    }
+    for (i = 0u; i < TLB_CPU_CAP; i++) {
+        if (i == self) {
+            continue;
+        }
+        if (world->cpu[i].state != TLB_CPU_ONLINE) {
+            continue;
+        }
+        if (world->cpu[i].seen == world->gen) {
+            continue;
+        }
+        if (fence_cpu(world, i)) {
+            mask |= (1u << i);
+        }
+    }
+    recompute_reuse(world);
+    return mask;
+}
+
 int tlb_reuse_ok(const TlbWorld *world) {
     if (!world) {
         return 0;
@@ -364,9 +396,46 @@ int tlb_runtime_wait_step(uint32_t self, uint32_t *newly_fenced) {
     return tlb_wait_step(&g_tlb, self, newly_fenced);
 }
 
+uint32_t tlb_runtime_fence_unacked(uint32_t self) {
+    if (!g_tlb_ready) {
+        return 0u;
+    }
+    return tlb_fence_unacked(&g_tlb, self);
+}
+
 int tlb_runtime_reuse_ok(void) {
     if (!g_tlb_ready) {
         return 1;
     }
     return tlb_reuse_ok(&g_tlb);
 }
+
+#ifdef __freestanding__
+void tlb_runtime_log(const char *tag) {
+    uint32_t i;
+
+    serial_puts(tag ? tag : "tlb");
+    serial_puts(" gen=");
+    serial_write_u64(g_tlb.gen);
+    serial_puts(" ready=");
+    serial_write_u64((uint64_t)g_tlb_ready);
+    for (i = 0u; i < TLB_CPU_CAP; i++) {
+        if (g_tlb.cpu[i].state == TLB_CPU_ABSENT) {
+            continue;
+        }
+        serial_puts(" c");
+        serial_write_u64(i);
+        serial_puts(" st=");
+        serial_write_u64(g_tlb.cpu[i].state);
+        serial_puts(" seen=");
+        serial_write_u64(g_tlb.cpu[i].seen);
+        serial_puts(" hb=");
+        serial_write_u64(g_tlb.cpu[i].heartbeat);
+        serial_puts(" halt=");
+        serial_write_u64(g_tlb.cpu[i].halted);
+        serial_puts(" fl=");
+        serial_write_u64(g_tlb.cpu[i].flushed);
+    }
+    serial_puts("\n");
+}
+#endif

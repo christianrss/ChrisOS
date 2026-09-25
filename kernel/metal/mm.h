@@ -40,7 +40,9 @@ void mm_tlb_reap(void);
  * from the stack, which is what an IPI handler has. */
 void mm_tlb_poll_cpu(uint32_t cpu);
 /* NMI entry. Invalidates the published range and does not return. */
-void mm_tlb_nmi_stop(void);
+/* Returns 0 when this CPU must resume (the BSP). Nonzero means the
+ * caller should halt and not return to the interrupted job. */
+int mm_tlb_nmi_stop(void);
 void mm_tlb_poll(void);
 void *map_mmio_page(uint64_t phys);
 void *mm_lapic_virt(void);

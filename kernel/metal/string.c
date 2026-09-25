@@ -18,6 +18,26 @@ void *memcpy(void *dst, const void *src, size_t n) {
     return dst;
 }
 
+void *memmove(void *dst, const void *src, size_t n) {
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    size_t i;
+
+    if (d == s || n == 0) {
+        return dst;
+    }
+    if (d < s) {
+        for (i = 0; i < n; i++) {
+            d[i] = s[i];
+        }
+    } else {
+        for (i = n; i > 0; i--) {
+            d[i - 1] = s[i - 1];
+        }
+    }
+    return dst;
+}
+
 int memcmp(const void *a, const void *b, size_t n) {
     const uint8_t *p = (const uint8_t *)a;
     const uint8_t *q = (const uint8_t *)b;
@@ -49,6 +69,27 @@ char *strncpy(char *dst, const char *src, size_t n) {
         dst[i++] = 0;
     }
     return dst;
+}
+
+char *strstr(const char *haystack, const char *needle) {
+    size_t nlen;
+    size_t i;
+
+    if (needle[0] == 0) {
+        return (char *)haystack;
+    }
+    nlen = strlen(needle);
+    while (*haystack) {
+        i = 0;
+        while (i < nlen && haystack[i] == needle[i]) {
+            i++;
+        }
+        if (i == nlen) {
+            return (char *)haystack;
+        }
+        haystack++;
+    }
+    return 0;
 }
 
 int strcmp(const char *a, const char *b) {

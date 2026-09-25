@@ -158,22 +158,34 @@ void jit_free(JitBuf *buf) {
         return;
     }
     pages = buf->pages ? buf->pages : 1u;
+    serial_puts("close: jit_free pages=");
+    serial_write_u64(pages);
+    serial_puts("\n");
     if (buf->x != NULL) {
         int synced;
         virt = (uint64_t)(uintptr_t)buf->x;
+        serial_puts("close: unmap begin\n");
         for (i = 0; i < pages; ++i) {
             unmap_4k(virt + (uint64_t)i * PMM_PAGE);
         }
+        serial_puts("close: unmap done\n");
         synced = mm_tlb_shootdown_range(virt, (uint64_t)pages * PMM_PAGE) == 0;
+        serial_puts("close: shootdown rc=");
+        serial_write_u64(synced ? 0u : 1u);
+        serial_puts("\n");
         jit_va_free(virt);
         if (synced) {
+            serial_puts("close: pmm free\n");
             pmm_free_contig(buf->phys, pages);
         } else {
+            serial_puts("close: quarantine\n");
             mm_tlb_quarantine(buf->phys, pages);
         }
     } else {
+        serial_puts("close: pmm free no virt\n");
         pmm_free_contig(buf->phys, pages);
     }
+    serial_puts("close: jit_free done\n");
     buf->phys = 0;
     buf->w = NULL;
     buf->x = NULL;

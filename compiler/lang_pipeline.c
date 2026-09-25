@@ -1893,11 +1893,21 @@ int lang_kill(int slot) {
     if (!slots[slot].used && !slots[slot].dying) {
         return 0;
     }
+    serial_puts("close: kill slot=");
+    serial_write_u64((uint64_t)(uint32_t)slot);
+    serial_puts(" name=");
+    serial_puts(slots[slot].name);
+    serial_puts("\n");
     if (slots[slot].jit.phys != 0) {
         jit_free(&slots[slot].jit);
+    } else {
+        serial_puts("close: no jit\n");
     }
+    serial_puts("close: free ram\n");
     lang_free_slot_ram(slot);
+    serial_puts("close: release gfx\n");
     lang_slot_release_gfx(slot);
+    serial_puts("close: sys close\n");
     clvm_sys_close_slot(slots[slot].gfx.slot_id >= 0 ? slots[slot].gfx.slot_id
                                                     : slot);
     if (slots[slot].file) {
@@ -1906,10 +1916,12 @@ int lang_kill(int slot) {
         slots[slot].file_cap = 0;
     }
     if (slots[slot].proc_id > 0) {
+        serial_puts("close: proc destroy\n");
         proc_destroy(slots[slot].proc_id);
         slots[slot].proc_id = 0;
     }
     slots[slot].used = 0;
+    serial_puts("close: kill done\n");
     slots[slot].dying = 0;
     slots[slot].task_id = -1;
     slots[slot].name[0] = 0;
@@ -2108,6 +2120,9 @@ void lang_slot_request_close(int slot) {
     if (slot < 0 || slot >= LANG_VM_SLOTS) {
         return;
     }
+    serial_puts("close: request slot=");
+    serial_write_u64((uint64_t)(uint32_t)slot);
+    serial_puts("\n");
     slots[slot].dying = 1;
 }
 

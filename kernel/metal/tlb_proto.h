@@ -51,6 +51,9 @@ uint32_t tlb_ipi_targets(const TlbWorld *world, uint32_t self, uint32_t *out, ui
  * 2: every CPU that stayed silent past its quiet budget was fenced.
  * *newly_fenced has one bit per CPU fenced by this call. */
 int tlb_wait_step(TlbWorld *world, uint32_t self, uint32_t *newly_fenced);
+/* Fence every other online CPU that has not acked, ignoring the quiet
+ * budget. Returns a bit per CPU fenced by this call. */
+uint32_t tlb_fence_unacked(TlbWorld *world, uint32_t self);
 int tlb_reuse_ok(const TlbWorld *world);
 
 void tlb_runtime_init(void);
@@ -63,6 +66,9 @@ int tlb_runtime_pending(uint32_t cpu, uint64_t *virt, uint64_t *bytes);
 void tlb_runtime_ack(uint32_t cpu);
 uint32_t tlb_runtime_ipi_targets(uint32_t self, uint32_t *out, uint32_t cap);
 int tlb_runtime_wait_step(uint32_t self, uint32_t *newly_fenced);
+uint32_t tlb_runtime_fence_unacked(uint32_t self);
 int tlb_runtime_reuse_ok(void);
+/* One serial line: tag plus each live CPU's state, seen, and heartbeat. */
+void tlb_runtime_log(const char *tag);
 
 #endif

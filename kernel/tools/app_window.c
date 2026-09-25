@@ -6,6 +6,7 @@
 #include "graphics.h"
 #include "input.h"
 #include "lang_pipeline.h"
+#include "serial.h"
 #include "task.h"
 #include "ui.h"
 
@@ -186,6 +187,9 @@ static int app_game_chrome(Task *task, int slot) {
 
     if (close_hover && input_left_pressed()) {
         input_consume_left_press();
+        serial_puts("close: window x slot=");
+        serial_write_u64((uint64_t)(uint32_t)slot);
+        serial_puts("\n");
         task_close(task->id);
         lang_slot_request_close(slot);
         return 1;

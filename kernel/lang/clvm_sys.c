@@ -2277,6 +2277,9 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
     case 91: {
         int slot = lang_slot_of(ctx);
         Task *t = task_of_ctx(ctx);
+        serial_puts("close: syscall slot=");
+        serial_write_u64((uint64_t)(uint32_t)slot);
+        serial_puts("\n");
         if (t) {
             task_close(t->id);
         }

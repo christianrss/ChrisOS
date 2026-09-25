@@ -89,8 +89,11 @@ static void ap_c_entry(uint32_t index) {
             __asm__ volatile ("hlt");
         }
     }
-    lapic = lapic_id_read();
-    if (index < SMP_CPU_CAP) {
+    /* Limine already published this CPU's APIC id. The MMIO read is the
+     * same page on every core and can come back as the BSP id, which made
+     * a later NMI land on the desktop CPU and halt it. */
+    if (index < SMP_CPU_CAP && !g_lapic_known[index]) {
+        lapic = lapic_id_read();
         g_lapic_of_cpu[index] = lapic;
         g_lapic_known[index] = 1u;
     }
