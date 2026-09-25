@@ -1,4 +1,5 @@
 #include "serial.h"
+#include "klog.h"
 #include "port.h"
 #include "spin.h"
 
@@ -8,6 +9,7 @@ static bool serial_available;
 static Spinlock g_serial_lock;
 
 bool serial_init(void) {
+    klog_init();
     outb(COM1 + 1, 0x00);
     outb(COM1 + 3, 0x80);
     outb(COM1 + 0, 0x03);
@@ -30,6 +32,7 @@ bool serial_init(void) {
 }
 
 void serial_putc(char value) {
+    klog_putc(value);
     if (!serial_available) {
         return;
     }

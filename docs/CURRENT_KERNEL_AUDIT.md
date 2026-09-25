@@ -52,11 +52,11 @@ and sockets. User processes are BSP-only (`proc_switch` panics on an AP).
 | --- | --- | --- |
 | TLB-HALT-01 | P1 | Fenced CPU halts at the next worker iteration. No NMI. A job in progress is not preempted. |
 | TLB-QUAR-01 | P1 | Quarantine holds 128 ranges. Past that, frames are leaked on purpose and `tlb quarantine full` is logged. |
-| LIFE-01 | P1 | No 1000-cycle open/close gate with before/after PMM and heap counters. |
-| ACCT-01 | P2 | `pmm_used_pages` and `pmm_free_pages` exist. There is no `meminfo` command and no task counter. |
-| PANIC-01 | P2 | `panic` prints a string on the serial port. It does not record CPU, CR2, build id, or a backtrace. |
-| LOG-01 | P2 | No kernel ring buffer and no `SYS/LOGS/BOOT.LOG`. |
-| BUILD-01 | P2 | The boot line does not print git commit, build id, or kernel hash. |
+| LIFE-01 | P1 | `host-task-window-test` opens and closes 1000 windows and checks the live count. `host-pmm-cycle-test` allocates and frees 1000 pages. There is no combined CLVM or JIT cycle, and the window test does not use the PMM. |
+| ACCT-01 | P2 | `meminfo` prints PMM, heap, and task counts. There is no CLVM or JIT counter in that line. |
+| PANIC-01 | P2 | Panic prints CPU, CR3, RSP, build id, git, and the kernel hash slot. No backtrace. |
+| LOG-01 | P2 | `klog` is an 8 KiB ring filled from the serial writer. `dmesg` shows the tail. After ChrisFS mounts, the tail is copied to `SYS/BOOT.LOG`. That copy was not booted. |
+| BUILD-01 | P2 | Boot text includes build id, git, date, compiler, and a SHA-256 slot. The slot is filled after link by `stamp_kernel`. The hash is of the image with the slot still zero. QEMU was not booted to read it. |
 
 P0 for this pass was the shootdown that reused frames without an ack.
 That path no longer skips.

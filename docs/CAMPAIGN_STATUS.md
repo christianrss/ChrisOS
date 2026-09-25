@@ -47,6 +47,12 @@ Blocked on SH4 and SH5. No physical boot. Hardware stays unproven.
 | Gate | Result |
 | --- | --- |
 | `host-tlb-proto-test` | PASS (`tlb proto tests passed`) |
+| `host-klog-test` | PASS |
+| `host-buildinfo-test` | PASS |
+| `host-buildstamp-test` | PASS |
+| `host-meminfo-test` | PASS |
+| `host-pmm-cycle-test` | PASS |
+| `host-task-window-test` | PASS |
 | `host-job-saturate-test` | PASS |
 | `host-kthread-smp-test` | PASS |
 | Freestanding compile of `tlb_proto.c`, `mm.c`, `smp.c`, `job.c`, `jit.c` | PASS |

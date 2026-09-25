@@ -11,6 +11,7 @@
 #include "pmm.h"
 #include "proc.h"
 #include "smp.h"
+#include "buildid.h"
 
 static int g_user_exited;
 static int g_user_exit_code;
@@ -316,6 +317,10 @@ void panic_user_fault(struct irq_frame *frame, uint64_t cr2) {
     serial_write_hex(cr2);
     serial_puts(" err=");
     serial_write_hex(frame->error);
+    serial_puts(" cpu=");
+    serial_write_u64(smp_current_cpu());
+    serial_puts(" build=");
+    serial_puts(build_id());
     serial_puts(" (process ended)\n");
     g_user_exit_code = -11;
     syscall_return_to_kernel(frame);

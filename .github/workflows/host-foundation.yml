@@ -10,4 +10,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: TLB membership and worker link
-        run: make host-tlb-proto-test host-job-saturate-test host-kthread-smp-test
+        run: make host-tlb-proto-test host-klog-test host-buildinfo-test host-buildstamp-test host-meminfo-test host-pmm-cycle-test host-task-window-test host-job-saturate-test host-kthread-smp-test

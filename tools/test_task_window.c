@@ -92,7 +92,8 @@ int main(void) {
     {
         int n;
         int closed = 0;
-        for (n = 0; n < 24; ++n) {
+        int live = task_count();
+        for (n = 0; n < 1000; ++n) {
             TaskRect box = {10 + n, 10, 80, 40};
             int spawned = task_spawn(TASK_APP, box, run_task);
             if (spawned < 0) {
@@ -105,7 +106,9 @@ int main(void) {
                 return 1;
             }
         }
-        if (!check(closed == 24, "open/close stress"))
+        if (!check(closed == 1000, "open/close stress"))
+            return 1;
+        if (!check(task_count() == live, "close leaked a task"))
             return 1;
     }
 

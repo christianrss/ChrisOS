@@ -20,6 +20,9 @@
 #include "sock.h"
 #include "port.h"
 #include "heap.h"
+#include "klog.h"
+#include "meminfo.h"
+#include "pmm.h"
 #include "kcc.h"
 #include "chrisasm.h"
 #include "chrisld.h"
@@ -150,13 +153,65 @@ static int ls_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
     return 0;
 }
 
+static void cmd_dmesg(void) {
+    static char buf[2048];
+    uint32_t n;
+    uint32_t i = 0u;
+
+    n = klog_copy(buf, (uint32_t)sizeof buf);
+    while (i < n) {
+        char line[SH_COLS];
+        int col = 0;
+        while (i < n && buf[i] != '\n' && col < SH_COLS - 1) {
+            if (buf[i] != '\r') {
+                line[col++] = buf[i];
+            }
+            i++;
+        }
+        if (i < n && buf[i] == '\n') {
+            i++;
+        }
+        line[col] = 0;
+        if (col > 0) {
+            sh_emit(line);
+        }
+    }
+}
+
+static void cmd_meminfo(void) {
+    char text[256];
+    int i = 0;
+    int n;
+
+    n = mem_format(text, sizeof text, pmm_used_pages(), pmm_free_pages(),
+                   heap_used_bytes(), heap_free_bytes(), task_count());
+    if (n < 0) {
+        sh_emit("meminfo fail");
+        return;
+    }
+    while (i < n) {
+        char line[SH_COLS];
+        int col = 0;
+        while (i < n && text[i] != '\n' && col < SH_COLS - 1) {
+            line[col++] = text[i++];
+        }
+        if (i < n && text[i] == '\n') {
+            i++;
+        }
+        line[col] = 0;
+        if (col > 0) {
+            sh_emit(line);
+        }
+    }
+}
+
 static void cmd_help(void) {
     sh_emit("help ls cd pwd cat mkdir rmdir");
     sh_emit("rm mv ed cc kcc as mk make");
     sh_emit("run jit runelf ps kill clear");
     sh_emit("cc .CC/.LST jit .CVA run .CLV");
     sh_emit("make -f Makefile  as .S kcc .C");
-    sh_emit("ticks net bench reboot");
+    sh_emit("ticks net bench reboot dmesg meminfo");
 }
 
 static void cmd_ls(void) {
@@ -785,6 +840,8 @@ static void sh_exec(const char *line) {
     else if (sh_eq(cmd, "ticks")) cmd_ticks();
     else if (sh_eq(cmd, "bench")) cmd_bench();
     else if (sh_eq(cmd, "net")) cmd_net();
+    else if (sh_eq(cmd, "dmesg")) cmd_dmesg();
+    else if (sh_eq(cmd, "meminfo")) cmd_meminfo();
     else sh_emit("unknown"), g_cmd_ok = 0;
 }
 
