@@ -37,13 +37,37 @@ It does not emit a relocation.
 `.text` and `global`. Blank lines, `#` comments, and `;` comments.
 Any other mnemonic fails.
 
+## Encodings added for the kernel subset
+
+`host-kcc-test` checks the bytes. `host-chrisasm-test` does not list
+every one of these.
+
+| Mnemonic | Encoding |
+| --- | --- |
+| `cli` | `fa` |
+| `sti` | `fb` |
+| `hlt` | `f4` |
+| `pause` | `f3 90` |
+| `not r64` | `REX.W f7 /2` (`not rax` is `48 f7 d0`) |
+| `in al, dx` | `ec` |
+| `in ax, dx` | `66 ed` |
+| `in eax, dx` | `ed` |
+| `out dx, al` | `ee` |
+| `out dx, ax` | `66 ef` |
+| `out dx, eax` | `ef` |
+
+A same-section `.L` branch is patched in the assembler. It is not a
+ChrisO symbol. A `.L` label in another section stays a symbol so ChrisLd
+can apply the relocation. `invlpg`, `iretq`, and `mov` to or from a
+control register are still rejected.
+
 ## Not implemented
 
-`lea`, arithmetic and logical ops, shifts, `cmp`/`test`, `jmp` and the
-conditional jumps, `cli`, `sti`, `hlt`, `int`, `iretq`, `sysretq`,
-`in`, `out`, `lgdt`, `lidt`, `ltr`, `mov` to or from `cr0`/`cr2`/`cr3`/`cr4`,
-`invlpg`, `cpuid`, `rdmsr`, `wrmsr`, `xchg`, `lock`, `fxsave`/`fxrstor`,
-and SSE.
+`int`, `iretq`, `sysretq`, `lgdt`, `lidt`, `ltr`, `mov` to or from
+`cr0`/`cr2`/`cr3`/`cr4`, `invlpg`, `cpuid`, `rdmsr`, `wrmsr`, `xchg`,
+`lock`, `fxsave`/`fxrstor`, and SSE. The older rows above this section
+describe an earlier assembler. `lea`, arithmetic, `cmp`, and `jmp` do
+emit bytes in the current source.
 
 Addressing: `[rax]`, `[rax+8]`, `[rbp-16]`, `[rax+rcx*4]`, `symbol`,
 `symbol+offset`.

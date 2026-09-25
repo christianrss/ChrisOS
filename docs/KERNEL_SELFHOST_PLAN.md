@@ -9,10 +9,10 @@ starting tree is `docs/NATIVE_TOOLCHAIN_AUDIT.md`.
 | Level | Input | Gate | Status |
 | --- | --- | --- | --- |
 | 0 | one function, literal `outb`, integer `return` | `host-kcc-kernel-l0` | fixture is `tools/kcc_fixtures/level0.c`; the target is an alias of `host-kcc-test` |
-| 1 | `kernel/metal/serial.c`, `kernel/metal/klog.c`, and port/spin stubs | `host-kcc-test` | host gate compiles both files and links them. `port.c` is not compiled |
-| 2 | further small `kernel/metal` C files that stay inside the profile | `host-kcc-kernel-l2` | not started |
-| 3 | PMM | `host-kcc-kernel-l3` | not started |
-| 4 | heap | `host-kcc-kernel-l4` | not started |
+| 1 | `kernel/metal/serial.c`, `kernel/metal/klog.c`, and port/spin stubs | `host-kcc-test` | host gate compiles both files and links them. `port.c` itself now compiles in the same gate |
+| 2 | further small `kernel/metal` C files that stay inside the profile | `host-kcc-kernel-l2` | the separate target does not exist. `host-kcc-test` now compiles `acpi.c`, `apic.c`, `elf.c`, `ioapic.c`, `job.c`, `pci.c`, `pit.c`, `meminfo.c`, `string.c`, and `tlb_proto.c` |
+| 3 | PMM | `host-kcc-kernel-l3` | not started. `pmm.c` still includes `limine.h` |
+| 4 | heap | `host-kcc-kernel-l4` | the separate target does not exist. `kernel/metal/heap.c` compiles inside `host-kcc-test` |
 | 5 | filesystem helpers | `host-kcc-kernel-l5` | not started |
 
 The level-0 fixture stays `tools/kcc_fixtures/level0.c`. `host-kcc-test`
