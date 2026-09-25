@@ -258,6 +258,90 @@ int main(void) {
             return 1;
         }
     }
+    {
+        static const char *need[] = {
+            "memset", "memcpy", "memcmp", "strlen", "strncpy", "strcmp", "strncmp"
+        };
+        unsigned i;
+        char *ssrc = read_file("kernel/metal/string.c");
+        if (!ssrc) {
+            fprintf(stderr, "cannot read string.c\n");
+            return 1;
+        }
+        if (kcc_compile_named("kernel/metal/string.c", ssrc, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "string.c failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            free(ssrc);
+            return 1;
+        }
+        free(ssrc);
+        for (i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
+            if (!find_sym(&img, need[i])) {
+                fprintf(stderr, "string.c missing %s\n", need[i]);
+                return 1;
+            }
+        }
+    }
+    {
+        static const char layout[] =
+            "typedef struct Pair {\n"
+            "    uint8_t a;\n"
+            "    uint32_t b;\n"
+            "} Pair;\n"
+            "typedef struct __attribute__((packed)) Tight {\n"
+            "    uint8_t a;\n"
+            "    uint32_t b;\n"
+            "} Tight;\n"
+            "uint32_t getb(Pair *p) { return p->b; }\n"
+            "uint32_t gett(Tight *p) { return p->b; }\n";
+        const char *as;
+        if (kcc_compile_named("layout.c", layout, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "layout failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            return 1;
+        }
+        as = kcc_last_asm();
+        if (!strstr(as, "getb:") || !strstr(as, "mov rcx, 4") || !strstr(as, "mov rcx, 1")) {
+            fprintf(stderr, "struct layout asm:\n%s\n", as);
+            return 1;
+        }
+    }
+    {
+        char *msrc = read_file("kernel/metal/meminfo.c");
+        char *psrc = read_file("kernel/metal/pit.c");
+        if (!msrc || !psrc) {
+            fprintf(stderr, "cannot read meminfo.c or pit.c\n");
+            free(msrc);
+            free(psrc);
+            return 1;
+        }
+        if (kcc_compile_named("kernel/metal/meminfo.c", msrc, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "meminfo.c failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            free(msrc);
+            free(psrc);
+            return 1;
+        }
+        if (!find_sym(&img, "mem_format")) {
+            fprintf(stderr, "meminfo.c missing mem_format\n");
+            free(msrc);
+            free(psrc);
+            return 1;
+        }
+        if (kcc_compile_named("kernel/metal/pit.c", psrc, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "pit.c failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            free(msrc);
+            free(psrc);
+            return 1;
+        }
+        free(msrc);
+        free(psrc);
+    }
     puts("test_kcc: ok");
     return 0;
 }
