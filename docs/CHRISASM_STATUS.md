@@ -55,19 +55,31 @@ every one of these.
 | `out dx, al` | `ee` |
 | `out dx, ax` | `66 ef` |
 | `out dx, eax` | `ef` |
+| `mov rax, cr2` | `0f 20 d0` |
+| `mov rax, cr3` | `0f 20 d8` |
+| `mov cr3, rax` | `0f 22 d8` |
+| `invlpg [rax]` | `0f 01 38` |
+| `lidt [rax]` | `0f 01 18` |
+| `lgdt [rax]` | `0f 01 10` |
+| `lretq` | `48 cb` |
+| `iretq` | `48 cf` |
+| `str ax` | `66 0f 00 c8` |
+| `ltr ax` | `0f 00 d8` |
+| `lock cmpxchg dword [rcx], edx` | `f0 0f b1 11` |
+| `lock xadd dword [rcx], eax` | `f0 0f c1 01` |
 
 A same-section `.L` branch is patched in the assembler. It is not a
 ChrisO symbol. A `.L` label in another section stays a symbol so ChrisLd
-can apply the relocation. `invlpg`, `iretq`, and `mov` to or from a
-control register are still rejected.
+can apply the relocation. The bytes above match a GCC or GAS dump of the
+same instruction. REX.W is omitted on the control-register moves, which
+is what GCC emits in long mode.
 
 ## Not implemented
 
-`int`, `iretq`, `sysretq`, `lgdt`, `lidt`, `ltr`, `mov` to or from
-`cr0`/`cr2`/`cr3`/`cr4`, `invlpg`, `cpuid`, `rdmsr`, `wrmsr`, `xchg`,
-`lock`, `fxsave`/`fxrstor`, and SSE. The older rows above this section
-describe an earlier assembler. `lea`, arithmetic, `cmp`, and `jmp` do
-emit bytes in the current source.
+`int`, `sysretq`, `mov` to or from `cr0`/`cr4`, `cpuid`, `rdmsr`,
+`wrmsr`, `xchg`, `fxsave`/`fxrstor`, and SSE. The older rows above this
+section describe an earlier assembler. `lea`, arithmetic, `cmp`, and
+`jmp` do emit bytes in the current source.
 
 Addressing: `[rax]`, `[rax+8]`, `[rbp-16]`, `[rax+rcx*4]`, `symbol`,
 `symbol+offset`.

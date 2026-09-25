@@ -35,11 +35,17 @@ It compiles `kernel/metal/string.c` (`memset`, `memcpy`, `memcmp`,
 the stack). A layout fixture checks that `Pair.b` is at offset 4 and a
 packed `Tight.b` is at offset 1.
 
-It also compiles these real files and checks one exported symbol in each:
-`acpi.c`, `apic.c`, `elf.c`, `heap.c`, `ioapic.c`, `job.c`, `pci.c`,
-`port.c`, and `tlb_proto.c`. `port.c` must contain the bytes for
-`in al,dx`, `in ax,dx`, `in eax,dx`, `out dx,al`, `out dx,ax`,
-`out dx,eax`, and `hlt`.
+It also compiles every `kernel/metal/*.c` file and checks one exported
+symbol in each, including `bootinfo.c`, `pmm.c`, `gdt.c`, `mm.c`,
+`smp.c`, `spin.c`, `start.c` (`kstart`), and `user_enter.c`. `port.c`
+must contain the bytes for `in al,dx`, `in ax,dx`, `in eax,dx`,
+`out dx,al`, `out dx,ax`, `out dx,eax`, and `hlt`. `bootinfo.c` must
+start its data section with the Limine requests marker
+`ae d1 e7 9d b3 f4 b8 f6`. `gdt.c` must contain `lgdt [rax]` (`0f 01 10`),
+`push 8` (`6a 08`), `lretq` (`48 cb`), `mov ax, 0x10` (`66 b8 10 00`),
+and `str ax` (`66 0f 00 c8`). `spin.c` must contain
+`lock cmpxchg dword [rcx], edx` (`f0 0f b1 11`). `user_enter.c` must
+contain `iretq` (`48 cf`).
 
 A subset fixture checks four things that kernel C actually uses:
 
@@ -52,8 +58,18 @@ A subset fixture checks four things that kernel C actually uses:
   `_Static_assert(sizeof(uint32_t) == 4)` passes. A false assert fails.
   An assert whose expression is not an integer constant fails.
 - `__asm__ volatile` accepts `cli`, `sti`, `hlt`, `pause`, an empty
-  barrier, and the `port.c` `inb`/`inw`/`inl`/`outb`/`outw`/`outl`
-  templates. `mov %%cr3` and `__sync_fetch_and_add` fail.
+  barrier, the `port.c` `in`/`out` templates, `mov %%cr2`/`%%cr3`/`%%rsp`,
+  `mov` into `%%cr3`, `invlpg (%0)`, `lidt %0`, and `str %0`. The fixed
+  multi-instruction blocks in `gdt.c`, `smp.c`, `kthread.c`, and
+  `user_enter.c` are encoded instruction by instruction. Any other
+  template, including `iretq` alone, still fails.
+- `__sync_bool_compare_and_swap`, `__sync_fetch_and_add`, and
+  `__sync_lock_release` on `uint32_t *` or `uint64_t *` emit `lock cmpxchg`,
+  `lock xadd`, and a zero store. Other `__sync_*` and `__atomic_*` builtins
+  fail. `__builtin_return_address(0)` is `mov rax, [rbp+8]` because every
+  function has that frame. Any other level fails.
+- `float` is a 4-byte field type so `math3d.h` can be included. Loading or
+  storing a float value fails. Float is not implemented as an integer.
 
 `sizeof(int)` is 8 in this compiler. `uint32_t` is 4. `int` was already
 8 bytes before `sizeof` existed. Do not treat `sizeof(int)` as 4.
@@ -62,15 +78,12 @@ Passing this gate does not mark SH4. Nothing here is booted.
 
 ## Still outside the gate
 
-These `kernel/metal` files still fail on the host: `bootinfo.c`,
-`buildid.c`, `gdt.c`, `idt.c`, `irq.c`, `kcc_job.c`, `kthread.c`, `mm.c`,
-`panic.c`, `pmm.c`, `proc.c`, `ps2.c`, `smp.c`, `spin.c`, `start.c`,
-`syscall.c`, and `user_enter.c`.
-
-The stops that remain are `limine.h` (the include path and `#if`), an
-empty `extern` array, a global brace initializer, `extern void (*name[N])(void)`,
-`__sync_*` / `__builtin_*`, and inline asm this subset does not accept
-(`mov %%cr3`, `mov %%cr2`, `mov %%rsp`, `invlpg`, `lidt`, `iretq`, and
-multi-instruction templates). A global array still accepts a bound and a
-semicolon. An initializer on a global array is rejected. ChrisLd has not
-linked `BIN/KERNEL.ELF`. There is no GCC differential run.
+A host probe of the makefile's C list compiled 50 of 112 translation
+units. The other 62 still fail. The repeated stops are a `union` in
+`kernel/wm/task.h`, a numeric brace initializer (`sha256.c`, `font.c`),
+`#include <string.h>`, a full 1536-byte frame, float arithmetic in the
+GFX units, and `kernel/gfx/sse_init.c`. `kernel/metal/idt_stubs.asm` is
+still NASM. Section attributes are skipped, so the Limine requests land
+in `.data` and ChrisLd does not yet place them in a requests `PT_LOAD`.
+ChrisLd has not linked `BIN/KERNEL.ELF`. There is no GCC differential
+run and no QEMU boot of this object code. SH4 is not proven.
