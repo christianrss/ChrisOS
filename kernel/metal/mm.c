@@ -254,10 +254,26 @@ static void mm_tlb_retire_mask(uint32_t mask) {
         if ((mask & (1u << cpu)) == 0u) {
             continue;
         }
+        int known = 0;
+        uint32_t lapic;
         serial_puts("tlb fence cpu ");
         serial_write_u64(cpu);
         serial_puts("\n");
         smp_retire_cpu(cpu);
+        lapic = smp_lapic_of(cpu, &known);
+        if (known && cpu != smp_current_cpu()) {
+            (void)apic_ipi_nmi(lapic);
+        }
+    }
+}
+
+void mm_tlb_nmi_stop(void) {
+    uint32_t cpu = smp_current_cpu();
+    mm_tlb_poll_cpu(cpu);
+    tlb_runtime_mark_halted(cpu);
+    for (;;) {
+        __asm__ volatile ("cli");
+        __asm__ volatile ("hlt");
     }
 }
 

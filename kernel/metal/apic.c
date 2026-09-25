@@ -42,6 +42,23 @@ int apic_ipi(uint32_t dest_lapic, uint8_t vector) {
     return -1;
 }
 
+int apic_ipi_nmi(uint32_t dest_lapic) {
+    uint32_t spins;
+    if (!g_apic_on || !g_lapic) {
+        return -1;
+    }
+    g_lapic[0x310u / 4u] = dest_lapic << 24;
+    /* Delivery mode NMI (100b), level assert. The vector field is ignored. */
+    g_lapic[0x300u / 4u] = (4u << 8) | (1u << 14);
+    for (spins = 0u; spins < 100000u; spins++) {
+        if ((g_lapic[0x300u / 4u] & (1u << 12)) == 0u) {
+            return 0;
+        }
+        __asm__ volatile ("pause");
+    }
+    return -1;
+}
+
 void apic_init(void) {
     if (g_apic_on) {
         return;

@@ -84,6 +84,22 @@ isr_common:
     add rsp, 16
     iretq
 
+global nmi_entry
+extern mm_tlb_nmi_stop
+
+; Vector 2. Runs on the interrupted stack so smp_current_cpu still sees
+; the AP stack. Does not return to the job that missed the shootdown.
+nmi_entry:
+    cld
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    call mm_tlb_nmi_stop
+.hang:
+    cli
+    hlt
+    jmp .hang
+
 section .rodata
 align 8
 isr_stub_table:
