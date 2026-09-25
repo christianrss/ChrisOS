@@ -6,6 +6,7 @@
 #include "serial.h"
 #include "smp.h"
 #include "spin.h"
+#include "tlb_proto.h"
 
 typedef struct {
     JobFn fn;
@@ -50,6 +51,10 @@ int job_submit(JobFn fn, void *arg) {
 void job_worker_once(uint32_t cpu_index) {
     Job job;
 
+    if (tlb_runtime_is_fenced(cpu_index)) {
+        tlb_runtime_mark_halted(cpu_index);
+        return;
+    }
     mm_tlb_poll_cpu(cpu_index);
     job.fn = 0;
     job.arg = 0;
@@ -76,6 +81,12 @@ void smp_release_ap_irqs(void) {
 void job_worker_forever(uint32_t cpu_index) {
     int irqs = 0;
     for (;;) {
+        if (tlb_runtime_is_fenced(cpu_index)) {
+            tlb_runtime_mark_halted(cpu_index);
+            for (;;) {
+                __asm__ volatile ("hlt");
+            }
+        }
         if (!irqs && g_ap_irq_enable) {
             if (!bootflag_noapic()) {
                 apic_enable_local();

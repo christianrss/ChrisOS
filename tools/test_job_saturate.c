@@ -5,6 +5,8 @@
 volatile uint32_t cpu_online_count = 1u;
 
 void mm_tlb_poll(void) {}
+void mm_tlb_poll_cpu(uint32_t cpu) { (void)cpu; }
+int bootflag_noapic(void) { return 1; }
 void apic_enable_local(void) {}
 
 void panic(const char *message) {

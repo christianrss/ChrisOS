@@ -21,5 +21,8 @@ uint32_t smp_current_cpu(void);
 /* LAPIC id recorded at boot for this cpu index. Returns 0 and *known=0
  * when the slot was never published. */
 uint32_t smp_lapic_of(uint32_t cpu, int *known);
+/* Drop one CPU from the online count after it has been fenced. The count
+ * stays at least 1. The TLB set, not this count, decides who must ack. */
+void smp_retire_cpu(uint32_t cpu);
 
 #endif

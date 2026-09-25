@@ -1,11 +1,14 @@
 #include "mm.h"
 #include "apic.h"
 #include "smp.h"
+#include "tlb_proto.h"
 #include "bootinfo.h"
 #include "panic.h"
 #include "pmm.h"
 #include "serial.h"
 #include "spin.h"
+
+_Static_assert(SMP_CPU_CAP == TLB_CPU_CAP, "TLB membership must cover every CPU slot");
 
 #define MM_PS        (1ull << 7)
 #define MM_ADDR_MASK 0x000ffffffffff000ull
@@ -19,12 +22,11 @@ static void *mm_lapic_mapped;
 static int mm_ready;
 static Spinlock mm_lock;
 static volatile uint32_t mm_tlb_busy;
-static volatile uint64_t mm_tlb_gen;
-static volatile uint64_t mm_tlb_seen[SMP_CPU_CAP];
-/* Published before mm_tlb_gen so a CPU that observes the new generation
- * also observes the range. x86 store order makes that pair safe. */
-static volatile uint64_t mm_tlb_virt;
-static volatile uint64_t mm_tlb_bytes;
+
+#define MM_QUAR_CAP 128u
+static uint64_t mm_quar_phys[MM_QUAR_CAP];
+static uint64_t mm_quar_pages[MM_QUAR_CAP];
+static uint32_t mm_quar_n;
 
 static void mm_invlpg_span(uint64_t virt, uint64_t bytes) {
     uint64_t page;
@@ -178,22 +180,55 @@ void map_4k_nosync(uint64_t virt, uint64_t phys, uint64_t flags) {
     map_4k_ex(virt, phys, flags, 0);
 }
 
+void mm_tlb_reap(void) {
+    uint32_t i;
+
+    if (mm_quar_n == 0u || !tlb_runtime_reuse_ok()) {
+        return;
+    }
+    for (i = 0; i < mm_quar_n; i++) {
+        pmm_free_contig(mm_quar_phys[i], mm_quar_pages[i]);
+        mm_quar_phys[i] = 0u;
+        mm_quar_pages[i] = 0u;
+    }
+    mm_quar_n = 0u;
+}
+
+void mm_tlb_quarantine(uint64_t phys, uint64_t pages) {
+    if (phys == 0u || pages == 0u) {
+        return;
+    }
+    if (tlb_runtime_reuse_ok()) {
+        pmm_free_contig(phys, pages);
+        return;
+    }
+    if (mm_quar_n >= MM_QUAR_CAP) {
+        serial_puts("tlb quarantine full\n");
+        return;
+    }
+    mm_quar_phys[mm_quar_n] = phys;
+    mm_quar_pages[mm_quar_n] = pages;
+    mm_quar_n++;
+    serial_puts("tlb quarantine\n");
+}
+
 void mm_tlb_poll_cpu(uint32_t cpu) {
-    uint64_t gen;
-    uint64_t virt;
-    uint64_t bytes;
+    uint64_t virt = 0u;
+    uint64_t bytes = 0u;
+    int need;
 
     if (cpu >= SMP_CPU_CAP) {
         cpu = 0u;
     }
-    gen = mm_tlb_gen;
-    if (mm_tlb_seen[cpu] == gen) {
-        return;
+    need = tlb_runtime_pending(cpu, &virt, &bytes);
+    tlb_runtime_heartbeat(cpu);
+    if (need) {
+        mm_invlpg_span(virt, bytes);
+        tlb_runtime_ack(cpu);
     }
-    virt = mm_tlb_virt;
-    bytes = mm_tlb_bytes;
-    mm_invlpg_span(virt, bytes);
-    mm_tlb_seen[cpu] = gen;
+    if (cpu == 0u) {
+        mm_tlb_reap();
+    }
 }
 
 void mm_tlb_poll(void) {
@@ -212,11 +247,26 @@ static void tlb_shoot_unlock(void) {
     mm_tlb_busy = 0u;
 }
 
-static void mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
+static void mm_tlb_retire_mask(uint32_t mask) {
+    uint32_t cpu;
+
+    for (cpu = 0u; cpu < TLB_CPU_CAP; cpu++) {
+        if ((mask & (1u << cpu)) == 0u) {
+            continue;
+        }
+        serial_puts("tlb fence cpu ");
+        serial_write_u64(cpu);
+        serial_puts("\n");
+        smp_retire_cpu(cpu);
+    }
+}
+
+static int mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
     uint32_t self = smp_current_cpu();
-    uint32_t online;
-    uint32_t spins = 0u;
-    uint64_t gen;
+    uint32_t targets[TLB_CPU_CAP];
+    uint32_t n;
+    uint32_t i;
+    uint32_t extra;
 
     if (self >= SMP_CPU_CAP) {
         self = 0u;
@@ -225,71 +275,48 @@ static void mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
      * would spin on that lock forever, and the ack wait would never resume.
      * mm_tlb_busy only keeps two shootdowns from publishing at once. */
     tlb_shoot_lock();
-    mm_tlb_virt = virt;
-    mm_tlb_bytes = bytes;
-    __asm__ volatile ("" ::: "memory");
-    gen = mm_tlb_gen + 1u;
-    if (gen == 0u) {
-        gen = 1u;
-    }
-    mm_tlb_gen = gen;
-    /* This CPU already invlpg'd. Reloading CR3 here killed the machine. */
-    mm_tlb_seen[self] = gen;
-    online = cpu_online_count;
-    if (online < 1u) {
-        online = 1u;
-    }
-    if (online > SMP_CPU_CAP) {
-        online = SMP_CPU_CAP;
-    }
-    if (online > 1u) {
-        uint32_t i;
-        for (i = 0u; i < online; i++) {
-            int known = 0;
-            uint32_t lapic;
-            if (i == self) {
-                continue;
-            }
-            lapic = smp_lapic_of(i, &known);
-            if (!known) {
-                continue;
-            }
+    mm_tlb_reap();
+    tlb_runtime_publish(self, virt, bytes);
+    n = tlb_runtime_ipi_targets(self, targets, TLB_CPU_CAP);
+    for (i = 0u; i < n; i++) {
+        int known = 0;
+        uint32_t lapic = smp_lapic_of(targets[i], &known);
+        if (known) {
             (void)apic_ipi(lapic, 0xF0u);
         }
     }
     for (;;) {
-        uint32_t i;
-        uint32_t ready = 0u;
-        for (i = 0u; i < online; i++) {
-            if (mm_tlb_seen[i] == gen) {
-                ready++;
-            }
+        uint32_t fenced = 0u;
+        int step = tlb_runtime_wait_step(self, &fenced);
+        if (fenced != 0u) {
+            mm_tlb_retire_mask(fenced);
         }
-        if (ready >= online) {
-            break;
-        }
-        /* Workers ack from their loop. A CPU that never answers must not
-         * panic the desktop: closing a program is what reaches this wait. */
-        if (++spins > 2000000u) {
-            serial_puts("tlb shootdown skip\n");
+        if (step == 0 || step == 2) {
             break;
         }
         __asm__ volatile ("pause");
     }
+    /* A fenced CPU halts from its worker, outside the job it was running.
+     * Frames stay quarantined until that halt is visible. */
+    extra = 0u;
+    while (!tlb_runtime_reuse_ok() && extra < 100000u) {
+        extra++;
+        __asm__ volatile ("pause");
+    }
     tlb_shoot_unlock();
+    return tlb_runtime_reuse_ok() ? 0 : -1;
 }
 
 void mm_tlb_shootdown(void) {
-    mm_tlb_shootdown_with(0, 0);
+    (void)mm_tlb_shootdown_with(0, 0);
 }
 
-void mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes) {
+int mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes) {
     if (!mm_ready || bytes == 0u) {
-        mm_tlb_shootdown_with(0, 0);
-        return;
+        return mm_tlb_shootdown_with(0, 0);
     }
     mm_invlpg_span(virt, bytes);
-    mm_tlb_shootdown_with(virt, bytes);
+    return mm_tlb_shootdown_with(virt, bytes);
 }
 
 void unmap_4k(uint64_t virt) {
@@ -611,6 +638,7 @@ void mm_init(void) {
     uint64_t fb_phys;
 
     spin_init(&mm_lock);
+    tlb_runtime_init();
     __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
     mm_cr3_phys = cr3 & MM_ADDR_MASK;
     mmio_next = MMIO_WINDOW;
