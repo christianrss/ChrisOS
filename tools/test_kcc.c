@@ -396,16 +396,20 @@ int main(void) {
         static const char *paths[] = {
             "kernel/metal/acpi.c", "kernel/metal/apic.c", "kernel/metal/elf.c",
             "kernel/metal/heap.c", "kernel/metal/ioapic.c", "kernel/metal/job.c",
-            "kernel/metal/bootinfo.c", "kernel/metal/buildid.c", "kernel/metal/kcc_job.c",
+            "kernel/metal/bootinfo.c", "kernel/metal/buildid.c", "kernel/metal/gdt.c",
+            "kernel/metal/idt.c", "kernel/metal/irq.c", "kernel/metal/kcc_job.c",
+            "kernel/metal/kthread.c", "kernel/metal/mm.c", "kernel/metal/panic.c",
             "kernel/metal/pci.c", "kernel/metal/pmm.c", "kernel/metal/port.c",
-            "kernel/metal/proc.c", "kernel/metal/ps2.c", "kernel/metal/syscall.c",
-            "kernel/metal/tlb_proto.c"
+            "kernel/metal/proc.c", "kernel/metal/ps2.c", "kernel/metal/smp.c",
+            "kernel/metal/spin.c",             "kernel/metal/syscall.c", "kernel/metal/tlb_proto.c",
+            "kernel/metal/user_enter.c", "kernel/metal/start.c"
         };
         static const char *syms[] = {
             "acpi_probe", "apic_ipi_nmi", "elf_load", "kmalloc", "ioapic_init",
-            "job_worker_forever", "bootinfo_init", "build_info_log", "kcc_job_submit_path",
-            "pci_read", "pmm_alloc", "inb", "proc_init", "ps2_init", "syscall_init",
-            "tlb_runtime_init"
+            "job_worker_forever", "bootinfo_init", "build_info_log", "gdt_init",
+            "idt_load", "pic_init", "kcc_job_submit_path", "kthread_create", "mm_init",
+            "panic", "pci_read", "pmm_alloc", "inb", "proc_init", "ps2_init", "smp_init",
+            "spin_lock", "syscall_init", "tlb_runtime_init", "enter_user", "kstart"
         };
         unsigned i;
         for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
@@ -436,6 +440,33 @@ int main(void) {
                     !text_has(&img, in_eax, 1) || !text_has(&img, out_eax, 1) ||
                     !text_has(&img, hlt, 1)) {
                     fprintf(stderr, "port.c missing in/out/hlt bytes\n");
+                    return 1;
+                }
+            }
+            if (strcmp(syms[i], "gdt_init") == 0) {
+                static const uint8_t lgdt[] = {0x0f, 0x01, 0x10};
+                static const uint8_t push8[] = {0x6a, 0x08};
+                static const uint8_t lretq[] = {0x48, 0xcb};
+                static const uint8_t movax[] = {0x66, 0xb8, 0x10, 0x00};
+                static const uint8_t strax[] = {0x66, 0x0f, 0x00, 0xc8};
+                if (!text_has(&img, lgdt, 3) || !text_has(&img, push8, 2) ||
+                    !text_has(&img, lretq, 2) || !text_has(&img, movax, 4) ||
+                    !text_has(&img, strax, 4)) {
+                    fprintf(stderr, "gdt.c missing lgdt/lretq/str bytes\n");
+                    return 1;
+                }
+            }
+            if (strcmp(syms[i], "spin_lock") == 0) {
+                static const uint8_t cas[] = {0xf0, 0x0f, 0xb1, 0x11};
+                if (!text_has(&img, cas, 4)) {
+                    fprintf(stderr, "spin.c missing lock cmpxchg\n");
+                    return 1;
+                }
+            }
+            if (strcmp(syms[i], "enter_user") == 0) {
+                static const uint8_t iretq[] = {0x48, 0xcf};
+                if (!text_has(&img, iretq, 2)) {
+                    fprintf(stderr, "user_enter.c missing iretq\n");
                     return 1;
                 }
             }
@@ -607,16 +638,73 @@ int main(void) {
             return 1;
         }
     }
+    {
+        static const char src[] =
+            "uint64_t read_crs(void) {\n"
+            "    uint64_t v;\n"
+            "    __asm__ volatile (\"mov %%cr3, %0\" : \"=r\"(v));\n"
+            "    __asm__ volatile (\"mov %%cr2, %0\" : \"=r\"(v));\n"
+            "    __asm__ volatile (\"mov %%rsp, %0\" : \"=r\"(v));\n"
+            "    return v;\n"
+            "}\n"
+            "void write_cr(uint64_t v, uint64_t page) {\n"
+            "    __asm__ volatile (\"mov %0, %%cr3\" : : \"r\"(v) : \"memory\");\n"
+            "    __asm__ volatile (\"invlpg (%0)\" : : \"r\"(page) : \"memory\");\n"
+            "}\n"
+            "struct IdtPointer { uint16_t limit; uint64_t base; };\n"
+            "struct IdtPointer idt_pointer;\n"
+            "void load_idt(void) {\n"
+            "    __asm__ volatile (\"lidt %0\" : : \"m\"(idt_pointer) : \"memory\");\n"
+            "}\n"
+            "int cas32(uint32_t *p, uint32_t e, uint32_t d) {\n"
+            "    return __sync_bool_compare_and_swap(p, e, d);\n"
+            "}\n"
+            "uint32_t add32(uint32_t *p, uint32_t d) {\n"
+            "    return (uint32_t)__sync_fetch_and_add(p, d);\n"
+            "}\n"
+            "void rel32(uint32_t *p) { __sync_lock_release(p); }\n"
+            "uint64_t retaddr(void) { return (uint64_t)__builtin_return_address(0); }\n";
+        static const uint8_t cr3[] = {0x0f, 0x20, 0xd8};
+        static const uint8_t cr2[] = {0x0f, 0x20, 0xd0};
+        static const uint8_t wr[] = {0x0f, 0x22, 0xd8};
+        static const uint8_t inv[] = {0x0f, 0x01, 0x38};
+        static const uint8_t lid[] = {0x0f, 0x01, 0x18};
+        static const uint8_t cas[] = {0xf0, 0x0f, 0xb1, 0x11};
+        static const uint8_t xadd[] = {0xf0, 0x0f, 0xc1, 0x01};
+        static const uint8_t sete[] = {0x0f, 0x94, 0xc0};
+        static const uint8_t zx[] = {0x0f, 0xb6, 0xc0};
+        static const uint8_t ra[] = {0x48, 0x8b, 0x45, 0x08};
+        static const uint8_t rel[] = {0x89, 0x01};
+        if (kcc_compile_named("priv.c", src, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "priv failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            return 1;
+        }
+        if (!text_has(&img, cr3, 3) || !text_has(&img, cr2, 3) || !text_has(&img, wr, 3) ||
+            !text_has(&img, inv, 3) || !text_has(&img, lid, 3) || !text_has(&img, cas, 4) ||
+            !text_has(&img, xadd, 4) || !text_has(&img, sete, 3) || !text_has(&img, zx, 3) ||
+            !text_has(&img, ra, 4) || !text_has(&img, rel, 2)) {
+            fprintf(stderr, "privileged or atomic bytes missing\n");
+            return 1;
+        }
+    }
     if (compile_fails("err.c", "#error stop\n", "#error") != 0 ||
         compile_fails("break.c", "void x(void) { break; }\n", "break outside loop") != 0 ||
         compile_fails("assert0.c", "_Static_assert(0, \"no\");\n", "static assert failed") != 0 ||
         compile_fails("assertn.c", "void x(int n) { _Static_assert(n, \"n\"); }\n",
                       "constant expression expected") != 0 ||
-        compile_fails("cr3.c",
-                      "void x(void) { uint64_t v; __asm__ volatile (\"mov %%cr3, %0\" : \"=r\"(v)); }\n",
+        compile_fails("iretq.c",
+                      "void x(void) { __asm__ volatile (\"iretq\"); }\n",
                       "asm template is outside this subset") != 0 ||
-        compile_fails("sync.c", "int x(int *p) { return __sync_fetch_and_add(p, 1); }\n",
-                      "builtin is outside this subset") != 0) {
+        compile_fails("syncn.c", "int x(int *p) { return __sync_fetch_and_sub(p, 1); }\n",
+                      "builtin is outside this subset") != 0 ||
+        compile_fails("retn.c",
+                      "uint64_t x(void) { return (uint64_t)__builtin_return_address(1); }\n",
+                      "builtin is outside this subset") != 0 ||
+        compile_fails("flt.c",
+                      "float add(float a, float b) { return a + b; }\n",
+                      "float is outside this subset") != 0) {
         return 1;
     }
     puts("test_kcc: ok");

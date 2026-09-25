@@ -13,7 +13,7 @@
 
 #define KCC_ASM_MAX (256u * 1024u)
 #define KCC_PP_MAX (256u * 1024u)
-#define KCC_SYM_MAX 256
+#define KCC_SYM_MAX 2048
 #define KCC_MAC_MAX 256
 #define KCC_MAC_VAL 768
 #define KCC_MAC_PARAM 4
@@ -34,7 +34,8 @@ enum {
     TY_U16,
     TY_U32,
     TY_U64,
-    TY_STRUCT
+    TY_STRUCT,
+    TY_FLOAT
 };
 
 enum { LV_NONE = 0, LV_LOCAL = 1, LV_GLOBAL = 2, LV_ADDR = 3 };
@@ -126,6 +127,7 @@ static int g_storage_extern;
 static char g_break_lab[16];
 static char g_cont_lab[16];
 static int g_loop_depth;
+static int g_stuck;
 static char g_enum_name[KCC_ENUM_MAX][64];
 static uint64_t g_enum_val[KCC_ENUM_MAX];
 static int g_nenum;
@@ -156,6 +158,7 @@ const KccDiag *kcc_last_error(void) {
 }
 
 static int fail(const char *msg) {
+    g_stuck = 1;
     return diag_error(g_file, g_line, 1, msg);
 }
 
@@ -1511,6 +1514,8 @@ static int take_string(char *out, int cap, int *nlen) {
                 c = '\n';
             } else if (c == 'r') {
                 c = '\r';
+            } else if (c == 't') {
+                c = '\t';
             } else if (c == '0') {
                 c = 0;
             }
@@ -1607,7 +1612,7 @@ static int builtin_width(const char *name) {
 static int is_type_name(const char *name) {
     if (strcmp(name, "void") == 0 || strcmp(name, "bool") == 0 ||
         strcmp(name, "char") == 0 || strcmp(name, "int") == 0 ||
-        builtin_width(name) > 0) {
+        strcmp(name, "float") == 0 || builtin_width(name) > 0) {
         return 1;
     }
     return td_find(name) >= 0;
@@ -1646,6 +1651,10 @@ static int type_from_name(const char *name, Type *t) {
     }
     if (strcmp(name, "int") == 0) {
         *t = type_make(TY_INT, 8, 8);
+        return 1;
+    }
+    if (strcmp(name, "float") == 0) {
+        *t = type_make(TY_FLOAT, 4, 4);
         return 1;
     }
     if (strcmp(name, "uint8_t") == 0) {
@@ -1967,7 +1976,10 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
             *is_static = 1;
             continue;
         }
-        if (eat_kw("inline") || eat_kw("_Noreturn")) {
+        if (eat_kw("_Noreturn")) {
+            continue;
+        }
+        if (eat_kw("inline")) {
             *is_inline = 1;
             continue;
         }
@@ -2199,6 +2211,14 @@ static void dead_store_note(const char *sym) {
     g_dead_ok = 1;
 }
 
+static int reject_float(const Type *t) {
+    if (t->kind == TY_FLOAT && !t->is_ptr) {
+        fail("float is outside this subset");
+        return 1;
+    }
+    return 0;
+}
+
 static void load_val(Val *v) {
     if (v->func) {
         return;
@@ -2217,6 +2237,9 @@ static void load_val(Val *v) {
         v->lvalue = 0;
         v->type = type_ptr(v->type);
         v->lv = LV_NONE;
+        return;
+    }
+    if (reject_float(&v->type)) {
         return;
     }
     if (!v->lvalue) {
@@ -2251,6 +2274,9 @@ static void load_val(Val *v) {
 
 static void store_val(const Val *dst) {
     int tmp;
+    if (reject_float(&dst->type)) {
+        return;
+    }
     char mem[32];
     if (dst->lv == LV_LOCAL) {
         store_rax_frame(dst->frame);
@@ -2338,6 +2364,149 @@ static int parse_postfix(Val *out);
 static int postfix_tail(Val *out);
 static int parse_sizeof_type(Type *t);
 
+static int builtin_ptr_width(const Val *ptr) {
+    if (!ptr->type.is_ptr) {
+        return 0;
+    }
+    if (ptr->type.pointee_size == 4 || ptr->type.pointee_size == 8) {
+        return ptr->type.pointee_size;
+    }
+    return 0;
+}
+
+static int emit_sync_cas(Val *out) {
+    Val ptr;
+    Val exp;
+    Val des;
+    int sp;
+    int se;
+    int sd;
+    int width;
+    if (!eat_op("(")) {
+        return fail("bad builtin");
+    }
+    if (parse_expr(&ptr) != 0) {
+        return -1;
+    }
+    if (!eat_op(",")) {
+        return fail("bad builtin");
+    }
+    if (parse_expr(&exp) != 0) {
+        return -1;
+    }
+    if (!eat_op(",")) {
+        return fail("bad builtin");
+    }
+    if (parse_expr(&des) != 0) {
+        return -1;
+    }
+    if (!eat_op(")")) {
+        return fail("bad builtin");
+    }
+    width = builtin_ptr_width(&ptr);
+    if (width == 0) {
+        return fail("builtin is outside this subset");
+    }
+    load_val(&ptr);
+    sp = save_rax();
+    load_val(&exp);
+    se = save_rax();
+    load_val(&des);
+    sd = save_rax();
+    load_frame_rax(sp);
+    asm_line("mov rcx, rax");
+    load_frame_rax(sd);
+    asm_line("mov rdx, rax");
+    load_frame_rax(se);
+    if (width == 4) {
+        asm_line("lock cmpxchg dword [rcx], edx");
+    } else {
+        asm_line("lock cmpxchg [rcx], rdx");
+    }
+    asm_line("sete al");
+    asm_line("movzx eax, al");
+    memset(out, 0, sizeof(*out));
+    out->type = type_make(TY_INT, 8, 8);
+    out->type.array_len = -1;
+    return 0;
+}
+
+static int emit_sync_add(Val *out) {
+    Val ptr;
+    Val delta;
+    int sp;
+    int sd;
+    int width;
+    if (!eat_op("(") || parse_expr(&ptr) != 0 || !eat_op(",") || parse_expr(&delta) != 0 ||
+        !eat_op(")")) {
+        return fail("bad builtin");
+    }
+    width = builtin_ptr_width(&ptr);
+    if (width == 0) {
+        return fail("builtin is outside this subset");
+    }
+    load_val(&ptr);
+    sp = save_rax();
+    load_val(&delta);
+    sd = save_rax();
+    load_frame_rax(sp);
+    asm_line("mov rcx, rax");
+    load_frame_rax(sd);
+    if (width == 4) {
+        asm_line("lock xadd dword [rcx], eax");
+    } else {
+        asm_line("lock xadd [rcx], rax");
+    }
+    memset(out, 0, sizeof(*out));
+    out->type = type_make(width == 4 ? TY_U32 : TY_U64, width == 4 ? 4 : 8, width == 4 ? 4 : 8);
+    out->type.array_len = -1;
+    return 0;
+}
+
+static int emit_sync_release(Val *out) {
+    Val ptr;
+    int width;
+    if (!eat_op("(") || parse_expr(&ptr) != 0 || !eat_op(")")) {
+        return fail("bad builtin");
+    }
+    width = builtin_ptr_width(&ptr);
+    if (width == 0) {
+        return fail("builtin is outside this subset");
+    }
+    load_val(&ptr);
+    asm_line("mov rcx, rax");
+    asm_line("xor rax, rax");
+    if (width == 4) {
+        asm_line("mov dword [rcx], eax");
+    } else {
+        asm_line("mov [rcx], rax");
+    }
+    memset(out, 0, sizeof(*out));
+    out->type = type_make(TY_VOID, 0, 1);
+    out->type.array_len = -1;
+    return 0;
+}
+
+static int emit_return_address(Val *out) {
+    uint64_t level = 1;
+    int nr;
+    if (!eat_op("(")) {
+        return fail("bad builtin");
+    }
+    nr = take_number(&level);
+    if (nr < 0) {
+        return -1;
+    }
+    if (nr != 1 || level != 0 || !eat_op(")")) {
+        return fail("builtin is outside this subset");
+    }
+    asm_line("mov rax, [rbp + 8]");
+    memset(out, 0, sizeof(*out));
+    out->type = type_make(TY_U64, 8, 8);
+    out->type.array_len = -1;
+    return 0;
+}
+
 static int parse_primary(Val *out) {
     uint64_t num;
     char ident[64];
@@ -2411,6 +2580,18 @@ static int parse_primary(Val *out) {
             }
             skip();
             if (*g_p == '(') {
+                if (strcmp(ident, "__sync_bool_compare_and_swap") == 0) {
+                    return emit_sync_cas(out);
+                }
+                if (strcmp(ident, "__sync_fetch_and_add") == 0) {
+                    return emit_sync_add(out);
+                }
+                if (strcmp(ident, "__sync_lock_release") == 0) {
+                    return emit_sync_release(out);
+                }
+                if (strcmp(ident, "__builtin_return_address") == 0) {
+                    return emit_return_address(out);
+                }
                 if (strncmp(ident, "__sync", 6) == 0 || strncmp(ident, "__atomic", 8) == 0 ||
                     strncmp(ident, "__builtin", 9) == 0) {
                     return fail("builtin is outside this subset");
@@ -3415,12 +3596,17 @@ static int skip_asm_clobbers(void) {
     return fail("bad asm");
 }
 
-static int parse_asm_operand(char *constraint, int ccap, Val *v) {
+static int parse_asm_operand(char *constraint, int ccap, char *name, int ncap, Val *v) {
     char buf[32];
     int n = 0;
     skip();
+    name[0] = 0;
     if (*g_p == '[') {
-        return fail("asm operand is outside this subset");
+        g_p++;
+        if (!take_ident(name, ncap) || !eat_op("]")) {
+            return fail("asm operand is outside this subset");
+        }
+        skip();
     }
     if (!take_string(buf, 32, &n) || n < 1 || n >= ccap) {
         return fail("asm constraint expected");
@@ -3471,27 +3657,133 @@ static int emit_port_io(int is_out, int width, Val *outs, const char oc[][8], in
     return 0;
 }
 
-static int parse_asm_stmt(void) {
-    char tmpl[160];
+static int read_asm_template(char *out, int cap) {
     int n = 0;
+    int any = 0;
+    for (;;) {
+        char part[256];
+        int pn = 0;
+        int i;
+        skip();
+        if (*g_p != '"') {
+            break;
+        }
+        if (!take_string(part, 256, &pn)) {
+            return -1;
+        }
+        any = 1;
+        for (i = 0; i < pn; i++) {
+            if (n + 1 >= cap) {
+                return -1;
+            }
+            out[n++] = part[i];
+        }
+    }
+    if (!any) {
+        return -1;
+    }
+    out[n] = 0;
+    return n;
+}
+
+static void far_label(char *buf) {
+    char num[16];
+    int i = 0;
+    int k = 0;
+    u64_dec(num, (uint64_t)g_lab++);
+    buf[i++] = 'L';
+    buf[i++] = 'f';
+    buf[i++] = 'a';
+    buf[i++] = 'r';
+    while (num[k] && i < 15) {
+        buf[i++] = num[k++];
+    }
+    buf[i] = 0;
+}
+
+static int emit_gdt_reload(const Val *pointer) {
+    char lab[16];
+    far_label(lab);
+    gen_addr(pointer);
+    asm_line("lgdt [rax]");
+    asm_line("push 8");
+    asm_cat("lea rax, [rel ", lab, "]", 0);
+    asm_line("push rax");
+    asm_line("lretq");
+    asm_label(lab);
+    asm_line("mov ax, 16");
+    asm_line("mov ds, ax");
+    asm_line("mov es, ax");
+    asm_line("mov ss, ax");
+    asm_line("xor ax, ax");
+    asm_line("mov fs, ax");
+    asm_line("mov gs, ax");
+    asm_line("mov ax, 40");
+    asm_line("ltr ax");
+    return 0;
+}
+
+static int emit_ap_stack_switch(Val *stack_top, Val *index) {
+    /* EDI is loaded before RSP changes. The frame is not read after that. */
+    load_val(index);
+    asm_line("mov edi, eax");
+    load_val(stack_top);
+    asm_line("mov rsp, rax");
+    asm_line("call ap_c_entry");
+    return 0;
+}
+
+static int emit_kthread_switch(const Val *saved, Val *top) {
+    gen_addr(saved);
+    asm_line("mov rcx, rax");
+    asm_line("mov rax, rsp");
+    asm_line("mov [rcx], rax");
+    load_val(top);
+    asm_line("mov rsp, rax");
+    asm_line("call kt_trampoline");
+    gen_addr(saved);
+    asm_line("mov rcx, rax");
+    asm_line("mov rax, [rcx]");
+    asm_line("mov rsp, rax");
+    return 0;
+}
+
+static int emit_user_iret(Val *ss, Val *rsp, Val *rf, Val *cs, Val *ip) {
+    load_val(ss);
+    asm_line("push rax");
+    load_val(rsp);
+    asm_line("push rax");
+    load_val(rf);
+    asm_line("push rax");
+    load_val(cs);
+    asm_line("push rax");
+    load_val(ip);
+    asm_line("push rax");
+    asm_line("iretq");
+    return 0;
+}
+
+static int parse_asm_stmt(void) {
+    char tmpl[512];
+    int n;
     int kind;
     int nout = 0;
     int nin = 0;
-    Val outs[2];
-    Val ins[2];
-    char oc[2][8];
-    char ic[2][8];
+    Val outs[6];
+    Val ins[6];
+    char oc[6][8];
+    char ic[6][8];
+    char oname[6][16];
+    char iname[6][16];
     if (eat_kw("volatile") || eat_kw("__volatile__")) {
         /* accepted; every asm in this subset is a compiler barrier */
     }
     if (!eat_op("(")) {
         return fail("bad asm");
     }
-    if (!take_string(tmpl, 160, &n) || n >= 159) {
+    n = read_asm_template(tmpl, 512);
+    if (n < 0) {
         return fail("asm template is outside this subset");
-    }
-    if (n < 159) {
-        tmpl[n] = 0;
     }
     if (tmpl[0] == 0) {
         kind = 1;
@@ -3515,17 +3807,31 @@ static int parse_asm_stmt(void) {
         kind = 14;
     } else if (strcmp(tmpl, "outl %0, %1") == 0) {
         kind = 15;
+    } else if (strcmp(tmpl, "mov %%cr2, %0") == 0) {
+        kind = 20;
+    } else if (strcmp(tmpl, "mov %%cr3, %0") == 0) {
+        kind = 21;
+    } else if (strcmp(tmpl, "mov %0, %%cr3") == 0) {
+        kind = 22;
+    } else if (strcmp(tmpl, "mov %%rsp, %0") == 0) {
+        kind = 23;
+    } else if (strcmp(tmpl, "invlpg (%0)") == 0) {
+        kind = 24;
+    } else if (strcmp(tmpl, "lidt %0") == 0) {
+        kind = 25;
+    } else if (strcmp(tmpl, "str %0") == 0) {
+        kind = 26;
     } else {
-        return fail("asm template is outside this subset");
+        kind = 0;
     }
     if (eat_op(":")) {
         skip();
         if (*g_p != ':' && *g_p != ')') {
             do {
-                if (nout >= 2) {
+                if (nout >= 6) {
                     return fail("asm operands are outside this subset");
                 }
-                if (parse_asm_operand(oc[nout], 8, &outs[nout]) != 0) {
+                if (parse_asm_operand(oc[nout], 8, oname[nout], 16, &outs[nout]) != 0) {
                     return -1;
                 }
                 nout++;
@@ -3535,10 +3841,10 @@ static int parse_asm_stmt(void) {
             skip();
             if (*g_p != ':' && *g_p != ')') {
                 do {
-                    if (nin >= 2) {
+                    if (nin >= 6) {
                         return fail("asm operands are outside this subset");
                     }
-                    if (parse_asm_operand(ic[nin], 8, &ins[nin]) != 0) {
+                    if (parse_asm_operand(ic[nin], 8, iname[nin], 16, &ins[nin]) != 0) {
                         return -1;
                     }
                     nin++;
@@ -3555,6 +3861,84 @@ static int parse_asm_stmt(void) {
         return fail("bad asm");
     }
     dead_store_clear();
+    if (kind == 0) {
+        static const char gdt_tmpl[] =
+            "lgdt %0\n"
+            "pushq $0x08\n"
+            "leaq 1f(%%rip), %%rax\n"
+            "pushq %%rax\n"
+            "lretq\n"
+            "1:\n"
+            "movw $0x10, %%ax\n"
+            "movw %%ax, %%ds\n"
+            "movw %%ax, %%es\n"
+            "movw %%ax, %%ss\n"
+            "xorw %%ax, %%ax\n"
+            "movw %%ax, %%fs\n"
+            "movw %%ax, %%gs\n"
+            "movw $0x28, %%ax\n"
+            "ltr %%ax\n";
+        static const char ap_tmpl[] =
+            "mov %0, %%rsp\n"
+            "mov %1, %%edi\n"
+            "call ap_c_entry\n";
+        static const char kt_tmpl[] =
+            "movq %%rsp, %[saved]\n"
+            "\tmovq %[top], %%rsp\n"
+            "\tcall kt_trampoline\n"
+            "\tmovq %[saved], %%rsp\n"
+            "\t";
+        static const char iret_tmpl[] =
+            "pushq %[ss]\n"
+            "pushq %[rsp]\n"
+            "pushq %[rf]\n"
+            "pushq %[cs]\n"
+            "pushq %[ip]\n"
+            "iretq\n";
+        if (strcmp(tmpl, gdt_tmpl) == 0) {
+            if (nout != 0 || nin != 1 || !ins[0].lvalue || !constraint_has(ic[0], 'm')) {
+                return fail("asm operands are outside this subset");
+            }
+            return emit_gdt_reload(&ins[0]);
+        }
+        if (strcmp(tmpl, ap_tmpl) == 0) {
+            if (nout != 0 || nin != 2 || !constraint_has(ic[0], 'r') ||
+                !constraint_has(ic[1], 'r')) {
+                return fail("asm operands are outside this subset");
+            }
+            return emit_ap_stack_switch(&ins[0], &ins[1]);
+        }
+        if (strcmp(tmpl, kt_tmpl) == 0) {
+            if (nout != 1 || nin != 1 || strcmp(oname[0], "saved") != 0 ||
+                strcmp(iname[0], "top") != 0 || !outs[0].lvalue ||
+                !constraint_has(oc[0], 'm') || !constraint_has(ic[0], 'r')) {
+                return fail("asm operands are outside this subset");
+            }
+            return emit_kthread_switch(&outs[0], &ins[0]);
+        }
+        if (strcmp(tmpl, iret_tmpl) == 0) {
+            Val *by_name[5];
+            static const char *need[] = {"ss", "rsp", "rf", "cs", "ip"};
+            int i;
+            int j;
+            if (nout != 0 || nin != 5) {
+                return fail("asm operands are outside this subset");
+            }
+            for (i = 0; i < 5; i++) {
+                by_name[i] = 0;
+                for (j = 0; j < nin; j++) {
+                    if (strcmp(iname[j], need[i]) == 0 && constraint_has(ic[j], 'r')) {
+                        by_name[i] = &ins[j];
+                    }
+                }
+                if (!by_name[i]) {
+                    return fail("asm operands are outside this subset");
+                }
+            }
+            return emit_user_iret(by_name[0], by_name[1], by_name[2], by_name[3], by_name[4]);
+        }
+        return fail("asm template is outside this subset");
+    }
     if (kind == 1) {
         if (nout != 0 || nin != 0) {
             return fail("asm operands are outside this subset");
@@ -3579,7 +3963,48 @@ static int parse_asm_stmt(void) {
     if (kind >= 10 && kind <= 12) {
         return emit_port_io(0, kind == 10 ? 1 : kind == 11 ? 2 : 4, outs, oc, nout, ins, ic, nin);
     }
-    return emit_port_io(1, kind == 13 ? 1 : kind == 14 ? 2 : 4, outs, oc, nout, ins, ic, nin);
+    if (kind >= 13 && kind <= 15) {
+        return emit_port_io(1, kind == 13 ? 1 : kind == 14 ? 2 : 4, outs, oc, nout, ins, ic, nin);
+    }
+    if (kind == 20 || kind == 21 || kind == 23) {
+        if (nout != 1 || nin != 0 || !outs[0].lvalue || !constraint_has(oc[0], '=') ||
+            !constraint_has(oc[0], 'r')) {
+            return fail("asm operands are outside this subset");
+        }
+        if (kind == 20) {
+            asm_line("mov rax, cr2");
+        } else if (kind == 21) {
+            asm_line("mov rax, cr3");
+        } else {
+            asm_line("mov rax, rsp");
+        }
+        store_val(&outs[0]);
+        return 0;
+    }
+    if (kind == 22 || kind == 24) {
+        if (nout != 0 || nin != 1 || !constraint_has(ic[0], 'r')) {
+            return fail("asm operands are outside this subset");
+        }
+        load_val(&ins[0]);
+        asm_line(kind == 22 ? "mov cr3, rax" : "invlpg [rax]");
+        return 0;
+    }
+    if (kind == 26) {
+        if (nout != 1 || nin != 0 || !outs[0].lvalue || !constraint_has(oc[0], '=') ||
+            !constraint_has(oc[0], 'r')) {
+            return fail("asm operands are outside this subset");
+        }
+        asm_line("str ax");
+        asm_line("movzx eax, ax");
+        store_val(&outs[0]);
+        return 0;
+    }
+    if (nout != 0 || nin != 1 || !ins[0].lvalue || !constraint_has(ic[0], 'm')) {
+        return fail("asm operands are outside this subset");
+    }
+    gen_addr(&ins[0]);
+    asm_line("lidt [rax]");
+    return 0;
 }
 
 static int grab_until(char *dst, int cap, char stop) {
@@ -3625,6 +4050,9 @@ static void epilogue(void) {
 }
 
 static int parse_stmt(void) {
+    if (g_stuck) {
+        return -1;
+    }
     g_ntemp = 0;
     skip();
     if (*g_p == 0) {
@@ -4767,6 +5195,7 @@ int kcc_compile_named(const char *file, const char *src, ChrisoImage *out) {
     g_nsym = 0;
     g_ntd = 0;
     g_nenum = 0;
+    g_stuck = 0;
     g_frame = 0;
     g_ntemp = 0;
     g_lab = 0;
@@ -4793,7 +5222,7 @@ int kcc_compile_named(const char *file, const char *src, ChrisoImage *out) {
     g_p = g_pp;
     copy_str(g_file, 96, file ? file : "");
     g_line = 1;
-    if (compile_unit() != 0) {
+    if (compile_unit() != 0 || g_stuck) {
         return -1;
     }
     if (g_asm_overflow) {
