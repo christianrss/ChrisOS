@@ -26,14 +26,13 @@ the path in the tree (`SYS/BOOT.LOG` is). QEMU was not booted in this pass.
 
 ### Phase 3 through 5 — toolchain, SH4, SH5
 
-P0 blocker: KCC compiles fourteen `kernel/metal` files on the host
-(`acpi.c`, `apic.c`, `elf.c`, `heap.c`, `ioapic.c`, `job.c`, `klog.c`,
-`meminfo.c`, `pci.c`, `pit.c`, `port.c`, `serial.c`, `string.c`,
-`tlb_proto.c`). The level-0 fixture compiles in the same gate. It does
-not compile the kernel.
-ChrisAsm assembles `cli`, `sti`, `hlt`, `pause`, `not`, and port `in`/`out`.
-It does not assemble `invlpg` or `mov cr*`. ChrisLd has not produced the
-boot ELF. SH4 and SH5 are not proven.
+P0 blocker: `host-kcc-test` now compiles every `kernel/metal` C file,
+including `start.c`, `gdt.c`, `mm.c`, and `spin.c`. A probe of the
+makefile C list compiled 50 of 112 units. The rest stop on `union`,
+numeric array initializers, `<string.h>`, float arithmetic, and
+`idt_stubs.asm` (still NASM). ChrisAsm encodes `invlpg`, `lidt`, `lgdt`,
+`lretq`, `iretq`, `str`, `ltr`, and `mov` to or from `cr2`/`cr3`.
+ChrisLd has not produced the boot ELF. SH4 and SH5 are not proven.
 
 ### Phase 6 — hardware profile
 

@@ -70,12 +70,15 @@ Present in KCC and covered by `host-kcc-test`:
 - `_Static_assert` of an integer constant expression. A non-constant
   expression fails. A zero result fails.
 
-Still absent:
+The current host gate is `docs/KCC_STATUS.md`. `switch`, `case`,
+`default`, `goto`, and the privileged asm forms listed there now
+compile. Still absent from that gate:
 
-- `do`/`while`, `switch`, `case`, `default`
+- `do`/`while`
 - `<<=` and `>>=`
-- GNU inline asm other than `cli`, `sti`, `hlt`, `pause`, an empty
-  barrier, and the port `in`/`out` templates in `port.c`
+- GNU inline asm other than the templates `docs/KCC_STATUS.md` names
+- `union`
+- float arithmetic (`float` fields parse; a load or a store fails)
 
 Division and remainder of signed integers follow the host GCC result for
 the same C. A differential test has to lock that down before kernel code
@@ -84,7 +87,11 @@ width are outside the profile until a test defines them.
 
 ## Preprocessor
 
-Required later, and skipped or ignored today:
+`host-kcc-test` now runs `#if`, function-like macros, token paste, and
+`limine.h`. The list below is the original profile, not the current gate.
+See `docs/KCC_STATUS.md`.
+
+Required later, and skipped or ignored in the original profile:
 
 - `#include` of a quoted or angle header, with a search path from the
   build manifest
