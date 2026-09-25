@@ -1,7 +1,7 @@
 # Current kernel audit
 
-HEAD audited: `33390e4285f6e5f00a386482584efec14032d80e` (`origin/feat/os2`).
-The TLB change is the only kernel behavior change in this pass.
+Base: `a3a3340f5b4dfb1e1f899d40ffc930ee57838abd` (`origin/feat/os2`).
+This pass adds an NMI stop for a fenced CPU. QEMU was not booted.
 
 ## SMP, MMU, TLB
 
@@ -31,9 +31,17 @@ its frames are not reused until that CPU marks itself halted
 `jit_free` quarantines frames when the shootdown returns -1.
 `mm_tlb_reap` frees them after `tlb_reuse_ok`.
 
-The fence point is the AP worker loop in `job_worker_forever`. There is no
-NMI halt. A CPU that is inside a job, with interrupts clear, can keep
-running until that job returns. That window is still open.
+A fenced CPU is not online. Reuse also requires that CPU to have
+invalidated the generation (`flushed`) and halted. Halt alone does not
+release the frames.
+
+The kernel sends that CPU an NMI (`apic_ipi_nmi`, IDT vector 2,
+`nmi_entry`). The handler invalidates the published range and halts
+without returning to the interrupted job. The worker loop does the same
+invalidate-then-halt if it reaches the fence check first. Both paths are
+in the sources. Neither was booted. If the local APIC is off, the NMI is
+not sent and a job that never returns still holds its frames in
+quarantine.
 
 ## Ownership
 
@@ -50,7 +58,7 @@ and sockets. User processes are BSP-only (`proc_switch` panics on an AP).
 
 | ID | Sev | Item |
 | --- | --- | --- |
-| TLB-HALT-01 | P1 | Fenced CPU halts at the next worker iteration. No NMI. A job in progress is not preempted. |
+| TLB-HALT-01 | P1 | NMI stop is in the kernel and the host protocol requires invalidate plus halt. Not booted. With the local APIC off, a job that never returns is only quarantined. |
 | TLB-QUAR-01 | P1 | Quarantine holds 128 ranges. Past that, frames are leaked on purpose and `tlb quarantine full` is logged. |
 | LIFE-01 | P1 | `host-task-window-test` opens and closes 1000 windows and checks the live count. `host-pmm-cycle-test` allocates and frees 1000 pages. There is no combined CLVM or JIT cycle, and the window test does not use the PMM. |
 | ACCT-01 | P2 | `meminfo` prints PMM, heap, and task counts. There is no CLVM or JIT counter in that line. |

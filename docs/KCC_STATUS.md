@@ -24,12 +24,16 @@ It links those two objects with ChrisAsm stubs for `inb`, `outb`,
 `spin_init`, `spin_lock`, and `spin_unlock`. The ELF has two program
 headers and passes `chrisld_validate`.
 
+It also compiles a small volatile fixture. Two stores to one plain
+`uint32_t` global become the last store. Two stores and two loads of a
+`volatile uint32_t` stay in the assembly, and the volatile accesses are
+32-bit (`mov dword`). ChrisAsm accepts that `dword` form.
+
 Passing this gate does not mark SH4.
 
 ## Still outside the gate
 
-`kernel/metal/port.c` is GNU inline assembly and is not compiled. `volatile`
-is discarded as a qualifier. A volatile MMIO load or store is not proven.
-A global array accepts a bound and a semicolon. An initializer on a global
-array is rejected. ChrisAsm does not implement `cli`, `hlt`, or `invlpg`.
-ChrisLd has not linked `BIN/KERNEL.ELF`.
+`kernel/metal/port.c` is GNU inline assembly and is not compiled. A global
+array accepts a bound and a semicolon. An initializer on a global array is
+rejected. ChrisAsm does not implement `cli`, `hlt`, or `invlpg`. ChrisLd
+has not linked `BIN/KERNEL.ELF`. There is no GCC differential run.

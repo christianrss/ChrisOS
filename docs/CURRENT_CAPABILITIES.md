@@ -1,7 +1,6 @@
 # Current capabilities
 
-Snapshot of `origin/feat/os2` at `33390e4285f6e5f00a386482584efec14032d80e`,
-plus the TLB membership change on `cursor/foundation-tlb-b80c`.
+Base snapshot: `origin/feat/os2` at `a3a3340f5b4dfb1e1f899d40ffc930ee57838abd`.
 
 A row is not `PROVEN-QEMU` or `PROVEN-HARDWARE` unless that gate was run
 on this tree. Older QEMU notes in `docs/STABILITY_REPORT.md` describe an
@@ -11,7 +10,7 @@ earlier boot. They were not repeated after the TLB change.
 | --- | --- | --- | --- | --- | --- | --- |
 | Boot via Limine, host GCC kernel | IMPLEMENTED | kernel sources compile under the host makefile when the toolchain is present | not re-run here | no | SH0 image. Not a self-hosted kernel | `make kernel` |
 | PMM and heap locks | HOST-TESTED | `host-pmm-heap-smp-test` existed before this change; not re-run in this pass | not re-run | no | No hardware leak loop | `host-pmm-heap-smp-test` |
-| TLB shootdown membership | HOST-TESTED | `host-tlb-proto-test` | not re-run | no | A fenced CPU is halted at the worker loop, not by NMI. Frames stay quarantined until that halt. A CPU stuck inside a job can still touch a stale translation until it returns | `host-tlb-proto-test` |
+| TLB shootdown membership | HOST-TESTED | `host-tlb-proto-test` | not re-run | no | Reuse needs invalidate and halt. The kernel sends an NMI; that path was not booted. With the local APIC off, a job that never returns keeps its frames quarantined | `host-tlb-proto-test` |
 | Kernel ring log | HOST-TESTED | `host-klog-test` | not booted | no | 8192 bytes. `dmesg` shows the tail. `SYS/BOOT.LOG` is written only when ChrisFS is the backend. That write was not booted | `host-klog-test` |
 | Build identity | HOST-TESTED | `host-buildinfo-test`, `host-buildstamp-test` | not booted | no | Date is baked in at host compile time, so two builds of the same git commit differ. The SHA-256 is of the image with the hash slot still zero | `host-buildinfo-test` |
 | Task slot reuse | HOST-TESTED | 1000 open/close | not re-run | no | At most 32 windows exist at once (`TASK_MAX`). The gate reuses slots. It does not touch the PMM | `host-task-window-test` |
@@ -24,7 +23,7 @@ earlier boot. They were not repeated after the TLB change.
 | xHCI | IMPLEMENTED | no | earlier `test-qemu-xhci` is listed; not re-run | no | HID lifecycle was not re-audited line by line in this pass | `test-qemu-xhci` |
 | Framebuffer desktop | IMPLEMENTED | no | earlier desktop marker; not re-run | no | Pitch is not proven across 800x600 through 1920x1080 | QEMU desktop gates |
 | VirtIO-GPU 2D | EXPERIMENTAL | no | `test-qemu-gpu` exists; not re-run | no | Not a finished resource lifecycle. VirGL is unsupported | `test-qemu-gpu` |
-| KCC | EXPERIMENTAL | `host-kcc-test` compiles the level-0 fixture, `serial.c`, and `klog.c`, then links them with port and spin stubs | no | no | Not the kernel. `volatile` is discarded. SH4 is not proven | `host-kcc-test` |
+| KCC | EXPERIMENTAL | `host-kcc-test` compiles the level-0 fixture, `serial.c`, `klog.c`, and a volatile MMIO fixture, then links serial and klog with port and spin stubs | no | no | Not the kernel. Plain repeated stores of one global fold. Volatile `uint32_t` stores and loads stay, 32-bit. SH4 is not proven | `host-kcc-test` |
 | ChrisAsm / ChrisLd | EXPERIMENTAL | host tests for the small assembler and linker | no | no | Do not assemble or link the real kernel | `host-chrisasm-test`, `host-chrisld-test` |
 | SH1–SH6 | UNSUPPORTED as a proven level | no in-OS gate | no | no | See `docs/CURRENT_SELFHOST_AUDIT.md` | none |
 | Physical machine | UNPROVEN | no | no | no | No `PROVEN-HARDWARE` | none |

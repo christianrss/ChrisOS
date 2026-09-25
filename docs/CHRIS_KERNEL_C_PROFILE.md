@@ -53,8 +53,9 @@ Required, and absent today except where the audit says a line is skipped:
 - `const`, `volatile`, `static`, `extern`
 
 `volatile` reads and writes are observable. The compiler must not delete,
-merge, or reorder them across each other. MMIO depends on this. There is
-no volatile implementation today.
+merge, or reorder them across each other. MMIO depends on this.
+`host-kcc-test` now checks that for a `volatile uint32_t` global. That is
+not a proof for every kernel type or for GNU inline assembly.
 
 ## Control flow and expressions
 
