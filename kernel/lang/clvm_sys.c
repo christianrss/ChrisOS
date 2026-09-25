@@ -31,6 +31,7 @@
 #include "chrismake.h"
 #include "cls/cls.h"
 #include "serial.h"
+#include "shader/sh_pub.h"
 #include "proc.h"
 #include "sock.h"
 #include "sha256.h"
@@ -595,6 +596,7 @@ static int voxel_for(ClvmGfxCtx *ctx) {
 
 void clvm_sys_close_slot(int slot_id) {
     int i;
+    sh_guest_drop_owner(slot_id);
     voxel_release(slot_id);
     input_capture_release_task(lang_slot_task(slot_id));
     sock_close_slot(slot_id);
@@ -2819,6 +2821,116 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             return clvm_vm_push(vm, 0) ? 0 : -1;
         return clvm_vm_push(vm, 1) ? 0 : -1;
     }
+    case 260: {
+        int32_t addr;
+        int32_t stage;
+        char *src;
+        int id;
+        if (!pop_i32(vm, &addr) || !pop_i32(vm, &stage))
+            return -1;
+        src = (char *)kmalloc((uint64_t)SH_SRC_MAX);
+        if (!src)
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        if (!vm_cstr(vm, addr, src, SH_SRC_MAX)) {
+            kfree(src);
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        }
+        id = sh_guest_compile(fd_slot(user), stage, "guest.glsl", src);
+        kfree(src);
+        return clvm_vm_push(vm, id) ? 0 : -1;
+    }
+    case 261: {
+        int32_t id;
+        if (!pop_i32(vm, &id))
+            return -1;
+        return clvm_vm_push(vm, sh_guest_shader_ok(fd_slot(user), id)) ? 0 : -1;
+    }
+    case 262: {
+        int32_t id;
+        int32_t addr;
+        char buf[512];
+        int n;
+        if (!pop_i32(vm, &addr) || !pop_i32(vm, &id))
+            return -1;
+        n = sh_guest_shader_log(fd_slot(user), id, buf, (int)sizeof(buf));
+        if (n < 0 || !vm_copy_out(vm, addr, n + 1, (const uint8_t *)buf))
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 263: {
+        int32_t id;
+        if (!pop_i32(vm, &id))
+            return -1;
+        return clvm_vm_push(vm, sh_guest_shader_drop(fd_slot(user), id)) ? 0 : -1;
+    }
+    case 264:
+        return clvm_vm_push(vm, sh_guest_prog_make(fd_slot(user))) ? 0 : -1;
+    case 265: {
+        int32_t shader;
+        int32_t prog;
+        if (!pop_i32(vm, &shader) || !pop_i32(vm, &prog))
+            return -1;
+        return clvm_vm_push(vm, sh_guest_prog_attach(fd_slot(user), prog, shader)) ? 0 : -1;
+    }
+    case 266: {
+        int32_t prog;
+        if (!pop_i32(vm, &prog))
+            return -1;
+        return clvm_vm_push(vm, sh_guest_prog_link(fd_slot(user), prog)) ? 0 : -1;
+    }
+    case 267: {
+        int32_t prog;
+        if (!pop_i32(vm, &prog))
+            return -1;
+        return clvm_vm_push(vm, sh_guest_prog_ok(fd_slot(user), prog)) ? 0 : -1;
+    }
+    case 268: {
+        int32_t prog;
+        int32_t addr;
+        char buf[512];
+        int n;
+        if (!pop_i32(vm, &addr) || !pop_i32(vm, &prog))
+            return -1;
+        n = sh_guest_prog_log(fd_slot(user), prog, buf, (int)sizeof(buf));
+        if (n < 0 || !vm_copy_out(vm, addr, n + 1, (const uint8_t *)buf))
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
+    case 269: {
+        int32_t prog;
+        if (!pop_i32(vm, &prog))
+            return -1;
+        return clvm_vm_push(vm, sh_guest_prog_drop(fd_slot(user), prog)) ? 0 : -1;
+    }
+    case 270: {
+        int32_t prog;
+        int32_t addr;
+        char name[40];
+        if (!pop_i32(vm, &addr) || !pop_i32(vm, &prog) || !vm_cstr(vm, addr, name, (int)sizeof(name)))
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        return clvm_vm_push(vm, sh_guest_uniloc(fd_slot(user), prog, name)) ? 0 : -1;
+    }
+    case 271: {
+        float value;
+        int32_t lane;
+        int32_t loc;
+        int32_t prog;
+        if (!pop_f(vm, &value) || !pop_i32(vm, &lane) || !pop_i32(vm, &loc) || !pop_i32(vm, &prog))
+            return -1;
+        return clvm_vm_push(vm, sh_guest_setf(fd_slot(user), prog, loc, lane, value)) ? 0 : -1;
+    }
+    case 272: {
+        int32_t prog;
+        int32_t addr;
+        char name[40];
+        if (!pop_i32(vm, &addr) || !pop_i32(vm, &prog) || !vm_cstr(vm, addr, name, (int)sizeof(name)))
+            return clvm_vm_push(vm, -1) ? 0 : -1;
+        return clvm_vm_push(vm, sh_guest_samp(fd_slot(user), prog, name)) ? 0 : -1;
+    }
+    case 273:
+        return clvm_vm_push(vm, 0) ? 0 : -1;
+    case 274:
+        return clvm_vm_push(vm, 1) ? 0 : -1;
     default:
         return -1;
     }
