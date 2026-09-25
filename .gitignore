@@ -127,6 +127,8 @@ docs/*
 !docs/GFX2D.md
 !docs/GFX3D.md
 !docs/CAMPAIGN_STATUS.md
+!docs/SHADER_ARCHITECTURE.md
+!docs/GLSL_SUPPORT.md
 backup/
 tools/gen_fase*.py
 tools/write_learn_book.py
