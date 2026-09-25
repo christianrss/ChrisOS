@@ -14,7 +14,9 @@ Cada passo busca até 15 bytes, decodifica, formata uma linha de trace, executa 
 
 ## Instruções com semântica executada
 
-`MOV`, `MOVZX`, `MOVSX`, `LEA`, `XCHG`, `PUSH`, `POP`, `PUSHF`, `POPF`, ALU (`ADD`, `ADC`, `SUB`, `SBB`, `AND`, `OR`, `XOR`, `CMP`, `TEST`), `INC`, `DEC`, `NOT`, `NEG`, shifts (`SHL`, `SHR`, `SAR`, `ROL`, `ROR`), `MUL`, `IMUL`, `DIV`, `IDIV`, `JMP`, `Jcc`, `CALL`, `RET`, `LEAVE`, `NOP`, `HLT`, `CLC`, `STC`, `CLD`, `STD`, `CLI`, `STI`, `IN`, `OUT`, `INT`, `INT3`, `IRETQ`, `LGDT`, `LIDT`, `SGDT`, `SIDT`, `MOV CRx`, `CPUID`, `RDMSR`, `WRMSR`, `SETcc`, `CMOVcc`.
+`MOV`, `MOVZX`, `MOVSX`, `LEA`, `XCHG`, `PUSH`, `POP`, `PUSHF`, `POPF`, ALU (`ADD`, `ADC`, `SUB`, `SBB`, `AND`, `OR`, `XOR`, `CMP`, `TEST`), `INC`, `DEC`, `NOT`, `NEG`, shifts (`SHL`, `SHR`, `SAR`, `ROL`, `ROR`), `MUL`, `IMUL`, `DIV`, `IDIV`, `JMP`, `Jcc`, `CALL`, `RET`, `LEAVE`, `NOP`, `HLT`, `CLC`, `STC`, `CLD`, `STD`, `CLI`, `STI`, `IN`, `OUT`, `INT`, `INT3`, `IRETQ`, `LGDT`, `LIDT`, `SGDT`, `SIDT`, `MOV CRx`, `CPUID`, `RDMSR`, `WRMSR`, `SETcc`, `CMOVcc`, `STOS` (`AA`/`AB`, com `66` e `REX.W`).
+
+`F3` marca `REP` e `F2` marca `REPNZ` na instrução decodificada. Fora de `STOS`, o prefixo não muda a operação (`F3 90` continua `NOP`). `REP STOS` com `DF=0` grava em rajadas que cabem na página de 4 KiB já traduzida. `DF=1` grava um elemento por vez. Uma falha antes da rajada deixa `RDI` e `RCX` intactos. Se ainda há elementos, há IRQ pendente, `IF` está ligado e o atraso do `STI` já passou, o RIP permanece na mesma instrução para ela continuar depois. Tamanho de endereço 32 mascara `RDI` e `RCX`.
 
 `LOCK` em registrador é `#UD`. `LOCK` em memória executa a operação uma vez. Com uma CPU só isso é atômico em relação ao guest; a semântica de SMP ainda não existe.
 

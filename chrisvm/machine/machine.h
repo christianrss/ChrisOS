@@ -26,6 +26,16 @@ typedef struct ChrisMmioSlot {
     void *ctx;
 } ChrisMmioSlot;
 
+typedef struct ChrisFb {
+    uint64_t base;
+    uint32_t width;
+    uint32_t height;
+    uint32_t pitch;
+    uint8_t *pix;
+    size_t size;
+    int dirty;
+} ChrisFb;
+
 typedef struct ChrisSerial {
     uint8_t ier, lcr, mcr, scr, dll, dlm;
     uint8_t loop_data;
@@ -75,6 +85,7 @@ struct ChrisMachine {
     ChrisIoSlot io[CHRIS_IO_MAX];
     ChrisMmioSlot mmio[CHRIS_MMIO_MAX];
     ChrisSerial serial;
+    ChrisFb fb;
     ChrisCpu *cpu;
     const ChrisCpuBackend *backend;
     uint64_t entry;
@@ -99,6 +110,7 @@ int chris_phys_read(ChrisMachine *m, uint64_t pa, void *dst, size_t n);
 int chris_phys_write(ChrisMachine *m, uint64_t pa, const void *src, size_t n);
 
 void chris_serial_attach(ChrisMachine *m);
+int chris_fb_attach(ChrisMachine *m);
 
 int chris_va_read(ChrisCpu *cpu, uint64_t va, void *dst, size_t n, int access);
 int chris_va_write(ChrisCpu *cpu, uint64_t va, const void *src, size_t n);

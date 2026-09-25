@@ -30,6 +30,7 @@ int chris_config_from_args(ChrisConfig *cfg, int argc, char **argv, const char *
         } else if (strcmp(a, "--debug") == 0) {
             cfg->debug = 1;
         } else if (strcmp(a, "--headless") == 0) {
+            cfg->headless = 1;
             cfg->debug = 0;
         } else if (want(a, "--backend")) {
             const char *v = strchr(a, '=');
@@ -42,6 +43,13 @@ int chris_config_from_args(ChrisConfig *cfg, int argc, char **argv, const char *
             }
             cfg->break_rip = strtoull(v + 1, 0, 0);
             cfg->has_break = 1;
+        } else if (want(a, "--fb-dump")) {
+            const char *v = strchr(a, '=');
+            if (!v || v[1] == 0) {
+                snprintf(err, errcap, "missing framebuffer path");
+                return -1;
+            }
+            cfg->fb_dump = v + 1;
         } else if (want(a, "--max-steps")) {
             const char *v = strchr(a, '=');
             if (!v) {

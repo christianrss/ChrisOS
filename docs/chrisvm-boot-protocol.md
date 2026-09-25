@@ -30,9 +30,12 @@ RAM padrão: 16 MiB, múltiplo de 2 MiB, mínimo 2 MiB.
 | pilha | `RSP = 0x80000` | cresce para baixo; a página `0x7F000`–`0x7FFFF` é reservada |
 | PML4 | `ram_size - 0x4000` | uma entrada, aponta o PDPT |
 | PDPT | `ram_size - 0x3000` | uma entrada, aponta o PD (primeiro 1 GiB) |
-| PD | `ram_size - 0x2000` | uma entrada `P|RW|PS` por cada 2 MiB de RAM |
+| PD | `ram_size - 0x2000` | uma entrada `P|RW|PS` por cada 2 MiB de RAM, mais a página do framebuffer |
+| framebuffer | `0x02000000` | 640×480, XRGB8888, pitch 2560, 1 228 800 bytes |
 
 A reserva das tabelas é `CHRIS_PT_RESERVE` = `0x4000`. O carregador recusa um segmento que sobreponha as tabelas, a página da GDT ou a página da pilha.
+
+A RAM padrão de 16 MiB usa os índices 0–7 do PD. O framebuffer fica no índice 16 (`0x02000000 >> 21`). O boot grava `endereço | 0x83` nessa entrada se ela ainda estiver vazia. `chris_machine_create` recusa uma RAM maior que `0x02000000`, para o endereço fixo permanecer fora da RAM. `0x01000000` continua sem página, e é o endereço do teste de `#PF`.
 
 ## GDT inicial
 
@@ -71,6 +74,7 @@ Os demais GPRs começam em zero. Não há estrutura de boot info nesta versão. 
 | --- | --- | --- |
 | serial 16550 mínimo | portas `0x3F8`–`0x3FF` | TX vai para o buffer e para o hook do frontend. Loopback (MCR bit 4) devolve o byte escrito, para o teste `0xAE` do `serial_init` |
 | shutdown de debug | porta `0x501` | escrita de `0x01` termina com `CHRIS_EXIT_SHUTDOWN`. Não é porta de PC nem a `0x604` do QEMU |
+| framebuffer linear | físico `0x02000000` | 640×480, um pixel little-endian `0x00RRGGBB`, pitch 2560. Escrita inteira dentro do retângulo copia para o buffer do dispositivo e marca a tela suja. Não é callback de MMIO byte a byte |
 
 Porta de I/O sem dispositivo: `IN` devolve `0xFF` / `0xFFFF` / `0xFFFFFFFF`. `OUT` é ignorado.
 
@@ -81,3 +85,5 @@ Uma exceção com IDT descarregada volta ao monitor (`CHRIS_EXIT_EXCEPTION`) e n
 ## Próxima versão
 
 O protocolo 2 precisa carregar um ELF higher-half, publicar um boot info explícito e manter o mesmo estado arquitetural. O kernel não deve detectar se o backend é ChrisCPU ou ChrisHV.
+
+O guest `guests/splash.asm` usa este framebuffer. Ele pinta o fundo `0x00101828` — a mesma primeira cor de `gfx_clear` em `kstart` — desenha o painel, o título, a barra e o rodapé com `REP STOS`, escreve `splash` na serial e executa `HLT`. Esse quadro é do ChrisCPU. O ELF do kernel continua recusado.

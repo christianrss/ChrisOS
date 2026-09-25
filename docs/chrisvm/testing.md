@@ -7,7 +7,7 @@ make chrisvm
 make chrisvm-test
 ```
 
-`make chrisvm-test` compila o interpretador, liga `guests/arith.asm` em `build/chrisvm/arith.elf`, roda `test_chrisvm` e exige que a saída do guest seja a linha `OK`.
+`make chrisvm-test` compila o interpretador, liga `guests/arith.asm` e `guests/splash.asm`, roda `test_chrisvm`, exige a linha `OK` do guest aritmético e a linha `splash` do guest gráfico, e grava `build/chrisvm/splash.png`.
 
 ## O que a suíte cobre
 
@@ -31,11 +31,15 @@ make chrisvm-test
 | ELF | o guest `arith.elf` imprime `OK`, halt, `RAX = 31` |
 | ELF ruim | magic inválido e header truncado |
 | fuzz | 2000 buffers no decoder, sem máquina |
-| MMIO | PDE de 2 MiB em `0x02000000`, store e load de `0x2A` |
+| MMIO | PDE de 2 MiB em `0x06000000`, store e load de `0x2A` |
+| `REP STOSD` | quatro pixels `0x12345678` em `0x02000000`, `RCX = 0`, halt |
+| splash | serial `splash`, fundo `0x00101828`, painel `0x00141C2C`, barra `0x004C8DFF`, tela suja |
 | físico vazio | PDE sem dispositivo gera `UNMAPPED` |
 | pilha | `PUSH` com RSP em página ausente gera `#PF` |
 | ChrisHV | `create` devolve nulo |
 
 O guest `arith.asm` é o marco M1: serial, aritmética, comparação, memória, chamada e `HLT`, sem QEMU.
+
+O guest `splash.asm` pinta o framebuffer linear e executa `HLT`. O PNG esperado tem o título `CHRISOS`, o subtítulo `inicializando`, a barra azul e o rodapé `CHRISVM`. Esse quadro não é o `gfx_present` do kernel.
 
 Não há ainda teste de `INT` com IDT programada, nem comparação diferencial contra o QEMU. O QEMU permanece ferramenta externa. A suíte do ChrisVM não liga com ele.

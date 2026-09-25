@@ -95,6 +95,7 @@ enum {
     CHRIS_OP_DESC,
     CHRIS_OP_SETCC,
     CHRIS_OP_CMOV,
+    CHRIS_OP_STOS,
     CHRIS_OP_UD,
     CHRIS_OP_UNIMPL
 };
@@ -245,6 +246,7 @@ typedef struct ChrisInsn {
     int acc_imm;
     int reg_only_push;
     int imm_src;
+    int rep;
 } ChrisInsn;
 
 struct ChrisMachine;

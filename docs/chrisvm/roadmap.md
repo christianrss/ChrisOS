@@ -12,7 +12,10 @@ Estados: `NOT STARTED`, `PARTIAL`, `WORKING`, `VALIDATED`.
 | barramento de portas | VALIDATED |
 | barramento MMIO | VALIDATED |
 | serial 16550 mínima | PARTIAL |
-| ChrisCPU MOV, ADD, CMP, Jcc, CALL, RET, memória, HLT | VALIDATED |
+| framebuffer linear 640×480 | VALIDATED |
+| guest de splash no ChrisCPU | VALIDATED |
+| janela SDL do framebuffer | WORKING |
+| ChrisCPU MOV, ADD, CMP, Jcc, CALL, RET, memória, STOS, HLT | VALIDATED |
 | flags da ALU inteira | PARTIAL |
 | DIV e IDIV em 8, 16, 32 e 64 | PARTIAL |
 | decoder | PARTIAL |
@@ -29,4 +32,4 @@ Estados: `NOT STARTED`, `PARTIAL`, `WORKING`, `VALIDATED`.
 | PCI, VirtIO | NOT STARTED |
 | ChrisHV, VMX, SVM | NOT STARTED |
 
-M2 está parcial porque a serial responde ao loopback `0xAE`, que é o que `serial_init` exige, mas o kernel não chegou a executar essa função. M3 espera o protocolo de boot higher-half, não um atalho de RIP.
+M2 está parcial porque a serial responde ao loopback `0xAE`, que é o que `serial_init` exige, mas o kernel não chegou a executar essa função. M3 espera o protocolo de boot higher-half, não um atalho de RIP. A tela de inicialização atual é o guest `splash.asm` no framebuffer de `0x02000000`. O ELF do kernel continua fora do protocolo v1.

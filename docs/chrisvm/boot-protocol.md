@@ -9,6 +9,7 @@ Resumo da versão 1:
 - identidade de 2 MiB, long mode, GDT em `0x70000`;
 - CS `0x08`, dados `0x10`;
 - serial `0x3F8`, shutdown `0x501`;
+- framebuffer `0x02000000`, 640×480, XRGB8888;
 - ELF em `0xffff800000000000` ou acima é recusado.
 
 Não há boot info. Não há atalho por RIP. O próximo protocolo é que vai descrever o higher-half do ChrisOS, em vez de o interpretador reconhecer `kstart`.

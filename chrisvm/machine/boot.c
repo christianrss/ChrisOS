@@ -131,6 +131,18 @@ static int install_tables(ChrisMachine *m, ChrisArchitectureState *st) {
     for (i = 0; i < pages; ++i) {
         *(uint64_t *)(m->ram + pd + i * 8ull) = (i * 2ull * 1024ull * 1024ull) | 0x83ull;
     }
+    if (m->fb.pix && m->fb.size) {
+        uint64_t addr = m->fb.base & ~0x1fffffull;
+        uint64_t end = m->fb.base + m->fb.size;
+        for (; addr < end; addr += 0x200000ull) {
+            uint64_t index = (addr >> 21) & 0x1ffull;
+            uint64_t slot = pd + index * 8ull;
+            if (*(uint64_t *)(m->ram + slot) != 0) {
+                return -1;
+            }
+            *(uint64_t *)(m->ram + slot) = addr | 0x83ull;
+        }
+    }
     desc[0] = 0;
     desc[1] = 0x00af9a000000ffffull;
     desc[2] = 0x00cf92000000ffffull;
