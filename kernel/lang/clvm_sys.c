@@ -2794,6 +2794,31 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
         anim_apply((int)node, (int)t);
         return clvm_vm_push64(vm, 0) ? 0 : -1;
     }
+    case 250: {
+        int32_t op;
+        int32_t arg;
+        if (!pop_i32(vm, &arg) || !pop_i32(vm, &op))
+            return -1;
+        return clvm_vm_push(vm, lang_debug_ctl(op, arg)) ? 0 : -1;
+    }
+    case 251: {
+        int32_t kind;
+        int32_t dst;
+        char buf[96];
+        int n;
+        if (!pop_i32(vm, &dst) || !pop_i32(vm, &kind))
+            return -1;
+        n = lang_debug_text(kind, buf, (int)sizeof(buf));
+        if (n < 0)
+            n = 0;
+        if (n >= (int)sizeof(buf))
+            n = (int)sizeof(buf) - 1;
+        buf[n] = 0;
+        n++;
+        if (!vm_copy_out(vm, dst, n, (const uint8_t *)buf))
+            return clvm_vm_push(vm, 0) ? 0 : -1;
+        return clvm_vm_push(vm, 1) ? 0 : -1;
+    }
     default:
         return -1;
     }

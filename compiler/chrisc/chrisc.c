@@ -532,7 +532,8 @@ static const Builtin builtins[] = {
     {"sys_cfs_misses", 123, 0, 1, 0},
     {"sys_active_apps", 124, 0, 1, 0},
     {"app_raise", 125, 1, 1, 0},
-    {"textruns", 126, 2, 0, 0}
+    {"textruns", 126, 2, 0, 0},
+    {"dbg_ctl", 250, 2, 1, 0}, {"dbg_text", 251, 2, 1, 0}
 };
 
 static int alpha(int c) {

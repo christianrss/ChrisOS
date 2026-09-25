@@ -102,6 +102,12 @@ static char g_last_err[160];
 static char g_app_arg[FS_PATH];
 static int g_want_debug;
 static int g_nojit;
+#define LANG_PEND_BP 32
+static int g_pend_line[LANG_PEND_BP];
+static int g_pend_n;
+static uint32_t g_pend_watch;
+static int g_pend_watch_set;
+static void lang_arm_line(LangSlot *s, int line, int on);
 
 void lang_force_interp(void) {
     g_nojit = 1;
@@ -1135,6 +1141,13 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     slots[i].paused = g_want_debug;
     slots[i].step_one = 0;
     slots[i].nbreak = 0;
+    if (g_want_debug) {
+        int pb;
+        for (pb = 0; pb < g_pend_n; ++pb)
+            lang_arm_line(&slots[i], g_pend_line[pb], 1);
+        if (g_pend_watch_set)
+            slots[i].watch = g_pend_watch;
+    }
     slots[i].step_line = 0;
     slots[i].step_mode = DBG_STEP_NONE;
     slots[i].step_depth = 0;
@@ -2326,6 +2339,8 @@ const char *lang_debug_fn(uint32_t pc) {
 
 void lang_debug_set_watch(uint32_t addr) {
     int s;
+    g_pend_watch = addr;
+    g_pend_watch_set = 1;
     for (s = 0; s < LANG_VM_SLOTS; ++s) {
         if (slots[s].used && slots[s].debug_on)
             slots[s].watch = addr;
@@ -2399,6 +2414,65 @@ int32_t lang_debug_mem(uint32_t addr) {
     return 0;
 }
 
+static int lang_dbg_slot(void) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on)
+            return s;
+    }
+    return -1;
+}
+
+static int lang_pend_has(int line) {
+    int i;
+    for (i = 0; i < g_pend_n; ++i) {
+        if (g_pend_line[i] == line)
+            return 1;
+    }
+    return 0;
+}
+
+static void lang_pend_toggle(int line) {
+    int i;
+    for (i = 0; i < g_pend_n; ++i) {
+        if (g_pend_line[i] == line) {
+            g_pend_line[i] = g_pend_line[g_pend_n - 1];
+            g_pend_n--;
+            return;
+        }
+    }
+    if (g_pend_n < LANG_PEND_BP)
+        g_pend_line[g_pend_n++] = line;
+}
+
+static void lang_arm_line(LangSlot *s, int line, int on) {
+    uint32_t pc = 0;
+    int found = 0;
+    int i;
+    if (!s)
+        return;
+    for (i = 0; i < s->map_n; ++i) {
+        if ((int)s->map_line[i] == line) {
+            pc = s->map_pc[i];
+            found = 1;
+            break;
+        }
+    }
+    if (!found)
+        return;
+    for (i = 0; i < s->nbreak; ++i) {
+        if (s->breakpoints[i] == pc) {
+            if (!on) {
+                s->breakpoints[i] = s->breakpoints[s->nbreak - 1];
+                s->nbreak--;
+            }
+            return;
+        }
+    }
+    if (on && s->nbreak < 32)
+        s->breakpoints[s->nbreak++] = pc;
+}
+
 int lang_bp_add(uint32_t pc) {
     int s;
     for (s = 0; s < LANG_VM_SLOTS; ++s) {
@@ -2421,34 +2495,307 @@ uint16_t lang_debug_line(void) {
 
 int lang_bp_toggle_line(int line) {
     int s;
-    int i;
-    uint32_t pc = 0;
-    int found = 0;
+    int on;
     if (line < 1)
         return 0;
+    lang_pend_toggle(line);
+    on = lang_pend_has(line);
     for (s = 0; s < LANG_VM_SLOTS; ++s) {
-        if (!slots[s].used)
-            continue;
-        for (i = 0; i < slots[s].map_n; ++i) {
-            if ((int)slots[s].map_line[i] == line) {
-                pc = slots[s].map_pc[i];
-                found = 1;
-                break;
-            }
-        }
-        if (!found)
+        if (slots[s].used)
+            lang_arm_line(&slots[s], line, on);
+    }
+    return on;
+}
+
+int lang_bp_has(int line) {
+    int s;
+    int i;
+    int j;
+    if (lang_pend_has(line))
+        return 1;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (!slots[s].used || !slots[s].debug_on)
             continue;
         for (i = 0; i < slots[s].nbreak; ++i) {
-            if (slots[s].breakpoints[i] == pc) {
-                slots[s].breakpoints[i] = slots[s].breakpoints[slots[s].nbreak - 1];
-                slots[s].nbreak--;
-                return 0;
+            for (j = 0; j < slots[s].map_n; ++j) {
+                if (slots[s].map_pc[j] == slots[s].breakpoints[i] &&
+                    (int)slots[s].map_line[j] == line)
+                    return 1;
             }
         }
-        if (slots[s].nbreak < 32) {
-            slots[s].breakpoints[slots[s].nbreak++] = pc;
-            return 1;
-        }
     }
-    return -1;
+    return 0;
+}
+
+int lang_debug_on(void) {
+    return lang_dbg_slot() >= 0;
+}
+
+void lang_debug_detach(void) {
+    int s;
+    g_want_debug = 0;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (!slots[s].used || !slots[s].debug_on)
+            continue;
+        slots[s].debug_on = 0;
+        slots[s].paused = 0;
+        slots[s].step_one = 0;
+        slots[s].step_line = 0;
+        slots[s].step_mode = DBG_STEP_NONE;
+    }
+}
+
+static int lang_debug_bytes(uint32_t addr, uint8_t *dst, int n) {
+    int s = lang_dbg_slot();
+    int prev;
+    int i;
+    const uint8_t *m;
+    if (s < 0 || !dst || n <= 0)
+        return 0;
+    prev = proc_current();
+    if (slots[s].user_ram)
+        proc_switch(slots[s].proc_id);
+    m = slots[s].vm.memory;
+    if (!m || (uint64_t)addr >= slots[s].vm.mem_size) {
+        proc_switch(prev);
+        return 0;
+    }
+    if ((uint64_t)n > slots[s].vm.mem_size - (uint64_t)addr)
+        n = (int)(slots[s].vm.mem_size - (uint64_t)addr);
+    for (i = 0; i < n; ++i)
+        dst[i] = m[addr + (uint32_t)i];
+    proc_switch(prev);
+    return n;
+}
+
+static void dbg_app(char *d, int *n, int cap, const char *s) {
+    int i = 0;
+    while (s[i] && *n + 1 < cap) {
+        d[*n] = s[i];
+        *n += 1;
+        i++;
+    }
+}
+
+static void dbg_dec(char *d, int *n, int cap, unsigned v) {
+    char tmp[12];
+    int t = 0;
+    if (v == 0)
+        tmp[t++] = '0';
+    while (v && t < 12) {
+        tmp[t++] = (char)('0' + (v % 10u));
+        v /= 10u;
+    }
+    while (t > 0 && *n + 1 < cap) {
+        t--;
+        d[*n] = tmp[t];
+        *n += 1;
+    }
+}
+
+static void dbg_hex(char *d, int *n, int cap, uint32_t v, int digits) {
+    char tmp[8];
+    int i;
+    if (digits > 8)
+        digits = 8;
+    for (i = digits - 1; i >= 0; --i) {
+        tmp[i] = "0123456789abcdef"[v & 15u];
+        v >>= 4;
+    }
+    for (i = 0; i < digits; ++i) {
+        if (*n + 1 >= cap)
+            return;
+        d[*n] = tmp[i];
+        *n += 1;
+    }
+}
+
+static void dbg_hex_row(char *dst, int cap, int row) {
+    uint32_t addr = lang_debug_watch() + (uint32_t)row * 8u;
+    uint8_t b[8];
+    int got;
+    int n = 0;
+    int i;
+    if (cap < 2) {
+        if (cap > 0)
+            dst[0] = 0;
+        return;
+    }
+    dbg_hex(dst, &n, cap, addr, 8);
+    dbg_app(dst, &n, cap, " ");
+    got = lang_debug_bytes(addr, b, 8);
+    for (i = 0; i < 8; ++i) {
+        if (i < got)
+            dbg_hex(dst, &n, cap, b[i], 2);
+        else
+            dbg_app(dst, &n, cap, "--");
+        dbg_app(dst, &n, cap, " ");
+    }
+    dst[n] = 0;
+}
+
+int lang_debug_ctl(int op, int arg) {
+    int s;
+    uint64_t cr2 = 0;
+    uint64_t rip = 0;
+    int pid = 0;
+    int id = 0;
+    switch (op) {
+    case 0:
+        return lang_debug_paused();
+    case 1:
+        lang_debug_enable(arg ? 1 : 0);
+        return g_want_debug;
+    case 2:
+        lang_debug_step();
+        return 1;
+    case 3:
+        lang_debug_step_over();
+        return 1;
+    case 4:
+        lang_debug_step_out();
+        return 1;
+    case 5:
+        lang_debug_continue();
+        return 1;
+    case 6:
+        lang_debug_detach();
+        return 0;
+    case 7:
+        return lang_bp_toggle_line(arg);
+    case 8:
+        lang_debug_set_watch((uint32_t)arg);
+        return (int)lang_debug_watch();
+    case 9:
+        return (int)lang_debug_pc();
+    case 10:
+        return (int)lang_debug_line();
+    case 11:
+        s = lang_dbg_slot();
+        return s < 0 ? 0 : (int)slots[s].vm.sp;
+    case 12:
+        return (int)lang_debug_stack(arg);
+    case 13:
+        return (int)lang_debug_call(arg);
+    case 14:
+        return (int)lang_debug_mem((uint32_t)arg);
+    case 15: {
+        uint8_t b = 0;
+        if (lang_debug_bytes((uint32_t)arg, &b, 1) != 1)
+            return -1;
+        return (int)b;
+    }
+    case 16:
+        if (lang_debug_sys(arg, &id) < 0 && id == 0)
+            return -1;
+        return id;
+    case 17:
+        return lang_debug_fault(&cr2, &pid, &rip);
+    case 18:
+        if (!lang_debug_fault(&cr2, &pid, &rip))
+            return 0;
+        return (int)(uint32_t)rip;
+    case 19:
+        s = lang_dbg_slot();
+        if (s < 0)
+            return 0;
+        if (slots[s].vm.mem_size > 0x7fffffffull)
+            return 0x7fffffff;
+        return (int)slots[s].vm.mem_size;
+    case 20:
+        return (int)lang_debug_watch();
+    default:
+        return -1;
+    }
+}
+
+int lang_debug_text(int kind, char *dst, int cap) {
+    int n = 0;
+    int s;
+    int i;
+    const char *fn;
+    if (!dst || cap < 2)
+        return 0;
+    dst[0] = 0;
+    if (kind == 2 || kind == 3) {
+        dbg_hex_row(dst, cap, kind - 2);
+        while (dst[n])
+            n++;
+        return n;
+    }
+    if (kind == 0) {
+        uint64_t cr2 = 0;
+        uint64_t rip = 0;
+        int pid = 0;
+        dbg_app(dst, &n, cap, "L");
+        dbg_dec(dst, &n, cap, lang_debug_line());
+        dbg_app(dst, &n, cap, " pc ");
+        dbg_hex(dst, &n, cap, lang_debug_pc(), 8);
+        fn = lang_debug_fn(lang_debug_pc());
+        if (fn && fn[0]) {
+            dbg_app(dst, &n, cap, " ");
+            dbg_app(dst, &n, cap, fn);
+        }
+        dbg_app(dst, &n, cap, " sp ");
+        s = lang_dbg_slot();
+        dbg_dec(dst, &n, cap, s < 0 ? 0u : slots[s].vm.sp);
+        dbg_app(dst, &n, cap, " bp ");
+        dbg_dec(dst, &n, cap, (unsigned)g_pend_n);
+        if (lang_debug_fault(&cr2, &pid, &rip))
+            dbg_app(dst, &n, cap, " FAULT");
+        else if (!lang_debug_on())
+            dbg_app(dst, &n, cap, " idle");
+        else if (lang_debug_paused())
+            dbg_app(dst, &n, cap, " paused");
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 1) {
+        dbg_app(dst, &n, cap, "stk");
+        for (i = 0; i < 4; ++i) {
+            dbg_app(dst, &n, cap, " ");
+            dbg_hex(dst, &n, cap, (uint32_t)lang_debug_stack(i), 8);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 4) {
+        dbg_app(dst, &n, cap, "bp");
+        for (i = 0; i < g_pend_n && i < 8; ++i) {
+            dbg_app(dst, &n, cap, " ");
+            dbg_dec(dst, &n, cap, (unsigned)g_pend_line[i]);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 5) {
+        int id = 0;
+        dbg_app(dst, &n, cap, "sys");
+        for (i = 0; i < 6; ++i) {
+            if (lang_debug_sys(i, &id) < 0 && id == 0)
+                break;
+            dbg_app(dst, &n, cap, " ");
+            dbg_dec(dst, &n, cap, (unsigned)id);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 6) {
+        uint64_t cr2 = 0;
+        uint64_t rip = 0;
+        int pid = 0;
+        if (!lang_debug_fault(&cr2, &pid, &rip)) {
+            dbg_app(dst, &n, cap, "no fault");
+        } else {
+            dbg_app(dst, &n, cap, "fault pc ");
+            dbg_hex(dst, &n, cap, (uint32_t)rip, 8);
+            dbg_app(dst, &n, cap, " cr2 ");
+            dbg_hex(dst, &n, cap, (uint32_t)cr2, 8);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    dbg_app(dst, &n, cap, "dbg");
+    dst[n] = 0;
+    return n;
 }

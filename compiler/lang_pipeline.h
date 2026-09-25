@@ -84,5 +84,14 @@ void lang_debug_set_watch(uint32_t addr);
 uint32_t lang_debug_watch(void);
 int lang_debug_sys(int index, int *id);
 int lang_debug_fault(uint64_t *cr2, int *pid, uint64_t *rip);
+int lang_debug_on(void);
+void lang_debug_detach(void);
+/* op: 0 paused, 1 arm next run, 2 in, 3 over, 4 out, 5 cont, 6 detach,
+ * 7 toggle line, 8 watch, 9 pc, 10 line, 11 sp, 12 stack, 13 call,
+ * 14 mem i32, 15 byte, 16 sys id, 17 fault, 18 fault pc, 19 mem size, 20 watch. */
+int lang_debug_ctl(int op, int arg);
+/* kind 0 status, 1 stack, 2-3 hex rows, 4 breakpoints, 5 sys trace, 6 fault. */
+int lang_debug_text(int kind, char *dst, int cap);
+int lang_bp_has(int line);
 
 #endif

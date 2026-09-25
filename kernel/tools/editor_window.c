@@ -231,84 +231,31 @@ static void editor_draw_status(const Task *task, const Editor *e) {
     }
 }
 
-static void dbg_hex(char *dst, int cap, const char *lab, uint32_t v) {
-    int n = 0;
-    char hex[8];
-    int h = 0;
-    if (cap < 2) {
-        return;
-    }
-    while (lab[n] && n + 1 < cap) {
-        dst[n] = lab[n];
-        n++;
-    }
-    if (v == 0) {
-        if (n + 1 < cap)
-            dst[n++] = '0';
-        dst[n] = 0;
-        return;
-    }
-    while (v && h < 8) {
-        hex[h++] = "0123456789abcdef"[v & 15];
-        v >>= 4;
-    }
-    while (h && n + 1 < cap)
-        dst[n++] = hex[--h];
-    dst[n] = 0;
-}
-
 static void editor_draw_debug(const Task *task) {
     int x;
     int y;
-    int w = 140;
-    int h = 160;
-    int i;
-    if (!task || !lang_debug_paused()) {
+    int w;
+    int h = 64;
+    char line[96];
+    if (!task || !lang_debug_on())
         return;
-    }
-    x = task->frame.x + task->frame.width - w - 2;
-    y = task->frame.y + TASK_TITLE_HEIGHT + EDITOR_CHROME_H + 2;
-    gfx_fill_rect(x, y, w, h, 0x00202830u);
-    {
-        char line[24];
-        int sys = 0;
-        uint64_t cr2 = 0;
-        uint64_t rip = 0;
-        int pid = 0;
-        const char *fn = lang_debug_fn(lang_debug_pc());
-        dbg_hex(line, 24, "pc ", lang_debug_pc());
-        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                              x + 2, y + 2, 0x00E0E0E0u, x, y, w, h);
-        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
-                              fn && fn[0] ? fn : "fn",
-                              x + 2, y + 16, 0x00E0E0E0u, x, y, w, h);
-        for (i = 0; i < 3; ++i) {
-            char lab[4];
-            lab[0] = 'c';
-            lab[1] = (char)('0' + i);
-            lab[2] = ' ';
-            lab[3] = 0;
-            dbg_hex(line, 24, lab, lang_debug_call(i));
-            gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
-                                  line, x + 2, y + 30 + i * 14, 0x00E0E0E0u,
-                                  x, y, w, h);
-        }
-        dbg_hex(line, 24, "w ", (uint32_t)lang_debug_mem(lang_debug_watch()));
-        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                              x + 2, y + 74, 0x00E0E0E0u, x, y, w, h);
-        (void)lang_debug_sys(0, &sys);
-        dbg_hex(line, 24, "sys ", (uint32_t)sys);
-        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                              x + 2, y + 88, 0x00E0E0E0u, x, y, w, h);
-        if (lang_debug_fault(&cr2, &pid, &rip)) {
-            dbg_hex(line, 24, "cr2 ", (uint32_t)cr2);
-            gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                                  x + 2, y + 102, 0x00E0E0E0u, x, y, w, h);
-            dbg_hex(line, 24, "pid ", (uint32_t)pid);
-            gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                                  x + 2, y + 116, 0x00E0E0E0u, x, y, w, h);
-        }
-    }
+    x = task->frame.x;
+    w = task->frame.width;
+    y = task->frame.y + TASK_TITLE_HEIGHT + task->frame.body_height
+        - EDITOR_STATUS_H - h;
+    gfx_fill_rect(x, y, w, h, 0x00182028u);
+    (void)lang_debug_text(0, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 2, 0x00FFE080u, x, y, w, h);
+    (void)lang_debug_text(1, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 16, 0x00C0E0C0u, x, y, w, h);
+    (void)lang_debug_text(2, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 30, 0x00E0E0E0u, x, y, w, h);
+    (void)lang_debug_text(5, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 44, 0x00A0C8E0u, x, y, w, h);
 }
 
 static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
@@ -317,8 +264,10 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
     int text_x = x + EDITOR_PAD_X;
     int text_y = body_y + EDITOR_CHROME_H + EDITOR_PAD_Y;
     int text_w = task->frame.width - EDITOR_PAD_X * 2;
+    int dbg_h = lang_debug_on() ? 64 : 0;
     int text_h = task->frame.body_height - EDITOR_STATUS_H - EDITOR_CHROME_H
-                 - EDITOR_PAD_Y * 2;
+                 - EDITOR_PAD_Y * 2 - dbg_h;
+    uint16_t dline = 0;
     int glyph_h = font_arial_height;
     int advance = gfx_text_advance(font_arial_width);
     int visible_rows;
@@ -335,6 +284,8 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
     }
     visible_rows = text_h / glyph_h;
     visible_cols = text_w / advance;
+    if (lang_debug_paused())
+        dline = lang_debug_line();
     editor_auto_scroll(e, visible_rows, visible_cols);
     task->state.editor.scroll_row = e->scroll_row;
     task->state.editor.scroll_col = e->scroll_col;
@@ -353,9 +304,18 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
         while (src[i] && i < skip) {
             i++;
         }
+        if (dline && (int)dline == line + 1) {
+            gfx_fill_rect(text_x, text_y + r * glyph_h, text_w, glyph_h,
+                          0x00304058u);
+        }
+        if (lang_bp_has(line + 1)) {
+            gfx_fill_rect(x + 1, text_y + r * glyph_h, 3, glyph_h, 0x00C04040u);
+        }
         gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
                               src + i,
-                              text_x, text_y + r * glyph_h, CHRIS_TEXT_COLOR,
+                              text_x, text_y + r * glyph_h,
+                              (dline && (int)dline == line + 1) ? 0x00FFE080u
+                                                                : CHRIS_TEXT_COLOR,
                               text_x, text_y, text_w, text_h);
     }
 
@@ -699,20 +659,27 @@ static void editor_run(Task *task, uint64_t ticks) {
                 event.key == INPUT_KEY_F9) {
                 lang_debug_enable(1);
                 (void)lang_compile_run(e);
+                lang_debug_enable(0);
                 continue;
             }
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F10) {
-                if (lang_debug_paused())
-                    lang_debug_step();
-                else
+                if (lang_debug_paused()) {
+                    if (input_key_down(0x2A) || input_key_down(0x36))
+                        lang_debug_step_over();
+                    else
+                        lang_debug_step();
+                } else {
                     lang_debug_continue();
+                }
                 continue;
             }
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F8) {
-                lang_debug_enable(0);
-                lang_debug_continue();
+                if (input_key_down(0x2A) || input_key_down(0x36))
+                    lang_debug_detach();
+                else
+                    lang_debug_continue();
                 continue;
             }
             key = map_input_event(&event);

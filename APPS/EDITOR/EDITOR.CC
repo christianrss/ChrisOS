@@ -59,6 +59,11 @@ int g_yank;
 int g_yank_len;
 int g_yank_cap;
 int g_yank_linewise;
+char g_d0[80];
+char g_d1[80];
+char g_d2[80];
+int g_dbg;
+int g_dbg_line;
 
 void ensure_line_index();
 void buf_init() {
@@ -552,11 +557,187 @@ void do_make() {
   }
 }
 
+int parse_num(int s) {
+  int i;
+  int c;
+  int v;
+  int hex;
+  i = 0;
+  v = 0;
+  hex = 0;
+  while (loadb(s + i) == 32) {
+    i = i + 1;
+  }
+  if (loadb(s + i) == 48) {
+    c = loadb(s + i + 1);
+    if (c == 120) {
+      hex = 1;
+      i = i + 2;
+    }
+    if (c == 88) {
+      hex = 1;
+      i = i + 2;
+    }
+  }
+  c = loadb(s + i);
+  if (c >= 97) {
+    if (c <= 102) {
+      hex = 1;
+    }
+  }
+  if (c >= 65) {
+    if (c <= 70) {
+      hex = 1;
+    }
+  }
+  c = loadb(s + i);
+  while (c != 0) {
+    if (hex) {
+      if (c >= 48) {
+        if (c <= 57) {
+          v = v * 16 + (c - 48);
+        }
+      }
+      if (c >= 97) {
+        if (c <= 102) {
+          v = v * 16 + (c - 87);
+        }
+      }
+      if (c >= 65) {
+        if (c <= 70) {
+          v = v * 16 + (c - 55);
+        }
+      }
+      if (c < 48) {
+        return v;
+      }
+      if (c > 57) {
+        if (c < 65) {
+          return v;
+        }
+        if (c > 70) {
+          if (c < 97) {
+            return v;
+          }
+          if (c > 102) {
+            return v;
+          }
+        }
+      }
+    } else {
+      if (c < 48) {
+        return v;
+      }
+      if (c > 57) {
+        return v;
+      }
+      v = v * 10 + (c - 48);
+    }
+    i = i + 1;
+    c = loadb(s + i);
+  }
+  return v;
+}
+
+int cmd_arg() {
+  int i;
+  i = 0;
+  while (loadb(g_cmd + i) != 0) {
+    if (loadb(g_cmd + i) == 32) {
+      return g_cmd + i;
+    }
+    i = i + 1;
+  }
+  return g_cmd + i;
+}
+
+void clv_out(int out) {
+  int i;
+  int dot;
+  i = 0;
+  dot = -1;
+  while (i < 511) {
+    if (loadb(g_path + i) == 0) {
+      storeb(out + i, 0);
+      i = 512;
+    } else {
+      storeb(out + i, loadb(g_path + i));
+      if (loadb(g_path + i) == 46) {
+        dot = i;
+      }
+      i = i + 1;
+    }
+  }
+  if (dot < 0) {
+    storeb(out, 0);
+    return;
+  }
+  if (dot + 4 >= 512) {
+    storeb(out, 0);
+    return;
+  }
+  storeb(out + dot + 1, 67);
+  storeb(out + dot + 2, 76);
+  storeb(out + dot + 3, 86);
+  storeb(out + dot + 4, 0);
+}
+
+void dbg_follow() {
+  int ln;
+  ln = dbg_ctl(10, 0);
+  g_dbg = 1;
+  g_dbg_line = ln;
+  if (ln > 0) {
+    jump_line(ln);
+  }
+  g_view_gen = g_view_gen + 1;
+}
+
+void do_debug() {
+  int st;
+  char out[512];
+  if (g_dirty) {
+    save_file();
+    if (g_msg == 2) {
+      return;
+    }
+  }
+  dbg_ctl(1, 1);
+  do_compile();
+  if (g_msg == 4) {
+    dbg_ctl(1, 0);
+    return;
+  }
+  if (g_msg == 3) {
+    dbg_ctl(1, 0);
+    return;
+  }
+  clv_out(out);
+  if (loadb(out) == 0) {
+    dbg_ctl(1, 0);
+    status_set("no ext");
+    return;
+  }
+  st = sys_run(out);
+  dbg_ctl(1, 0);
+  if (st == 0) {
+    capture_err();
+    g_msg = 6;
+    status_set(g_err);
+    g_dbg = 0;
+    return;
+  }
+  storeb(g_panel, 0);
+  g_msg = 7;
+  dbg_follow();
+  status_set("debug");
+}
+
 void do_go() {
   int st;
   char out[512];
-  int i;
-  int dot;
+  dbg_ctl(6, 0);
+  g_dbg = 0;
   if (g_dirty) {
     save_file();
     if (g_msg == 2) {
@@ -570,31 +751,11 @@ void do_go() {
   if (g_msg == 3) {
     return;
   }
-  i = 0;
-  dot = -1;
-  while (i < 511) {
-    if (loadb(g_path + i) == 0) {
-      break;
-    }
-    storeb(out + i, loadb(g_path + i));
-    if (loadb(g_path + i) == 46) {
-      dot = i;
-    }
-    i = i + 1;
-  }
-  storeb(out + i, 0);
-  if (dot < 0) {
+  clv_out(out);
+  if (loadb(out) == 0) {
     status_set("no ext");
     return;
   }
-  if (dot + 4 >= 512) {
-    status_set("no ext");
-    return;
-  }
-  storeb(out + dot + 1, 67);
-  storeb(out + dot + 2, 76);
-  storeb(out + dot + 3, 86);
-  storeb(out + dot + 4, 0);
   st = sys_run(out);
   if (st == 0) {
     capture_err();
@@ -605,6 +766,52 @@ void do_go() {
     g_msg = 7;
     status_set("running");
   }
+}
+
+void do_step() {
+  dbg_ctl(2, 0);
+  dbg_follow();
+  status_set("step");
+}
+
+void do_over() {
+  dbg_ctl(3, 0);
+  dbg_follow();
+  status_set("over");
+}
+
+void do_out() {
+  dbg_ctl(4, 0);
+  dbg_follow();
+  status_set("out");
+}
+
+void do_cont() {
+  dbg_ctl(5, 0);
+  g_dbg = 1;
+  g_view_gen = g_view_gen + 1;
+  status_set("cont");
+}
+
+void do_stop() {
+  dbg_ctl(6, 0);
+  g_dbg = 0;
+  g_dbg_line = 0;
+  g_view_gen = g_view_gen + 1;
+  status_set("debug off");
+}
+
+void do_bp() {
+  dbg_ctl(7, cur_line_num());
+  g_view_gen = g_view_gen + 1;
+  status_set("bp");
+}
+
+void do_watch() {
+  dbg_ctl(8, parse_num(cmd_arg()));
+  g_dbg = 1;
+  g_view_gen = g_view_gen + 1;
+  status_set("watch");
 }
 
 void browse_open() {
@@ -1444,6 +1651,17 @@ void run_colon() {
     }
   }
   if (c0 == 119) {
+    if (loadb(g_cmd + 1) == 97) {
+      if (loadb(g_cmd + 2) == 116) {
+        if (loadb(g_cmd + 3) == 99) {
+          if (loadb(g_cmd + 4) == 104) {
+            do_watch();
+            g_mode = 0;
+            return;
+          }
+        }
+      }
+    }
     if (c1 == 0) {
       save_file();
       g_mode = 0;
@@ -1511,6 +1729,73 @@ void run_colon() {
       do_compile();
       g_mode = 0;
       return;
+    }
+    if (c1 == 0) {
+      do_cont();
+      g_mode = 0;
+      return;
+    }
+  }
+  if (c0 == 100) {
+    if (loadb(g_cmd + 1) == 98) {
+      if (loadb(g_cmd + 2) == 103) {
+        do_debug();
+        g_mode = 0;
+        return;
+      }
+    }
+  }
+  if (c0 == 98) {
+    if (loadb(g_cmd + 1) == 112) {
+      do_bp();
+      g_mode = 0;
+      return;
+    }
+  }
+  if (c0 == 104) {
+    if (loadb(g_cmd + 1) == 101) {
+      if (loadb(g_cmd + 2) == 120) {
+        do_watch();
+        g_mode = 0;
+        return;
+      }
+    }
+  }
+  if (c0 == 115) {
+    if (loadb(g_cmd + 1) == 116) {
+      if (loadb(g_cmd + 2) == 111) {
+        if (loadb(g_cmd + 3) == 112) {
+          do_stop();
+          g_mode = 0;
+          return;
+        }
+      }
+      if (loadb(g_cmd + 2) == 101) {
+        if (loadb(g_cmd + 3) == 112) {
+          do_step();
+          g_mode = 0;
+          return;
+        }
+      }
+    }
+    if (c1 == 0) {
+      do_step();
+      g_mode = 0;
+      return;
+    }
+  }
+  if (c0 == 111) {
+    if (loadb(g_cmd + 1) == 118) {
+      do_over();
+      g_mode = 0;
+      return;
+    }
+    if (loadb(g_cmd + 1) == 117) {
+      if (loadb(g_cmd + 2) == 116) {
+        do_out();
+        g_mode = 0;
+        return;
+      }
     }
   }
   if (c0 == 109) {
@@ -1805,6 +2090,32 @@ void handle_key(int k) {
     }
     return;
   }
+  if (g_mode == 0) {
+    if (k == 18) {
+      do_debug();
+      return;
+    }
+    if (k == 19) {
+      do_step();
+      return;
+    }
+    if (k == 17) {
+      do_cont();
+      return;
+    }
+    if (k == 16) {
+      do_bp();
+      return;
+    }
+    if (k == 15) {
+      if (g_dbg) {
+        do_over();
+      } else {
+        do_go();
+      }
+      return;
+    }
+  }
   if (k == 5) {
     move_left();
     return;
@@ -1980,6 +2291,16 @@ void draw_panel() {
   h = 56;
   y = win_h() - 18 - h;
   fillrgb(6, y, win_w() - 28, h, 0x00182028);
+  if (g_dbg) {
+    g_dbg_line = dbg_ctl(10, 0);
+    dbg_text(0, g_d0);
+    dbg_text(1, g_d1);
+    dbg_text(2, g_d2);
+    text(8, y + 2, g_d0, 0x00FFE080);
+    text(8, y + 18, g_d1, 0x00C0E0C0);
+    text(8, y + 36, g_d2, 0x00E0E0E0);
+    return;
+  }
   text(8, y + 2, "cc / make / run", 0x0080A0B0);
   if (loadb(g_panel) == 0) {
     text(8, y + 18, "(no output)", 0x00607080);
@@ -2062,6 +2383,11 @@ void draw_text_view() {
       y = win_h();
     } else {
       draw_gutter_num(gx, y, line + 1);
+      if (g_dbg) {
+        if (line + 1 == g_dbg_line) {
+          fillrgb(2, y, 4, 14, 0x00FFE080);
+        }
+      }
       px = gx + 36;
       col = 0;
       skip = 0;
@@ -2359,6 +2685,7 @@ void main() {
   int list_h;
   int list_w;
   int skip_draw;
+  int ln;
   char arg[96];
   win_origin(80, 40);
   buf_init();
@@ -2554,7 +2881,19 @@ void main() {
       }
     } else {
       fillrgb(0, 48, win_w(), 20, 0x00101828);
-      text(8, 48, "Esc  i  v V  yy p P  dd x  :w :e :n :cc  hjkl", 0x00E8DCC8);
+      text(8, 48, "F9 dbg  F10 step  F8 cont  F7 bp  F5 over  :hex :watch", 0x00E8DCC8);
+      if (g_dbg) {
+        if (dbg_ctl(0, 0)) {
+          ln = dbg_ctl(10, 0);
+          if (ln != g_dbg_line) {
+            g_dbg_line = ln;
+            if (ln > 0) {
+              jump_line(ln);
+            }
+            g_view_gen = g_view_gen + 1;
+          }
+        }
+      }
       skip_draw = 0;
       if (g_line_index_dirty == 0) {
         if (g_seen_ok) {
