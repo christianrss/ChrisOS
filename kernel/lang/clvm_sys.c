@@ -2281,6 +2281,7 @@ int clvm_sys_dispatch(ClvmVm *vm, int32_t id, void *user) {
             task_close(t->id);
         }
         lang_slot_request_close(slot);
+        vm->state = CLVM_HALTED;
         return 0;
     }
     case 113: {

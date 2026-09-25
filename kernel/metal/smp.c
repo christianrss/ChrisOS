@@ -56,7 +56,7 @@ static uint32_t lapic_id_read(void) {
 }
 
 static uint64_t alloc_ap_stack(uint32_t index) {
-    uint64_t virt = AP_STACK_VIRT_BASE + (uint64_t)index * 0x10000ull;
+    uint64_t virt = AP_STACK_VIRT_BASE + (uint64_t)index * AP_STACK_STRIDE;
     uint32_t page;
 
     for (page = 0; page < AP_STACK_PAGES; page++) {
@@ -67,6 +67,36 @@ static uint64_t alloc_ap_stack(uint32_t index) {
         map_4k(virt + (uint64_t)page * 4096ull, phys, 0x3u);
     }
     return virt + (uint64_t)AP_STACK_PAGES * 4096ull;
+}
+
+/* Runs only after RSP is the AP stack. The index argument is loaded into a
+ * register before that switch; locals of ap_entry are not valid here. */
+static void ap_c_entry(uint32_t index) __attribute__((used));
+
+static void ap_c_entry(uint32_t index) {
+    uint32_t from_stack;
+    uint32_t lapic;
+
+    idt_load();
+    sse_bsp_init();
+    from_stack = smp_current_cpu();
+    if (from_stack != 0u) {
+        index = from_stack;
+    }
+    if (index == 0u || index >= SMP_MAX_APS) {
+        for (;;) {
+            __asm__ volatile ("hlt");
+        }
+    }
+    lapic = lapic_id_read();
+    if (index < SMP_CPU_CAP) {
+        g_lapic_of_cpu[index] = lapic;
+        g_lapic_known[index] = 1u;
+    }
+    __sync_fetch_and_add(&cpu_online_count, 1u);
+    /* IF stays clear until the BSP finishes install. Enabling the LAPIC and
+     * unmasking an AP during the ATA copy kept that copy from finishing. */
+    job_worker_forever(index);
 }
 
 static void ap_entry(struct limine_mp_info *info) {
@@ -96,25 +126,19 @@ static void ap_entry(struct limine_mp_info *info) {
         }
     }
 
+    /* Do not touch locals after this. The old frame pointer is on the
+     * previous stack, and rewriting RBP made the spilled index come back
+     * as 0xffffffff, so every AP answered a TLB shootdown as CPU 0. */
     __asm__ volatile (
         "mov %0, %%rsp\n"
-        "mov %0, %%rbp\n"
+        "mov %1, %%edi\n"
+        "call ap_c_entry\n"
         :
-        : "r"(stack_top)
-        : "memory");
-    idt_load();
-    sse_bsp_init();
-    if (lapic_id == 0u) {
-        lapic_id = lapic_id_read();
+        : "r"(stack_top), "r"(index)
+        : "memory", "rdi");
+    for (;;) {
+        __asm__ volatile ("hlt");
     }
-    if (index < SMP_CPU_CAP) {
-        g_lapic_of_cpu[index] = lapic_id;
-        g_lapic_known[index] = 1u;
-    }
-    __sync_fetch_and_add(&cpu_online_count, 1u);
-    /* IF stays clear until the BSP finishes install. Enabling the LAPIC and
-     * unmasking an AP during the ATA copy kept that copy from finishing. */
-    job_worker_forever(index);
 }
 
 void smp_init(void) {
@@ -213,15 +237,17 @@ uint32_t smp_lapic_of(uint32_t cpu, int *known) {
 }
 
 uint32_t smp_current_cpu(void) {
-    uint32_t lapic;
+    uint64_t rsp;
+    uint64_t off;
     uint32_t index;
 
-    if (!g_cpu_ready) {
+    __asm__ volatile ("mov %%rsp, %0" : "=r"(rsp));
+    if (rsp < AP_STACK_VIRT_BASE) {
         return 0u;
     }
-    lapic = lapic_id_read();
-    index = g_cpu_by_lapic[lapic & 0xffu];
-    if (index >= SMP_CPU_CAP) {
+    off = rsp - AP_STACK_VIRT_BASE;
+    index = (uint32_t)(off / AP_STACK_STRIDE);
+    if (index < 1u || index >= SMP_MAX_APS || index >= SMP_CPU_CAP) {
         return 0u;
     }
     return index;

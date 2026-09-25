@@ -50,7 +50,7 @@ int job_submit(JobFn fn, void *arg) {
 void job_worker_once(uint32_t cpu_index) {
     Job job;
 
-    mm_tlb_poll();
+    mm_tlb_poll_cpu(cpu_index);
     job.fn = 0;
     job.arg = 0;
     spin_lock(&g_q_lock);

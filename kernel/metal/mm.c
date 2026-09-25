@@ -18,6 +18,7 @@ static uint64_t mmio_next;
 static void *mm_lapic_mapped;
 static int mm_ready;
 static Spinlock mm_lock;
+static volatile uint32_t mm_tlb_busy;
 static volatile uint64_t mm_tlb_gen;
 static volatile uint64_t mm_tlb_seen[SMP_CPU_CAP];
 /* Published before mm_tlb_gen so a CPU that observes the new generation
@@ -177,8 +178,7 @@ void map_4k_nosync(uint64_t virt, uint64_t phys, uint64_t flags) {
     map_4k_ex(virt, phys, flags, 0);
 }
 
-void mm_tlb_poll(void) {
-    uint32_t cpu = smp_current_cpu();
+void mm_tlb_poll_cpu(uint32_t cpu) {
     uint64_t gen;
     uint64_t virt;
     uint64_t bytes;
@@ -196,6 +196,22 @@ void mm_tlb_poll(void) {
     mm_tlb_seen[cpu] = gen;
 }
 
+void mm_tlb_poll(void) {
+    mm_tlb_poll_cpu(smp_current_cpu());
+}
+
+static void tlb_shoot_lock(void) {
+    while (!cas_u32(&mm_tlb_busy, 0u, 1u)) {
+        mm_tlb_poll();
+        __asm__ volatile ("pause");
+    }
+}
+
+static void tlb_shoot_unlock(void) {
+    __asm__ volatile ("" ::: "memory");
+    mm_tlb_busy = 0u;
+}
+
 static void mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
     uint32_t self = smp_current_cpu();
     uint32_t online;
@@ -205,22 +221,30 @@ static void mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
     if (self >= SMP_CPU_CAP) {
         self = 0u;
     }
-    mm_enter();
+    /* Do not hold mm_lock here. An interrupt on this CPU that maps a page
+     * would spin on that lock forever, and the ack wait would never resume.
+     * mm_tlb_busy only keeps two shootdowns from publishing at once. */
+    tlb_shoot_lock();
     mm_tlb_virt = virt;
     mm_tlb_bytes = bytes;
     __asm__ volatile ("" ::: "memory");
     gen = mm_tlb_gen + 1u;
+    if (gen == 0u) {
+        gen = 1u;
+    }
     mm_tlb_gen = gen;
     /* This CPU already invlpg'd. Reloading CR3 here killed the machine. */
     mm_tlb_seen[self] = gen;
     online = cpu_online_count;
+    if (online < 1u) {
+        online = 1u;
+    }
+    if (online > SMP_CPU_CAP) {
+        online = SMP_CPU_CAP;
+    }
     if (online > 1u) {
         uint32_t i;
-        uint32_t n = online;
-        if (n > SMP_CPU_CAP) {
-            n = SMP_CPU_CAP;
-        }
-        for (i = 0u; i < n; i++) {
+        for (i = 0u; i < online; i++) {
             int known = 0;
             uint32_t lapic;
             if (i == self) {
@@ -233,12 +257,6 @@ static void mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
             (void)apic_ipi(lapic, 0xF0u);
         }
     }
-    if (online < 1u) {
-        online = 1u;
-    }
-    if (online > SMP_CPU_CAP) {
-        online = SMP_CPU_CAP;
-    }
     for (;;) {
         uint32_t i;
         uint32_t ready = 0u;
@@ -250,12 +268,15 @@ static void mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
         if (ready >= online) {
             break;
         }
-        if (++spins > 100000000u) {
-            panic("tlb shootdown timeout");
+        /* Workers ack from their loop. A CPU that never answers must not
+         * panic the desktop: closing a program is what reaches this wait. */
+        if (++spins > 2000000u) {
+            serial_puts("tlb shootdown skip\n");
+            break;
         }
         __asm__ volatile ("pause");
     }
-    mm_leave();
+    tlb_shoot_unlock();
 }
 
 void mm_tlb_shootdown(void) {

@@ -1733,6 +1733,10 @@ void lang_tick(uint32_t now) {
             int max_slices;
             int entered;
             uint32_t budget;
+            if (slots[i].dying) {
+                lang_kill(i);
+                continue;
+            }
             if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
                 continue;
             if (slots[i].proc_id > 0 && !proc_runnable(slots[i].proc_id))

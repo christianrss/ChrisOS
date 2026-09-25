@@ -597,6 +597,8 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
                 return fail(vm, CLVM_FAULT_BAD_SYS, op_pc);
             vm->safepoint = 1;
             if (vm->state == CLVM_WAITING) return CLVM_STEP_YIELD;
+            if (vm->state == CLVM_HALTED) return CLVM_STEP_HALT;
+            if (vm->state == CLVM_FAULTED) return CLVM_STEP_FAULT;
             break;
         case CL_OP_FLOAD:
             if (!clvm_vm_pop64(vm, &a))
