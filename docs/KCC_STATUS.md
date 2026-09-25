@@ -29,9 +29,21 @@ It also compiles a small volatile fixture. Two stores to one plain
 `volatile uint32_t` stay in the assembly, and the volatile accesses are
 32-bit (`mov dword`). ChrisAsm accepts that `dword` form.
 
+It compiles `kernel/metal/string.c` (`memset`, `memcpy`, `memcmp`,
+`strlen`, `strncpy`, `strcmp`, `strncmp`), `kernel/metal/pit.c`, and
+`kernel/metal/meminfo.c` (`mem_format`, seven parameters, the seventh on
+the stack). A layout fixture checks that `Pair.b` is at offset 4 and a
+packed `Tight.b` is at offset 1.
+
 Passing this gate does not mark SH4.
 
 ## Still outside the gate
+
+On this tree the host compiler accepts `ioapic.c`, `klog.c`, `meminfo.c`,
+`pit.c`, `serial.c`, and `string.c`. The other `kernel/metal` files still
+fail. The usual stop is GNU inline assembly (`port.c`, `panic.c`,
+`spin.c`, `tlb_proto.c`), a missing `limine.h` (`smp.c`, `bootinfo.c`,
+`start.c`), or `_Static_assert` / `sizeof`.
 
 `kernel/metal/port.c` is GNU inline assembly and is not compiled. A global
 array accepts a bound and a semicolon. An initializer on a global array is
