@@ -316,7 +316,7 @@ int virgl_cmd_shader(VirglCmd *c, uint32_t handle, uint32_t stage, const char *t
     slen = 0;
     while (text[slen] != 0) {
         slen++;
-        if (slen > 2048u) {
+        if (slen > 3600u) {
             if (c) {
                 c->err = -1;
             }
@@ -332,7 +332,7 @@ int virgl_cmd_shader(VirglCmd *c, uint32_t handle, uint32_t stage, const char *t
     virgl_cmd_u32(c, handle);
     virgl_cmd_u32(c, stage);
     virgl_cmd_u32(c, slen);
-    virgl_cmd_u32(c, 128u);
+    virgl_cmd_u32(c, slen > 128u ? (slen > 2048u ? 2048u : slen) : 128u);
     virgl_cmd_u32(c, 0);
     for (i = 0; i < sd; ++i) {
         uint32_t w = 0;

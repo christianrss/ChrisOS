@@ -12,7 +12,7 @@
 
 #define HW_WIN 8
 #define HW_WIN_PAGES 64
-#define HW_DMA 16
+#define HW_DMA 32
 #define HW_DMA_PAGES 2048
 #define HW_DISK_MAX 8
 
