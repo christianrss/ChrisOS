@@ -185,7 +185,8 @@ typedef struct LineMap {
 
 typedef struct Builtin {
     const char *name;
-    uint8_t id, argc, returns, ret_float;
+    uint16_t id;
+    uint8_t argc, returns, ret_float;
 } Builtin;
 
 typedef struct Compiler {
