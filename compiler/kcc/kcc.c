@@ -14,10 +14,16 @@
 #define KCC_ASM_MAX (256u * 1024u)
 #define KCC_PP_MAX (256u * 1024u)
 #define KCC_SYM_MAX 256
-#define KCC_MAC_MAX 96
-#define KCC_STRUCT_MAX 48
+#define KCC_MAC_MAX 256
+#define KCC_MAC_VAL 768
+#define KCC_MAC_PARAM 4
+#define KCC_STRUCT_MAX 80
+#define KCC_PP_LINE 2048
 #define KCC_FIELD_MAX 32
 #define KCC_TYPEDEF_MAX 64
+#define KCC_ENUM_MAX 512
+#define KCC_INIT_MAX 4096
+#define KCC_PARAM_MAX 16
 
 enum {
     TY_VOID = 0,
@@ -38,6 +44,7 @@ typedef struct Type {
     int is_ptr;
     int pointee_size;
     int array_len;
+    int inner_len;
     int struct_id;
     int size;
     int align;
@@ -73,7 +80,10 @@ typedef struct Sym {
 
 typedef struct Macro {
     char name[64];
-    char val[128];
+    char val[KCC_MAC_VAL];
+    char param[KCC_MAC_PARAM][32];
+    int nparam;
+    int func;
     int used;
 } Macro;
 
@@ -116,6 +126,9 @@ static int g_storage_extern;
 static char g_break_lab[16];
 static char g_cont_lab[16];
 static int g_loop_depth;
+static char g_enum_name[KCC_ENUM_MAX][64];
+static uint64_t g_enum_val[KCC_ENUM_MAX];
+static int g_nenum;
 
 static void diag_clear(void) {
     memset(&g_diag, 0, sizeof(g_diag));
@@ -278,84 +291,278 @@ static int macro_add(const char *name, const char *val) {
         }
         id = g_nmac++;
     }
+    memset(&g_mac[id], 0, sizeof(g_mac[id]));
     g_mac[id].used = 1;
     copy_str(g_mac[id].name, 64, name);
-    copy_str(g_mac[id].val, 128, val);
+    copy_str(g_mac[id].val, KCC_MAC_VAL, val);
     return 0;
 }
 
-static int pp_expand_ident(const char *ident, int depth) {
-    int id;
-    const char *v;
-    if (depth > 8) {
-        return pp_puts(ident);
+static int pp_expand_into(const char *text, int depth, char *dst, int cap, int *nlen);
+
+static int pp_parse_args(const char *s, int i, char args[][384], int *nargs) {
+    int depth = 0;
+    int n = 0;
+    int k = 0;
+    int started = 0;
+    if (s[i] != '(') {
+        return -1;
     }
-    id = macro_find(ident);
-    if (id < 0) {
-        return pp_puts(ident);
+    i++;
+    while (s[i] == ' ' || s[i] == '\t') {
+        i++;
     }
-    v = g_mac[id].val;
-    while (*v) {
-        if (is_ident_start(*v)) {
-            char name[64];
-            int n = 0;
-            while (is_ident_ch(*v) && n + 1 < 64) {
-                name[n++] = *v++;
-            }
-            name[n] = 0;
-            if (pp_expand_ident(name, depth + 1) != 0) {
+    if (s[i] == ')') {
+        *nargs = 0;
+        return i + 1;
+    }
+    while (s[i]) {
+        char c = s[i];
+        if (c == '"') {
+            if (k + 1 >= 384) {
                 return -1;
             }
-        } else {
-            if (pp_putc(*v++) != 0) {
-                return -1;
+            args[n][k++] = c;
+            i++;
+            while (s[i] && s[i] != '"') {
+                if (k + 1 >= 384) {
+                    return -1;
+                }
+                args[n][k++] = s[i++];
             }
+            if (s[i] == '"') {
+                if (k + 1 >= 384) {
+                    return -1;
+                }
+                args[n][k++] = s[i++];
+            }
+            started = 1;
+            continue;
         }
+        if (c == '(') {
+            depth++;
+        } else if (c == ')') {
+            if (depth == 0) {
+                while (k > 0 && (args[n][k - 1] == ' ' || args[n][k - 1] == '\t')) {
+                    k--;
+                }
+                args[n][k] = 0;
+                *nargs = n + 1;
+                return i + 1;
+            }
+            depth--;
+        } else if (c == ',' && depth == 0) {
+            while (k > 0 && (args[n][k - 1] == ' ' || args[n][k - 1] == '\t')) {
+                k--;
+            }
+            args[n][k] = 0;
+            n++;
+            k = 0;
+            started = 0;
+            if (n >= KCC_MAC_PARAM) {
+                return -1;
+            }
+            i++;
+            while (s[i] == ' ' || s[i] == '\t') {
+                i++;
+            }
+            continue;
+        }
+        if (!started && (c == ' ' || c == '\t')) {
+            i++;
+            continue;
+        }
+        if (k + 1 >= 384) {
+            return -1;
+        }
+        args[n][k++] = c;
+        started = 1;
+        i++;
     }
+    return -1;
+}
+
+static int pp_subst(const Macro *m, char args[][384], char *out, int cap) {
+    const char *b = m->val;
+    int n = 0;
+    while (*b) {
+        if (b[0] == '#' && b[1] == '#') {
+            while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) {
+                n--;
+            }
+            b += 2;
+            while (*b == ' ' || *b == '\t') {
+                b++;
+            }
+            continue;
+        }
+        if (is_ident_start(*b)) {
+            char name[32];
+            int k = 0;
+            int p;
+            int hit = 0;
+            while (is_ident_ch(*b) && k + 1 < 32) {
+                name[k++] = *b++;
+            }
+            name[k] = 0;
+            for (p = 0; p < m->nparam; p++) {
+                if (strcmp(m->param[p], name) == 0) {
+                    const char *a = args[p];
+                    hit = 1;
+                    while (*a) {
+                        if (n + 1 >= cap) {
+                            return -1;
+                        }
+                        out[n++] = *a++;
+                    }
+                    break;
+                }
+            }
+            if (!hit) {
+                int t;
+                for (t = 0; name[t]; t++) {
+                    if (n + 1 >= cap) {
+                        return -1;
+                    }
+                    out[n++] = name[t];
+                }
+            }
+            continue;
+        }
+        if (n + 1 >= cap) {
+            return -1;
+        }
+        out[n++] = *b++;
+    }
+    out[n] = 0;
+    return 0;
+}
+
+static int pp_expand_into(const char *text, int depth, char *dst, int cap, int *nlen) {
+    int i = 0;
+    int n = 0;
+    if (depth > 8) {
+        while (text[i] && n + 1 < cap) {
+            dst[n++] = text[i++];
+        }
+        dst[n] = 0;
+        *nlen = n;
+        return text[i] ? -1 : 0;
+    }
+    while (text[i]) {
+        if (text[i] == '"') {
+            if (n + 1 >= cap) {
+                return -1;
+            }
+            dst[n++] = text[i++];
+            while (text[i] && text[i] != '"') {
+                if (n + 1 >= cap) {
+                    return -1;
+                }
+                dst[n++] = text[i++];
+            }
+            if (text[i] == '"') {
+                if (n + 1 >= cap) {
+                    return -1;
+                }
+                dst[n++] = text[i++];
+            }
+            continue;
+        }
+        if (is_ident_start(text[i])) {
+            char name[64];
+            int k = 0;
+            int id;
+            while (is_ident_ch(text[i]) && k + 1 < 64) {
+                name[k++] = text[i++];
+            }
+            name[k] = 0;
+            id = macro_find(name);
+            if (id >= 0 && g_mac[id].func) {
+                int j = i;
+                char raw[KCC_MAC_PARAM][384];
+                char use[KCC_MAC_PARAM][384];
+                char body[KCC_MAC_VAL];
+                int nargs = 0;
+                int next;
+                int p;
+                while (text[j] == ' ' || text[j] == '\t') {
+                    j++;
+                }
+                if (text[j] != '(') {
+                    id = -1;
+                } else {
+                    next = pp_parse_args(text, j, raw, &nargs);
+                    if (next < 0 || nargs != g_mac[id].nparam) {
+                        return -1;
+                    }
+                    for (p = 0; p < nargs; p++) {
+                        int elen = 0;
+                        if (strstr(g_mac[id].val, "##") != 0) {
+                            copy_str(use[p], 384, raw[p]);
+                        } else if (pp_expand_into(raw[p], depth + 1, use[p], 384, &elen) != 0) {
+                            return -1;
+                        }
+                    }
+                    if (pp_subst(&g_mac[id], use, body, KCC_MAC_VAL) != 0) {
+                        return -1;
+                    }
+                    {
+                        char nested[KCC_MAC_VAL];
+                        int nn = 0;
+                        if (pp_expand_into(body, depth + 1, nested, KCC_MAC_VAL, &nn) != 0) {
+                            return -1;
+                        }
+                        if (n + nn >= cap) {
+                            return -1;
+                        }
+                        memcpy(dst + n, nested, (size_t)nn);
+                        n += nn;
+                    }
+                    i = next;
+                    continue;
+                }
+            }
+            if (id >= 0 && !g_mac[id].func) {
+                char nested[KCC_MAC_VAL];
+                int nn = 0;
+                if (pp_expand_into(g_mac[id].val, depth + 1, nested, KCC_MAC_VAL, &nn) != 0) {
+                    return -1;
+                }
+                if (n + nn >= cap) {
+                    return -1;
+                }
+                memcpy(dst + n, nested, (size_t)nn);
+                n += nn;
+                continue;
+            }
+            if (n + k >= cap) {
+                return -1;
+            }
+            memcpy(dst + n, name, (size_t)k);
+            n += k;
+            continue;
+        }
+        if (n + 1 >= cap) {
+            return -1;
+        }
+        dst[n++] = text[i++];
+    }
+    dst[n] = 0;
+    *nlen = n;
     return 0;
 }
 
 static int pp_expand_line(const char *line) {
-    int i = 0;
-    while (line[i]) {
-        if (line[i] == '"') {
-            if (pp_putc(line[i++]) != 0) {
-                return -1;
-            }
-            while (line[i] && line[i] != '"') {
-                if (line[i] == '\\' && line[i + 1]) {
-                    if (pp_putc(line[i++]) != 0) {
-                        return -1;
-                    }
-                }
-                if (pp_putc(line[i++]) != 0) {
-                    return -1;
-                }
-            }
-            if (line[i] == '"') {
-                if (pp_putc(line[i++]) != 0) {
-                    return -1;
-                }
-            }
-            continue;
-        }
-        if (is_ident_start(line[i])) {
-            char name[64];
-            int n = 0;
-            while (is_ident_ch(line[i]) && n + 1 < 64) {
-                name[n++] = line[i++];
-            }
-            name[n] = 0;
-            if (pp_expand_ident(name, 0) != 0) {
-                return -1;
-            }
-            continue;
-        }
-        if (pp_putc(line[i++]) != 0) {
-            return -1;
-        }
+    char buf[4096];
+    int n = 0;
+    if (pp_expand_into(line, 0, buf, 4096, &n) != 0) {
+        return -2;
     }
-    return pp_putc('\n');
+    if (pp_puts(buf) != 0 || pp_putc('\n') != 0) {
+        return -1;
+    }
+    return 0;
 }
 
 static int pp_marker(const char *file, int line) {
@@ -473,10 +680,6 @@ static int pp_include(const char *from, const char *name, int quoted, int depth)
         }
         return 0;
     }
-    dir_of(from, dir, (int)sizeof(dir));
-    if (join_path(path, (int)sizeof(path), dir, name) != 0) {
-        return -1;
-    }
 #ifdef __freestanding__
     buf = (char *)kmalloc(65536u);
 #else
@@ -485,10 +688,29 @@ static int pp_include(const char *from, const char *name, int quoted, int depth)
     if (!buf) {
         return -1;
     }
-    rc = load_file(path, buf, 65536);
-    if (rc < 0) {
-        if (join_path(path, (int)sizeof(path), "kernel/metal", name) == 0) {
+    rc = -1;
+    if (quoted) {
+        dir_of(from, dir, (int)sizeof(dir));
+        if (join_path(path, (int)sizeof(path), dir, name) == 0) {
             rc = load_file(path, buf, 65536);
+        }
+    }
+    if (rc < 0) {
+        static const char *const incs[] = {
+            "third_party/limine", "kernel/metal", "kernel/gfx", "kernel/wm",
+            "kernel/tools",       "kernel/fs",    "kernel/lang", "kernel/net",
+            "kernel/crypto",      "compiler",     "compiler/clvm", "compiler/jit",
+            "compiler/chrisld",   "compiler/chrisasm", "compiler/kcc"
+        };
+        int i;
+        for (i = 0; i < (int)(sizeof(incs) / sizeof(incs[0])); i++) {
+            if (join_path(path, (int)sizeof(path), incs[i], name) != 0) {
+                continue;
+            }
+            rc = load_file(path, buf, 65536);
+            if (rc >= 0) {
+                break;
+            }
         }
     }
     if (rc < 0) {
@@ -509,7 +731,7 @@ static int pp_include(const char *from, const char *name, int quoted, int depth)
 }
 
 static void strip_comments(char *line, int *in_com) {
-    char out[512];
+    char out[KCC_PP_LINE];
     int i = 0;
     int n = 0;
     int in_str = 0;
@@ -540,8 +762,260 @@ static void strip_comments(char *line, int *in_com) {
     memcpy(line, out, (size_t)n + 1u);
 }
 
+static int ce_expr(uint64_t *v);
+static void skip(void);
+
+static int pp_copy_quoted(const char **ps, char *out, int cap, int *nlen) {
+    const char *s = *ps;
+    int n = *nlen;
+    char end = *s;
+    if (n + 1 >= cap) {
+        return -1;
+    }
+    out[n++] = *s++;
+    while (*s && *s != end) {
+        if (n + 1 >= cap) {
+            return -1;
+        }
+        if (*s == '\\' && s[1]) {
+            out[n++] = *s++;
+            if (n + 1 >= cap) {
+                return -1;
+            }
+        }
+        out[n++] = *s++;
+    }
+    if (*s == end) {
+        if (n + 1 >= cap) {
+            return -1;
+        }
+        out[n++] = *s++;
+    }
+    *ps = s;
+    *nlen = n;
+    return 0;
+}
+
+static int pp_rewrite_defined(const char *in, char *out, int cap) {
+    int n = 0;
+    const char *s = in;
+    while (*s) {
+        if (*s == '"' || *s == '\'') {
+            if (pp_copy_quoted(&s, out, cap, &n) != 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (is_ident_start(*s)) {
+            char name[64];
+            int k = 0;
+            const char *save = s;
+            while (is_ident_ch(*s) && k + 1 < 64) {
+                name[k++] = *s++;
+            }
+            name[k] = 0;
+            if (strcmp(name, "defined") == 0) {
+                const char *q = s;
+                char id[64];
+                int ik = 0;
+                int paren = 0;
+                const char *bit;
+                while (*q == ' ' || *q == '\t') {
+                    q++;
+                }
+                if (*q == '(') {
+                    paren = 1;
+                    q++;
+                    while (*q == ' ' || *q == '\t') {
+                        q++;
+                    }
+                }
+                if (!is_ident_start(*q)) {
+                    return -1;
+                }
+                while (is_ident_ch(*q) && ik + 1 < 64) {
+                    id[ik++] = *q++;
+                }
+                id[ik] = 0;
+                if (is_ident_ch(*q)) {
+                    return -1;
+                }
+                while (*q == ' ' || *q == '\t') {
+                    q++;
+                }
+                if (paren) {
+                    if (*q != ')') {
+                        return -1;
+                    }
+                    q++;
+                }
+                bit = macro_find(id) >= 0 ? "1" : "0";
+                while (*bit) {
+                    if (n + 1 >= cap) {
+                        return -1;
+                    }
+                    out[n++] = *bit++;
+                }
+                s = q;
+                continue;
+            }
+            while (save < s) {
+                if (n + 1 >= cap) {
+                    return -1;
+                }
+                out[n++] = *save++;
+            }
+            continue;
+        }
+        if (n + 1 >= cap) {
+            return -1;
+        }
+        out[n++] = *s++;
+    }
+    out[n] = 0;
+    return 0;
+}
+
+static int pp_idents_to_zero(const char *in, char *out, int cap) {
+    int n = 0;
+    const char *s = in;
+    while (*s) {
+        if (*s == '"' || *s == '\'') {
+            if (pp_copy_quoted(&s, out, cap, &n) != 0) {
+                return -1;
+            }
+            continue;
+        }
+        if (*s >= '0' && *s <= '9') {
+            if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+                if (n + 2 >= cap) {
+                    return -1;
+                }
+                out[n++] = *s++;
+                out[n++] = *s++;
+                while ((*s >= '0' && *s <= '9') || (*s >= 'a' && *s <= 'f') ||
+                       (*s >= 'A' && *s <= 'F')) {
+                    if (n + 1 >= cap) {
+                        return -1;
+                    }
+                    out[n++] = *s++;
+                }
+            } else {
+                while (*s >= '0' && *s <= '9') {
+                    if (n + 1 >= cap) {
+                        return -1;
+                    }
+                    out[n++] = *s++;
+                }
+            }
+            while (*s == 'u' || *s == 'U' || *s == 'l' || *s == 'L') {
+                if (n + 1 >= cap) {
+                    return -1;
+                }
+                out[n++] = *s++;
+            }
+            continue;
+        }
+        if (is_ident_start(*s)) {
+            while (is_ident_ch(*s)) {
+                s++;
+            }
+            if (n + 1 >= cap) {
+                return -1;
+            }
+            out[n++] = '0';
+            continue;
+        }
+        if (n + 1 >= cap) {
+            return -1;
+        }
+        out[n++] = *s++;
+    }
+    out[n] = 0;
+    return 0;
+}
+
+static int pp_if_truth(const char *expr) {
+    char rewritten[2048];
+    char expanded[4096];
+    char zeroed[4096];
+    const char *saved;
+    int saved_line;
+    int elen = 0;
+    uint64_t v = 0;
+    int rc;
+    if (pp_rewrite_defined(expr, rewritten, (int)sizeof(rewritten)) != 0) {
+        return -1;
+    }
+    if (pp_expand_into(rewritten, 0, expanded, (int)sizeof(expanded), &elen) != 0) {
+        return -1;
+    }
+    if (pp_idents_to_zero(expanded, zeroed, (int)sizeof(zeroed)) != 0) {
+        return -1;
+    }
+    saved = g_p;
+    saved_line = g_line;
+    g_p = zeroed;
+    rc = ce_expr(&v);
+    if (rc == 0) {
+        skip();
+        if (*g_p != 0) {
+            rc = -1;
+        }
+    }
+    g_p = saved;
+    g_line = saved_line;
+    if (rc != 0) {
+        return -1;
+    }
+    return v != 0u ? 1 : 0;
+}
+
+static int pp_read_logical(const char **ps, char *line, int cap, int *line_no) {
+    const char *p = *ps;
+    int n = 0;
+    int saved_line = *line_no;
+    if (*p == 0) {
+        line[0] = 0;
+        return 0;
+    }
+    while (*p) {
+        if (*p == '\\') {
+            const char *q = p + 1;
+            while (*q == ' ' || *q == '\t') {
+                q++;
+            }
+            if (*q == '\r') {
+                q++;
+            }
+            if (*q == '\n') {
+                p = q + 1;
+                (*line_no)++;
+                continue;
+            }
+        }
+        if (*p == '\n') {
+            p++;
+            (*line_no)++;
+            break;
+        }
+        if (*p == '\r') {
+            p++;
+            continue;
+        }
+        if (n + 1 >= cap) {
+            *line_no = saved_line;
+            return -1;
+        }
+        line[n++] = *p++;
+    }
+    line[n] = 0;
+    *ps = p;
+    return 1;
+}
+
 static int handle_directive(const char *file, const char *dir, int *skip, int *sp,
-                            int *stack, int depth, int *include_err) {
+                            int *stack, int *taken, int depth, int *include_err) {
     const char *p = dir;
     char name[64];
     int n = 0;
@@ -562,36 +1036,75 @@ static int handle_directive(const char *file, const char *dir, int *skip, int *s
     while (*p == ' ' || *p == '\t') {
         p++;
     }
-    if (strcmp(name, "ifndef") == 0 || strcmp(name, "ifdef") == 0) {
+    if (strcmp(name, "ifndef") == 0 || strcmp(name, "ifdef") == 0 ||
+        strcmp(name, "if") == 0) {
         char mname[64];
-        int defined;
+        int defined = 0;
+        int active = 0;
         int k = 0;
         int parent = *skip;
-        while (is_ident_ch(*p) && k + 1 < 64) {
-            mname[k++] = *p++;
-        }
-        mname[k] = 0;
-        defined = macro_find(mname) >= 0;
         if (*sp >= 32) {
             return -1;
         }
-        stack[*sp] = parent;
-        (*sp)++;
-        if (parent) {
-            *skip = 1;
-        } else if (strcmp(name, "ifndef") == 0) {
-            *skip = defined;
+        if (strcmp(name, "if") == 0) {
+            if (!parent) {
+                int ev = pp_if_truth(p);
+                if (ev < 0) {
+                    return -1;
+                }
+                active = ev;
+            }
         } else {
-            *skip = !defined;
+            while (is_ident_ch(*p) && k + 1 < 64) {
+                mname[k++] = *p++;
+            }
+            mname[k] = 0;
+            defined = macro_find(mname) >= 0;
+            if (!parent) {
+                active = strcmp(name, "ifndef") == 0 ? !defined : defined;
+            }
+        }
+        stack[*sp] = parent;
+        taken[*sp] = parent ? 1 : active;
+        (*sp)++;
+        *skip = parent || !active;
+        return 0;
+    }
+    if (strcmp(name, "elif") == 0) {
+        int parent;
+        if (*sp <= 0) {
+            return -1;
+        }
+        parent = stack[*sp - 1];
+        if (parent || taken[*sp - 1]) {
+            *skip = 1;
+            return 0;
+        }
+        {
+            int ev = pp_if_truth(p);
+            if (ev < 0) {
+                return -1;
+            }
+            if (ev) {
+                taken[*sp - 1] = 1;
+                *skip = 0;
+            } else {
+                *skip = 1;
+            }
         }
         return 0;
     }
     if (strcmp(name, "else") == 0) {
-        int parent = *sp > 0 ? stack[*sp - 1] : 0;
-        if (parent) {
+        int parent;
+        if (*sp <= 0) {
+            return -1;
+        }
+        parent = stack[*sp - 1];
+        if (parent || taken[*sp - 1]) {
             *skip = 1;
         } else {
-            *skip = !*skip;
+            taken[*sp - 1] = 1;
+            *skip = 0;
         }
         return 0;
     }
@@ -608,20 +1121,66 @@ static int handle_directive(const char *file, const char *dir, int *skip, int *s
     }
     if (strcmp(name, "define") == 0) {
         char mname[64];
-        char val[128];
+        char val[KCC_MAC_VAL];
+        char params[KCC_MAC_PARAM][32];
         int k = 0;
         int vi = 0;
+        int is_func = 0;
+        int nparam = 0;
+        int id;
+        int pi;
         while (is_ident_ch(*p) && k + 1 < 64) {
             mname[k++] = *p++;
         }
         mname[k] = 0;
+        if (mname[0] == 0) {
+            return -1;
+        }
         if (*p == '(') {
-            return 0;
+            is_func = 1;
+            p++;
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+            if (*p != ')') {
+                for (;;) {
+                    int pk = 0;
+                    if (nparam >= KCC_MAC_PARAM || !is_ident_start(*p)) {
+                        return -1;
+                    }
+                    while (is_ident_ch(*p) && pk + 1 < 32) {
+                        params[nparam][pk++] = *p++;
+                    }
+                    if (is_ident_ch(*p)) {
+                        return -1;
+                    }
+                    params[nparam][pk] = 0;
+                    nparam++;
+                    while (*p == ' ' || *p == '\t') {
+                        p++;
+                    }
+                    if (*p == ',') {
+                        p++;
+                        while (*p == ' ' || *p == '\t') {
+                            p++;
+                        }
+                        continue;
+                    }
+                    break;
+                }
+            }
+            if (*p != ')') {
+                return -1;
+            }
+            p++;
         }
         while (*p == ' ' || *p == '\t') {
             p++;
         }
-        while (*p && *p != '\r' && vi + 1 < 128) {
+        while (*p && *p != '\r') {
+            if (vi + 1 >= KCC_MAC_VAL) {
+                return -1;
+            }
             val[vi++] = *p++;
         }
         while (vi > 0 && (val[vi - 1] == ' ' || val[vi - 1] == '\t')) {
@@ -630,6 +1189,17 @@ static int handle_directive(const char *file, const char *dir, int *skip, int *s
         val[vi] = 0;
         if (macro_add(mname, val) != 0) {
             return -1;
+        }
+        if (is_func) {
+            id = macro_find(mname);
+            if (id < 0) {
+                return -1;
+            }
+            g_mac[id].func = 1;
+            g_mac[id].nparam = nparam;
+            for (pi = 0; pi < nparam; pi++) {
+                copy_str(g_mac[id].param[pi], 32, params[pi]);
+            }
         }
         return 0;
     }
@@ -659,8 +1229,10 @@ static int handle_directive(const char *file, const char *dir, int *skip, int *s
         }
         return 0;
     }
-    if (strcmp(name, "pragma") == 0 || strcmp(name, "error") == 0 ||
-        strcmp(name, "warning") == 0) {
+    if (strcmp(name, "error") == 0) {
+        return -2;
+    }
+    if (strcmp(name, "pragma") == 0 || strcmp(name, "warning") == 0) {
         return 0;
     }
     return -1;
@@ -672,22 +1244,25 @@ static int preprocess(const char *file, const char *src, int depth) {
     int skip = 0;
     int sp = 0;
     int stack[32];
+    int taken[32];
     const char *p = src;
     if (depth > 16) {
         return -1;
     }
     while (*p) {
-        char line[512];
-        int n = 0;
+        char line[KCC_PP_LINE];
         int include_err = 0;
         int rc;
+        int start_line = line_no;
         const char *probe;
-        while (*p && *p != '\n' && n + 1 < (int)sizeof(line)) {
-            line[n++] = *p++;
+        rc = pp_read_logical(&p, line, (int)sizeof(line), &line_no);
+        if (rc < 0) {
+            copy_str(g_file, 96, file);
+            g_line = start_line;
+            return fail("preprocessor line is too long");
         }
-        line[n] = 0;
-        if (*p == '\n') {
-            p++;
+        if (rc == 0) {
+            break;
         }
         strip_comments(line, &in_com);
         probe = line;
@@ -695,26 +1270,41 @@ static int preprocess(const char *file, const char *src, int depth) {
             probe++;
         }
         if (*probe == '#') {
-            rc = handle_directive(file, probe, &skip, &sp, stack, depth, &include_err);
+            rc = handle_directive(file, probe, &skip, &sp, stack, taken, depth,
+                                  &include_err);
             if (rc < 0) {
+                copy_str(g_file, 96, file);
+                g_line = start_line;
                 if (include_err) {
-                    copy_str(g_file, 96, file);
-                    g_line = line_no;
                     return fail("cannot read include");
                 }
-                copy_str(g_file, 96, file);
-                g_line = line_no;
+                if (rc == -2) {
+                    return fail("#error");
+                }
                 return fail("preprocessor directive");
             }
-            line_no++;
             continue;
         }
         if (!skip && !in_com && probe[0] != 0) {
-            if (pp_marker(file, line_no) != 0 || pp_expand_line(line) != 0) {
+            int er;
+            if (pp_marker(file, start_line) != 0) {
+                return fail("preprocessor buffer is full");
+            }
+            er = pp_expand_line(line);
+            if (er == -2) {
+                copy_str(g_file, 96, file);
+                g_line = start_line;
+                return fail("macro expansion failed");
+            }
+            if (er != 0) {
                 return fail("preprocessor buffer is full");
             }
         }
-        line_no++;
+    }
+    if (sp != 0) {
+        copy_str(g_file, 96, file);
+        g_line = line_no;
+        return fail("preprocessor directive");
     }
     return 0;
 }
@@ -1113,6 +1703,26 @@ static int struct_find(const char *name) {
     return -1;
 }
 
+static int enum_find(const char *name) {
+    int i;
+    for (i = 0; i < g_nenum; i++) {
+        if (strcmp(g_enum_name[i], name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int enum_add(const char *name, uint64_t val) {
+    if (enum_find(name) >= 0 || g_nenum >= KCC_ENUM_MAX) {
+        return -1;
+    }
+    copy_str(g_enum_name[g_nenum], 64, name);
+    g_enum_val[g_nenum] = val;
+    g_nenum++;
+    return 0;
+}
+
 static int skip_attribute(int *packed) {
     const char *start;
     int depth;
@@ -1147,7 +1757,21 @@ static int skip_attribute(int *packed) {
             }
         }
     }
-    return 0;
+    return 1;
+}
+
+static int skip_decl_tail(void) {
+    for (;;) {
+        int rc;
+        skip();
+        if (strncmp(g_p, "__attribute__", 13) != 0) {
+            return 0;
+        }
+        rc = skip_attribute(0);
+        if (rc < 0) {
+            return -1;
+        }
+    }
 }
 
 static int parse_struct_body(int id, int packed) {
@@ -1182,55 +1806,141 @@ static int parse_struct_body(int id, int packed) {
                 is_unsigned = 1;
                 continue;
             }
-            if (skip_attribute(0) != 0) {
-                return -1;
-            }
-            if (strncmp(g_p, "__attribute__", 13) == 0) {
-                continue;
+            {
+                int rc = skip_attribute(0);
+                if (rc < 0) {
+                    return -1;
+                }
+                if (rc > 0) {
+                    continue;
+                }
             }
             break;
         }
-        if (!take_ident(tname, 64) || !type_from_name(tname, &ft)) {
-            if (is_unsigned) {
-                ft = type_make(TY_U32, 4, 4);
-            } else {
+        if (eat_kw("struct")) {
+            char tag[32];
+            int sid;
+            if (!take_ident(tag, 32)) {
                 return fail("field type expected");
             }
-        } else if (is_unsigned && ft.kind == TY_INT) {
-            ft = type_make(TY_U32, 4, 4);
+            sid = struct_find(tag);
+            if (sid < 0) {
+                if (g_nstruct >= KCC_STRUCT_MAX) {
+                    return fail("too many structs");
+                }
+                sid = g_nstruct++;
+                memset(&g_struct[sid], 0, sizeof(g_struct[sid]));
+                copy_str(g_struct[sid].name, 32, tag);
+                g_struct[sid].align = 1;
+            }
+            ft = type_make(TY_STRUCT, g_struct[sid].size,
+                           g_struct[sid].align < 1 ? 1 : g_struct[sid].align);
+            ft.struct_id = sid;
+        } else {
+            const char *save = g_p;
+            int line = g_line;
+            if (!take_ident(tname, 64) || !type_from_name(tname, &ft)) {
+                if (is_unsigned) {
+                    g_p = save;
+                    g_line = line;
+                    ft = type_make(TY_U32, 4, 4);
+                } else {
+                    return fail("field type expected");
+                }
+            } else if (is_unsigned && ft.kind == TY_INT) {
+                ft = type_make(TY_U32, 4, 4);
+            }
         }
         (void)is_static;
         (void)is_inline;
-        while (eat_op("*")) {
-            ft = type_ptr(ft);
-        }
-        ft.is_volatile = is_volatile;
-        if (!take_ident(fname, 32)) {
-            return fail("field name expected");
-        }
-        if (eat_op("[")) {
-            uint64_t bound = 0;
-            int elem = ft.size < 1 ? 1 : ft.size;
-            if (!take_number(&bound) || bound == 0u || !eat_op("]")) {
-                return fail("bad array bound");
+        {
+            Type base = ft;
+            for (;;) {
+                Type dt = base;
+                if (g_struct[id].nfield >= KCC_FIELD_MAX) {
+                    return fail("too many fields");
+                }
+                if (eat_op("(")) {
+                    int depth;
+                    if (!eat_op("*") || !take_ident(fname, 32) || !eat_op(")") || !eat_op("(")) {
+                        return fail("field name expected");
+                    }
+                    depth = 1;
+                    while (*g_p && depth > 0) {
+                        if (*g_p == '(') {
+                            depth++;
+                        } else if (*g_p == ')') {
+                            depth--;
+                        }
+                        if (*g_p == '\n') {
+                            g_line++;
+                        }
+                        g_p++;
+                    }
+                    dt = type_ptr(dt);
+                    dt.is_func_ptr = 1;
+                } else {
+                    while (eat_op("*")) {
+                        dt = type_ptr(dt);
+                    }
+                    if (dt.kind == TY_STRUCT && !dt.is_ptr && dt.struct_id >= 0 &&
+                        g_struct[dt.struct_id].nfield == 0 && g_struct[dt.struct_id].size == 0) {
+                        return fail("field type expected");
+                    }
+                    if (!take_ident(fname, 32)) {
+                        return fail("field name expected");
+                    }
+                    if (eat_op("[")) {
+                        uint64_t bounds[2];
+                        int nb = 0;
+                        int scalar = dt.size < 1 ? 1 : dt.size;
+                        uint64_t bytes;
+                        do {
+                            uint64_t bound = 0;
+                            if (nb >= 2) {
+                                return fail("bad array bound");
+                            }
+                            if (ce_expr(&bound) != 0) {
+                                return -1;
+                            }
+                            if (bound == 0u || bound > 1000000u || !eat_op("]")) {
+                                return fail("bad array bound");
+                            }
+                            bounds[nb++] = bound;
+                        } while (eat_op("["));
+                        bytes = (uint64_t)scalar;
+                        if (nb == 2) {
+                            bytes *= bounds[1];
+                            dt.inner_len = (int)bounds[1];
+                        }
+                        bytes *= bounds[0];
+                        if (bytes > 1000000u) {
+                            return fail("array is too large");
+                        }
+                        dt.array_len = (int)bounds[0];
+                        dt.pointee_size = (int)(bytes / bounds[0]);
+                        dt.size = (int)bytes;
+                    }
+                }
+                dt.is_volatile = is_volatile;
+                al = packed ? 1 : (dt.align < 1 ? 1 : dt.align);
+                off = (off + al - 1) & ~(al - 1);
+                f = &g_struct[id].fields[g_struct[id].nfield++];
+                memset(f, 0, sizeof(*f));
+                copy_str(f->name, 32, fname);
+                f->type = dt;
+                f->offset = off;
+                off += dt.size < 1 ? 1 : dt.size;
+                if (al > max_align) {
+                    max_align = al;
+                }
+                if (!eat_op(",")) {
+                    break;
+                }
             }
-            ft.pointee_size = elem;
-            ft.array_len = (int)bound;
-            ft.size = elem * (int)bound;
         }
         if (!eat_op(";")) {
             return fail("expected semicolon");
-        }
-        al = packed ? 1 : (ft.align < 1 ? 1 : ft.align);
-        off = (off + al - 1) & ~(al - 1);
-        f = &g_struct[id].fields[g_struct[id].nfield++];
-        memset(f, 0, sizeof(*f));
-        copy_str(f->name, 32, fname);
-        f->type = ft;
-        f->offset = off;
-        off += ft.size < 1 ? 1 : ft.size;
-        if (al > max_align) {
-            max_align = al;
         }
     }
     g_struct[id].align = max_align;
@@ -1261,11 +1971,14 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
             *is_inline = 1;
             continue;
         }
-        if (skip_attribute(0) != 0) {
-            return -1;
-        }
-        if (strncmp(g_p, "__attribute__", 13) == 0) {
-            continue;
+        {
+            int rc = skip_attribute(0);
+            if (rc < 0) {
+                return -1;
+            }
+            if (rc > 0) {
+                continue;
+            }
         }
         if (eat_kw("volatile")) {
             is_volatile = 1;
@@ -1286,13 +1999,13 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
         int packed = 0;
         int id = -1;
         tag[0] = 0;
-        if (skip_attribute(&packed) != 0) {
+        if (skip_attribute(&packed) < 0) {
             return -1;
         }
         if (take_ident(tag, 32)) {
             has_tag = 1;
         }
-        if (skip_attribute(&packed) != 0) {
+        if (skip_attribute(&packed) < 0) {
             return -1;
         }
         skip();
@@ -1688,6 +2401,14 @@ static int parse_primary(Val *out) {
     {
         int id = sym_find(ident);
         if (id < 0) {
+            int ev = enum_find(ident);
+            if (ev >= 0) {
+                asm_mov_imm("rax", g_enum_val[ev]);
+                out->has_imm = 1;
+                out->imm = g_enum_val[ev];
+                out->type = type_make(TY_INT, 8, 8);
+                return 0;
+            }
             skip();
             if (*g_p == '(') {
                 if (strncmp(ident, "__sync", 6) == 0 || strncmp(ident, "__atomic", 8) == 0 ||
@@ -1720,14 +2441,14 @@ static int parse_primary(Val *out) {
 }
 
 static int parse_args(const char *name, int indirect) {
-    int slots[8];
+    int slots[KCC_PARAM_MAX];
     int n = 0;
     static const char *regs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
     int i;
     if (!eat_op(")")) {
         do {
             Val arg;
-            if (n >= 8) {
+            if (n >= KCC_PARAM_MAX) {
                 return fail("too many arguments");
             }
             if (parse_expr(&arg) != 0) {
@@ -1857,9 +2578,15 @@ static int postfix_tail(Val *out) {
             if (out->type.array_len >= 0) {
                 elem = out->type.pointee_size < 1 ? 1 : out->type.pointee_size;
                 elem_ty = out->type;
-                elem_ty.array_len = -1;
                 elem_ty.size = elem;
                 elem_ty.is_ptr = 0;
+                if (out->type.inner_len > 0) {
+                    elem_ty.array_len = out->type.inner_len;
+                    elem_ty.inner_len = 0;
+                    elem_ty.pointee_size = elem / out->type.inner_len;
+                } else {
+                    elem_ty.array_len = -1;
+                }
             } else if (out->type.is_ptr) {
                 elem = out->type.pointee_size < 1 ? 1 : out->type.pointee_size;
                 elem_ty = type_make(out->type.kind, elem, elem < 8 ? elem : 8);
@@ -2392,7 +3119,10 @@ static int parse_sizeof_type(Type *t) {
         if (eat_op("[")) {
             uint64_t n = 0;
             int elem = t->size < 1 ? 1 : t->size;
-            if (!take_number(&n) || n == 0u || !eat_op("]")) {
+            if (ce_expr(&n) != 0) {
+                return -1;
+            }
+            if (n == 0u || !eat_op("]")) {
                 return fail("bad array bound");
             }
             t->size = elem * (int)n;
@@ -2576,6 +3306,20 @@ static int ce_primary(uint64_t *v) {
             return fail("expected closing parenthesis");
         }
         return 0;
+    }
+    {
+        char name[64];
+        const char *save = g_p;
+        int line = g_line;
+        if (take_ident(name, 64)) {
+            int ev = enum_find(name);
+            if (ev >= 0) {
+                *v = g_enum_val[ev];
+                return 0;
+            }
+            g_p = save;
+            g_line = line;
+        }
     }
     return fail("constant expression expected");
 }
@@ -2927,6 +3671,96 @@ static int parse_stmt(void) {
         }
         return 0;
     }
+    if (eat_kw("switch")) {
+        Val v;
+        int slot;
+        char dispatch[16];
+        char end_lab[16];
+        char def_lab[16];
+        char old_b[16];
+        int old_d;
+        int has_def = 0;
+        uint64_t cvals[64];
+        char clabs[64][16];
+        int nc = 0;
+        int i;
+        if (!eat_op("(")) {
+            return fail("bad switch");
+        }
+        if (parse_expr(&v) != 0) {
+            return -1;
+        }
+        if (!eat_op(")") || !eat_op("{")) {
+            return fail("bad switch");
+        }
+        load_val(&v);
+        slot = alloc_slot(8);
+        if (slot == 0) {
+            return fail("frame is full");
+        }
+        store_rax_frame(slot);
+        new_lab(dispatch);
+        new_lab(end_lab);
+        new_lab(def_lab);
+        asm_cat("jmp ", dispatch, 0, 0);
+        old_d = g_loop_depth;
+        lab_copy(old_b, g_break_lab);
+        lab_copy(g_break_lab, end_lab);
+        g_loop_depth = old_d + 1;
+        while (!eat_op("}")) {
+            if (eat_kw("case")) {
+                uint64_t cv = 0;
+                char lab[16];
+                if (nc >= 64) {
+                    return fail("too many cases");
+                }
+                if (ce_expr(&cv) != 0) {
+                    return -1;
+                }
+                if (!eat_op(":")) {
+                    return fail("bad switch");
+                }
+                for (i = 0; i < nc; i++) {
+                    if (cvals[i] == cv) {
+                        return fail("duplicate case");
+                    }
+                }
+                new_lab(lab);
+                cvals[nc] = cv;
+                lab_copy(clabs[nc], lab);
+                nc++;
+                asm_label(lab);
+                continue;
+            }
+            if (eat_kw("default")) {
+                if (has_def || !eat_op(":")) {
+                    return fail("bad switch");
+                }
+                has_def = 1;
+                asm_label(def_lab);
+                continue;
+            }
+            if (parse_stmt() != 0) {
+                return -1;
+            }
+        }
+        asm_cat("jmp ", end_lab, 0, 0);
+        asm_label(dispatch);
+        for (i = 0; i < nc; i++) {
+            char num[24];
+            load_frame_rax(slot);
+            u64_dec(num, cvals[i]);
+            asm_cat("cmp rax, ", num, 0, 0);
+            asm_cat("je ", clabs[i], 0, 0);
+        }
+        if (has_def) {
+            asm_cat("jmp ", def_lab, 0, 0);
+        }
+        asm_label(end_lab);
+        lab_copy(g_break_lab, old_b);
+        g_loop_depth = old_d;
+        return 0;
+    }
     if (eat_kw("while")) {
         Val cond;
         char head[16];
@@ -3059,8 +3893,27 @@ static int parse_stmt(void) {
     if (eat_kw("__asm__") || eat_kw("asm")) {
         return parse_asm_stmt();
     }
+    if (eat_kw("goto")) {
+        char lab[64];
+        if (!take_ident(lab, 64) || !eat_op(";")) {
+            return fail("bad goto");
+        }
+        asm_cat("jmp ", lab, 0, 0);
+        return 0;
+    }
     if (eat_op(";")) {
         return 0;
+    }
+    {
+        const char *save = g_p;
+        int line = g_line;
+        char lab[64];
+        if (take_ident(lab, 64) && eat_op(":")) {
+            asm_label(lab);
+            return 0;
+        }
+        g_p = save;
+        g_line = line;
     }
     if (peek_type_start()) {
         Type t;
@@ -3080,7 +3933,10 @@ static int parse_stmt(void) {
             char lit[128];
             lit[0] = 0;
             if (!eat_op("]")) {
-                if (!take_number(&n) || !eat_op("]")) {
+                if (ce_expr(&n) != 0) {
+                    return -1;
+                }
+                if (n == 0u || !eat_op("]")) {
                     return fail("bad array bound");
                 }
             }
@@ -3239,7 +4095,7 @@ static int parse_params(Sym *params, int *np) {
         int is_static = 0;
         int is_inline = 0;
         char name[64];
-        if (*np >= 8) {
+        if (*np >= KCC_PARAM_MAX) {
             return fail("too many parameters");
         }
         if (parse_base(&t, &is_static, &is_inline) != 0) {
@@ -3266,6 +4122,19 @@ static int parse_params(Sym *params, int *np) {
             t.is_func_ptr = 1;
         } else if (!take_ident(name, 64)) {
             return fail("parameter name expected");
+        } else if (eat_op("[")) {
+            skip();
+            if (*g_p != ']') {
+                uint64_t bound = 0;
+                if (ce_expr(&bound) != 0) {
+                    return -1;
+                }
+                (void)bound;
+            }
+            if (!eat_op("]")) {
+                return fail("bad array bound");
+            }
+            t = type_ptr(t);
         }
         memset(&params[*np], 0, sizeof(params[*np]));
         copy_str(params[*np].name, 64, name);
@@ -3286,6 +4155,159 @@ static int parse_params(Sym *params, int *np) {
     return 0;
 }
 
+static int init_store(uint8_t *buf, int cap, int off, int size, uint64_t v) {
+    int i;
+    if (size < 1 || off < 0 || off > cap || size > cap - off) {
+        return -1;
+    }
+    for (i = 0; i < size; i++) {
+        buf[off + i] = (uint8_t)((v >> (8 * i)) & 0xffu);
+    }
+    return 0;
+}
+
+static Type init_elem(const Type *t) {
+    Type e = *t;
+    e.size = t->pointee_size < 1 ? 1 : t->pointee_size;
+    e.array_len = -1;
+    e.is_ptr = 0;
+    if (e.size > 8) {
+        e.align = 8;
+    } else if (e.size > 0) {
+        e.align = e.size;
+    }
+    return e;
+}
+
+static int parse_initializer(const Type *t, uint8_t *buf, int cap, int base) {
+    if (eat_op("{")) {
+        if (t->array_len > 0) {
+            Type elem = init_elem(t);
+            int i = 0;
+            while (!eat_op("}")) {
+                if (i >= t->array_len) {
+                    return fail("bad initializer");
+                }
+                if (parse_initializer(&elem, buf, cap, base + i * elem.size) != 0) {
+                    return -1;
+                }
+                i++;
+                if (!eat_op(",")) {
+                    if (!eat_op("}")) {
+                        return fail("bad initializer");
+                    }
+                    break;
+                }
+            }
+            return 0;
+        }
+        if (t->kind == TY_STRUCT && !t->is_ptr && t->struct_id >= 0 && t->array_len < 0) {
+            StructDef *sd = &g_struct[t->struct_id];
+            int next = 0;
+            while (!eat_op("}")) {
+                int fi;
+                int f;
+                if (eat_op(".")) {
+                    char fname[32];
+                    if (!take_ident(fname, 32) || !eat_op("=")) {
+                        return fail("bad initializer");
+                    }
+                    fi = -1;
+                    for (f = 0; f < sd->nfield; f++) {
+                        if (strcmp(sd->fields[f].name, fname) == 0) {
+                            fi = f;
+                            break;
+                        }
+                    }
+                    if (fi < 0) {
+                        return fail("bad initializer");
+                    }
+                    if (parse_initializer(&sd->fields[fi].type, buf, cap,
+                                          base + sd->fields[fi].offset) != 0) {
+                        return -1;
+                    }
+                    next = fi + 1;
+                } else {
+                    if (next >= sd->nfield) {
+                        return fail("bad initializer");
+                    }
+                    if (parse_initializer(&sd->fields[next].type, buf, cap,
+                                          base + sd->fields[next].offset) != 0) {
+                        return -1;
+                    }
+                    next++;
+                }
+                if (!eat_op(",")) {
+                    if (!eat_op("}")) {
+                        return fail("bad initializer");
+                    }
+                    break;
+                }
+            }
+            return 0;
+        }
+        if (parse_initializer(t, buf, cap, base) != 0) {
+            return -1;
+        }
+        if (!eat_op("}")) {
+            return fail("bad initializer");
+        }
+        return 0;
+    }
+    skip();
+    if (*g_p == '"') {
+        char lit[1024];
+        int slen = 0;
+        int i;
+        int room;
+        if (!take_string(lit, 1024, &slen)) {
+            return fail("bad initializer");
+        }
+        room = t->array_len > 0 ? t->array_len : t->size;
+        if (room < 1) {
+            room = slen + 1;
+        }
+        if (slen + 1 > room || base + room > cap) {
+            return fail("bad initializer");
+        }
+        for (i = 0; i < slen; i++) {
+            buf[base + i] = (uint8_t)lit[i];
+        }
+        buf[base + slen] = 0;
+        return 0;
+    }
+    {
+        uint64_t v = 0;
+        int size = t->size < 1 ? 8 : t->size;
+        if (t->is_ptr) {
+            size = 8;
+        }
+        if (ce_expr(&v) != 0) {
+            return -1;
+        }
+        if (init_store(buf, cap, base, size, v) != 0) {
+            return fail("initializer is too large");
+        }
+    }
+    return 0;
+}
+
+static int emit_global_bytes(const char *name, int is_static, const uint8_t *bytes, int n) {
+    int i;
+    asm_line(".data");
+    if (is_static) {
+        asm_line(".local");
+    }
+    asm_label(name);
+    for (i = 0; i < n; i++) {
+        char num[8];
+        u64_dec(num, bytes[i]);
+        asm_cat(".byte ", num, 0, 0);
+    }
+    asm_line(".text");
+    return 0;
+}
+
 static int emit_global_bss(const char *name, int size, int is_static) {
     char num[16];
     if (size < 1) {
@@ -3299,6 +4321,30 @@ static int emit_global_bss(const char *name, int size, int is_static) {
     asm_label(name);
     asm_cat(".zero ", num, 0, 0);
     asm_line(".text");
+    return 0;
+}
+
+static int add_global_object(const char *name, Type t, int is_static, int is_extern,
+                             const uint8_t *init, int init_n) {
+    Sym s;
+    memset(&s, 0, sizeof(s));
+    copy_str(s.name, 64, name);
+    copy_str(s.asm_name, 64, name);
+    s.type = t;
+    s.global = 1;
+    s.is_static = is_static;
+    if (is_extern) {
+        asm_cat("extern ", name, 0, 0);
+    } else if (init) {
+        if (emit_global_bytes(name, is_static, init, init_n) != 0) {
+            return -1;
+        }
+    } else if (emit_global_bss(name, t.size < 1 ? 1 : t.size, is_static) != 0) {
+        return -1;
+    }
+    if (sym_add(&s) < 0) {
+        return fail("too many symbols");
+    }
     return 0;
 }
 
@@ -3316,47 +4362,163 @@ static int parse_global(void) {
         if (t.kind == TY_STRUCT && eat_op(";")) {
             return 0;
         }
+        if (eat_op("(") && eat_op("*")) {
+            uint64_t bound = 0;
+            int has_bound = 0;
+            int depth;
+            if (!take_ident(name, 64)) {
+                return fail("declaration expected");
+            }
+            if (eat_op("[")) {
+                if (ce_expr(&bound) != 0) {
+                    return -1;
+                }
+                if (bound == 0u || !eat_op("]")) {
+                    return fail("bad array bound");
+                }
+                has_bound = 1;
+            }
+            if (!eat_op(")") || !eat_op("(")) {
+                return fail("declaration expected");
+            }
+            depth = 1;
+            while (*g_p && depth > 0) {
+                if (*g_p == '(') {
+                    depth++;
+                } else if (*g_p == ')') {
+                    depth--;
+                }
+                if (*g_p == '\n') {
+                    g_line++;
+                }
+                g_p++;
+            }
+            if (skip_decl_tail() != 0) {
+                return -1;
+            }
+            if (!eat_op(";")) {
+                return fail("expected semicolon");
+            }
+            t = type_ptr(t);
+            t.is_func_ptr = 1;
+            t.pointee_size = 8;
+            if (has_bound) {
+                if (bound > (1ull << 20) / 8u) {
+                    return fail("array is too large");
+                }
+                t.array_len = (int)bound;
+                t.size = (int)bound * 8;
+            }
+            return add_global_object(name, t, is_static, g_storage_extern, 0, 0);
+        }
         return fail("declaration expected");
     }
     if (eat_op("[")) {
         uint64_t bound = 0;
+        int has_bound = 0;
         int elem;
-        uint64_t bytes;
-        if (!take_number(&bound) || bound == 0u || !eat_op("]")) {
+        skip();
+        if (*g_p != ']') {
+            if (ce_expr(&bound) != 0) {
+                return -1;
+            }
+            if (bound == 0u) {
+                return fail("bad array bound");
+            }
+            has_bound = 1;
+        }
+        if (!eat_op("]")) {
             return fail("bad array bound");
         }
-        if (!eat_op(";")) {
-            return fail("global array initializer is outside this subset");
+        if (skip_decl_tail() != 0) {
+            return -1;
         }
         elem = t.size < 1 ? 1 : t.size;
+        t.pointee_size = elem;
+        if (g_storage_extern) {
+            if (!eat_op(";")) {
+                return fail("expected semicolon");
+            }
+            if (has_bound) {
+                if (bound > (1ull << 20) / (uint64_t)elem) {
+                    return fail("array is too large");
+                }
+                t.array_len = (int)bound;
+                t.size = (int)(bound * (uint64_t)elem);
+            } else {
+                t.array_len = 0;
+                t.size = elem;
+            }
+            return add_global_object(name, t, is_static, 1, 0, 0);
+        }
+        if (eat_op("=")) {
+            uint8_t buf[KCC_INIT_MAX];
+            skip();
+            if (*g_p == '"') {
+                char lit[1024];
+                int slen = 0;
+                int i;
+                if (!take_string(lit, 1024, &slen)) {
+                    return fail("bad initializer");
+                }
+                if (!has_bound) {
+                    bound = (uint64_t)slen + 1u;
+                    has_bound = 1;
+                }
+                if ((uint64_t)slen + 1u > bound || bound * (uint64_t)elem > KCC_INIT_MAX) {
+                    return fail("bad initializer");
+                }
+                t.array_len = (int)bound;
+                t.size = (int)(bound * (uint64_t)elem);
+                memset(buf, 0, (size_t)t.size);
+                for (i = 0; i < slen; i++) {
+                    buf[i] = (uint8_t)lit[i];
+                }
+                if (!eat_op(";")) {
+                    return fail("expected semicolon");
+                }
+                return add_global_object(name, t, is_static, 0, buf, t.size);
+            }
+            if (!has_bound) {
+                return fail("bad array bound");
+            }
+            if (bound > (1ull << 20) / (uint64_t)elem) {
+                return fail("array is too large");
+            }
+            t.array_len = (int)bound;
+            t.size = (int)(bound * (uint64_t)elem);
+            if (t.size < 1 || t.size > KCC_INIT_MAX) {
+                return fail("initializer is too large");
+            }
+            memset(buf, 0, (size_t)t.size);
+            if (parse_initializer(&t, buf, KCC_INIT_MAX, 0) != 0) {
+                return -1;
+            }
+            if (!eat_op(";")) {
+                return fail("expected semicolon");
+            }
+            return add_global_object(name, t, is_static, 0, buf, t.size);
+        }
+        if (!has_bound || !eat_op(";")) {
+            return fail("bad array bound");
+        }
         if (bound > (1ull << 20) / (uint64_t)elem) {
             return fail("array is too large");
         }
-        bytes = bound * (uint64_t)elem;
-        t.pointee_size = elem;
-        t.size = (int)bytes;
         t.array_len = (int)bound;
-        memset(&s, 0, sizeof(s));
-        copy_str(s.name, 64, name);
-        copy_str(s.asm_name, 64, name);
-        s.type = t;
-        s.global = 1;
-        s.is_static = is_static;
-        if (emit_global_bss(name, (int)bytes, is_static) != 0) {
-            return -1;
-        }
-        if (sym_add(&s) < 0) {
-            return fail("too many symbols");
-        }
-        return 0;
+        t.size = (int)(bound * (uint64_t)elem);
+        return add_global_object(name, t, is_static, 0, 0, 0);
     }
     if (eat_op("(")) {
-        Sym params[8];
+        Sym params[KCC_PARAM_MAX];
         int np = 0;
         int i;
         int existing;
         g_frame = 0;
         if (parse_params(params, &np) != 0) {
+            return -1;
+        }
+        if (skip_decl_tail() != 0) {
             return -1;
         }
         if (eat_op(";")) {
@@ -3418,24 +4580,84 @@ static int parse_global(void) {
         g_nsym = mark;
         return 0;
     }
-    memset(&s, 0, sizeof(s));
-    copy_str(s.name, 64, name);
-    copy_str(s.asm_name, 64, name);
-    s.type = t;
-    s.global = 1;
-    s.is_static = is_static;
-    if (eat_op(";")) {
-        if (g_storage_extern) {
-            asm_cat("extern ", name, 0, 0);
-        } else if (emit_global_bss(name, t.size, is_static) != 0) {
+    if (skip_decl_tail() != 0) {
+        return -1;
+    }
+    if (eat_op("=")) {
+        uint8_t buf[KCC_INIT_MAX];
+        int n = t.is_ptr ? 8 : t.size;
+        if (n < 1) {
+            n = 8;
+        }
+        if (n > KCC_INIT_MAX) {
+            return fail("initializer is too large");
+        }
+        t.size = n;
+        memset(buf, 0, (size_t)n);
+        if (parse_initializer(&t, buf, KCC_INIT_MAX, 0) != 0) {
             return -1;
         }
-        if (sym_add(&s) < 0) {
+        if (!eat_op(";")) {
+            return fail("expected semicolon");
+        }
+        return add_global_object(name, t, is_static, 0, buf, n);
+    }
+    if (!eat_op(";")) {
+        return fail("declaration is outside the level-0 subset");
+    }
+    return add_global_object(name, t, is_static, g_storage_extern, 0, 0);
+}
+
+static int parse_enum(int is_typedef) {
+    char name[64];
+    uint64_t next = 0;
+    skip();
+    if (*g_p != '{') {
+        if (!take_ident(name, 64)) {
+            return fail("type expected");
+        }
+    }
+    if (!eat_op("{")) {
+        return fail("type expected");
+    }
+    while (!eat_op("}")) {
+        char en[64];
+        if (!take_ident(en, 64)) {
+            return fail("type expected");
+        }
+        if (eat_op("=")) {
+            uint64_t v = 0;
+            if (ce_expr(&v) != 0) {
+                return -1;
+            }
+            next = v;
+        }
+        if (enum_add(en, next) != 0) {
             return fail("too many symbols");
         }
+        if (next != 18446744073709551615ull) {
+            next++;
+        }
+        eat_op(",");
+    }
+    if (is_typedef) {
+        Type td;
+        if (!take_ident(name, 64) || !eat_op(";")) {
+            return fail("typedef name expected");
+        }
+        if (g_ntd >= KCC_TYPEDEF_MAX) {
+            return fail("too many typedefs");
+        }
+        td = type_make(TY_INT, 8, 8);
+        copy_str(g_td_name[g_ntd], 64, name);
+        g_td_type[g_ntd] = td;
+        g_ntd++;
         return 0;
     }
-    return fail("declaration is outside the level-0 subset");
+    if (!eat_op(";")) {
+        return fail("expected semicolon");
+    }
+    return 0;
 }
 
 static int compile_unit(void) {
@@ -3445,6 +4667,15 @@ static int compile_unit(void) {
         skip();
         if (*g_p == 0) {
             break;
+        }
+        if (eat_op(";")) {
+            continue;
+        }
+        if (eat_kw("enum")) {
+            if (parse_enum(0) != 0) {
+                return -1;
+            }
+            continue;
         }
         if (eat_kw("_Static_assert")) {
             if (parse_static_assert() != 0) {
@@ -3457,6 +4688,12 @@ static int compile_unit(void) {
             int is_static = 0;
             int is_inline = 0;
             char name[64];
+            if (eat_kw("enum")) {
+                if (parse_enum(1) != 0) {
+                    return -1;
+                }
+                continue;
+            }
             if (parse_base(&t, &is_static, &is_inline) != 0) {
                 return -1;
             }
@@ -3529,6 +4766,7 @@ int kcc_compile_named(const char *file, const char *src, ChrisoImage *out) {
     g_nstruct = 0;
     g_nsym = 0;
     g_ntd = 0;
+    g_nenum = 0;
     g_frame = 0;
     g_ntemp = 0;
     g_lab = 0;
@@ -3538,6 +4776,11 @@ int kcc_compile_named(const char *file, const char *src, ChrisoImage *out) {
     g_cont_lab[0] = 0;
     memset(g_mac, 0, sizeof(g_mac));
     memset(g_sym, 0, sizeof(g_sym));
+    if (macro_add("__x86_64__", "1") != 0 || macro_add("__freestanding__", "1") != 0 ||
+        macro_add("__VERSION__", "\"KCC\"") != 0 ||
+        macro_add("LIMINE_API_REVISION", "3") != 0) {
+        return diag_error(file, 1, 1, "preprocessor directive");
+    }
     copy_str(g_file, 96, file ? file : "");
     g_line = 1;
     if (preprocess(file ? file : "", src, 0) != 0) {

@@ -396,16 +396,32 @@ int main(void) {
         static const char *paths[] = {
             "kernel/metal/acpi.c", "kernel/metal/apic.c", "kernel/metal/elf.c",
             "kernel/metal/heap.c", "kernel/metal/ioapic.c", "kernel/metal/job.c",
-            "kernel/metal/pci.c", "kernel/metal/port.c", "kernel/metal/tlb_proto.c"
+            "kernel/metal/bootinfo.c", "kernel/metal/buildid.c", "kernel/metal/kcc_job.c",
+            "kernel/metal/pci.c", "kernel/metal/pmm.c", "kernel/metal/port.c",
+            "kernel/metal/proc.c", "kernel/metal/ps2.c", "kernel/metal/syscall.c",
+            "kernel/metal/tlb_proto.c"
         };
         static const char *syms[] = {
             "acpi_probe", "apic_ipi_nmi", "elf_load", "kmalloc", "ioapic_init",
-            "job_worker_forever", "pci_read", "inb", "tlb_runtime_init"
+            "job_worker_forever", "bootinfo_init", "build_info_log", "kcc_job_submit_path",
+            "pci_read", "pmm_alloc", "inb", "proc_init", "ps2_init", "syscall_init",
+            "tlb_runtime_init"
         };
         unsigned i;
         for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
             if (compile_must(paths[i], syms[i], &img) != 0) {
                 return 1;
+            }
+            if (strcmp(syms[i], "bootinfo_init") == 0) {
+                static const uint8_t marker[] = {
+                    0xae, 0xd1, 0xe7, 0x9d, 0xb3, 0xf4, 0xb8, 0xf6
+                };
+                if (!img.sec[CHRISO_SEC_DATA] ||
+                    img.sec_size[CHRISO_SEC_DATA] < sizeof(marker) ||
+                    memcmp(img.sec[CHRISO_SEC_DATA], marker, sizeof(marker)) != 0) {
+                    fprintf(stderr, "bootinfo.c limine marker is not initialized data\n");
+                    return 1;
+                }
             }
             if (strcmp(syms[i], "inb") == 0) {
                 static const uint8_t in_al[] = {0xec};
@@ -506,7 +522,93 @@ int main(void) {
             return 1;
         }
     }
-    if (compile_fails("break.c", "void x(void) { break; }\n", "break outside loop") != 0 ||
+    {
+        static const char src[] =
+            "#define PASTE(A, B) A##B\n"
+            "#define ID(X) X\n"
+            "int PASTE(fo, o)(void) { return ID(7); }\n"
+            "#define REV 3\n"
+            "#if REV > 3\n"
+            "#error too new\n"
+            "#elif defined(REV) && REV >= 3\n"
+            "int gate(void) { return 9; }\n"
+            "#else\n"
+            "int gate(void) { return 0; }\n"
+            "#endif\n"
+            "#if 0\n"
+            "#error hidden\n"
+            "#endif\n";
+        const char *as;
+        if (kcc_compile_named("pp.c", src, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "pp failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            return 1;
+        }
+        as = kcc_last_asm();
+        if (!find_sym(&img, "foo") || !find_sym(&img, "gate") ||
+            !strstr(as, "mov rax, 7\n") || !strstr(as, "mov rax, 9\n")) {
+            fprintf(stderr, "preprocessor asm:\n%s\n", as);
+            return 1;
+        }
+    }
+    {
+        static const char src[] =
+            "typedef struct Inner {\n"
+            "    uint32_t a;\n"
+            "    uint16_t b;\n"
+            "} Inner;\n"
+            "typedef struct Outer {\n"
+            "    uint64_t id[2];\n"
+            "    Inner in;\n"
+            "    uint64_t rev;\n"
+            "} Outer;\n"
+            "static Outer req = { .id = { 1, 2 }, .rev = 3 };\n"
+            "typedef enum { KIND_A = 1, KIND_B } Kind;\n"
+            "int pick(int x) {\n"
+            "    switch (x) {\n"
+            "    case KIND_A: return 10;\n"
+            "    case KIND_B: return 20;\n"
+            "    default: return 0;\n"
+            "    }\n"
+            "}\n"
+            "int hop(int n) {\n"
+            "    if (n == 0) goto done;\n"
+            "    n = 4;\n"
+            "done:\n"
+            "    return n;\n"
+            "}\n"
+            "extern unsigned char stack_top[];\n"
+            "extern void (*stubs[4])(void);\n"
+            "char tag[] = \"KCC\";\n"
+            "uint64_t top_addr(void) { return (uint64_t)stack_top; }\n";
+        static const uint8_t magic[] = {
+            1, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0
+        };
+        if (kcc_compile_named("init.c", src, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "init failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            return 1;
+        }
+        if (!find_sym(&img, "req") || !find_sym(&img, "pick") || !find_sym(&img, "hop") ||
+            !find_sym(&img, "stack_top") || !find_sym(&img, "stubs") || !find_sym(&img, "tag")) {
+            fprintf(stderr, "init missing symbols\n");
+            return 1;
+        }
+        if (!img.sec[CHRISO_SEC_DATA] || img.sec_size[CHRISO_SEC_DATA] < sizeof(magic) ||
+            memcmp(img.sec[CHRISO_SEC_DATA], magic, sizeof(magic)) != 0) {
+            fprintf(stderr, "designated initializer data mismatch\n");
+            return 1;
+        }
+        if (!strstr(kcc_last_asm(), "cmp rax, 1") || !strstr(kcc_last_asm(), "jmp done")) {
+            fprintf(stderr, "switch/goto asm:\n%s\n", kcc_last_asm());
+            return 1;
+        }
+    }
+    if (compile_fails("err.c", "#error stop\n", "#error") != 0 ||
+        compile_fails("break.c", "void x(void) { break; }\n", "break outside loop") != 0 ||
         compile_fails("assert0.c", "_Static_assert(0, \"no\");\n", "static assert failed") != 0 ||
         compile_fails("assertn.c", "void x(int n) { _Static_assert(n, \"n\"); }\n",
                       "constant expression expected") != 0 ||
