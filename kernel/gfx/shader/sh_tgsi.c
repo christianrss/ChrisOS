@@ -16,24 +16,26 @@ static void reg(char *d, int cap, int *n, const char *file, int idx) {
     sh_app_ch(d, cap, n, ']');
 }
 
-static void swizzle(char *d, int cap, int *n, int mask, int ncomp) {
+static void operand(char *d, int cap, int *n, int tmp, int mask, int ncomp, int source) {
     const char *ch = "xyzw";
     int i;
+    int count;
+    reg(d, cap, n, "TEMP", tmp);
     if (ncomp >= 4 && mask == (0 | (1 << 2) | (2 << 4) | (3 << 6))) {
         return;
     }
-    if (ncomp <= 0) {
+    count = source ? 4 : ncomp;
+    if (count <= 0) {
         return;
     }
     sh_app_ch(d, cap, n, '.');
-    for (i = 0; i < ncomp; ++i) {
-        sh_app_ch(d, cap, n, ch[(mask >> (i * 2)) & 3]);
+    for (i = 0; i < count; ++i) {
+        int lane = 0;
+        if (i < ncomp) {
+            lane = (mask >> (i * 2)) & 3;
+        }
+        sh_app_ch(d, cap, n, ch[lane & 3]);
     }
-}
-
-static void src(char *d, int cap, int *n, int tmp, int mask, int ncomp) {
-    reg(d, cap, n, "TEMP", tmp);
-    swizzle(d, cap, n, mask, ncomp);
 }
 
 static void alu2(char *d, int cap, int *n, int *pc, const char *op, int dst, int a, int b,
@@ -48,7 +50,7 @@ static void alu2(char *d, int cap, int *n, int *pc, const char *op, int dst, int
     }
     sh_app(line, (int)sizeof line, &ln, op);
     sh_app(line, (int)sizeof line, &ln, " ");
-    src(line, (int)sizeof line, &ln, dst, mask, ncomp < 4 ? ncomp : 0);
+    operand(line, (int)sizeof line, &ln, dst, mask, ncomp < 4 ? ncomp : 0, 0);
     sh_app(line, (int)sizeof line, &ln, ", ");
     reg(line, (int)sizeof line, &ln, "TEMP", a);
     sh_app(line, (int)sizeof line, &ln, ", ");
@@ -210,9 +212,9 @@ int sh_emit_tgsi(ShComp *c, char *dst, int cap, const int *var_remap) {
                 smask = dmask;
             }
             sh_app(line, (int)sizeof line, &ln, "MOV ");
-            src(line, (int)sizeof line, &ln, in->dst, dmask, nc);
+            operand(line, (int)sizeof line, &ln, in->dst, dmask, nc, 0);
             sh_app(line, (int)sizeof line, &ln, ", ");
-            src(line, (int)sizeof line, &ln, in->a, smask, nc);
+            operand(line, (int)sizeof line, &ln, in->a, smask, nc, 1);
             op0(dst, cap, &n, &pc, line);
             break;
         }
@@ -289,6 +291,9 @@ int sh_emit_tgsi(ShComp *c, char *dst, int cap, const int *var_remap) {
                 reg(line, (int)sizeof line, &ln, "TEMP", in->a);
                 sh_app_ch(line, (int)sizeof line, &ln, '.');
                 sh_app_ch(line, (int)sizeof line, &ln, lch[k]);
+                sh_app_ch(line, (int)sizeof line, &ln, lch[k]);
+                sh_app_ch(line, (int)sizeof line, &ln, lch[k]);
+                sh_app_ch(line, (int)sizeof line, &ln, lch[k]);
                 op0(dst, cap, &n, &pc, line);
             }
             break;
@@ -298,9 +303,9 @@ int sh_emit_tgsi(ShComp *c, char *dst, int cap, const int *var_remap) {
             reg(line, (int)sizeof line, &ln, "TEMP", in->dst);
             sh_app(line, (int)sizeof line, &ln, ".x, ");
             reg(line, (int)sizeof line, &ln, "TEMP", in->a);
-            sh_app(line, (int)sizeof line, &ln, ".x, ");
+            sh_app(line, (int)sizeof line, &ln, ".xxxx, ");
             reg(line, (int)sizeof line, &ln, "TEMP", in->b);
-            sh_app(line, (int)sizeof line, &ln, ".x");
+            sh_app(line, (int)sizeof line, &ln, ".xxxx");
             op0(dst, cap, &n, &pc, line);
             break;
         case IR_CMP: {
@@ -324,9 +329,9 @@ int sh_emit_tgsi(ShComp *c, char *dst, int cap, const int *var_remap) {
             reg(line, (int)sizeof line, &ln, "TEMP", in->dst);
             sh_app(line, (int)sizeof line, &ln, ".x, ");
             reg(line, (int)sizeof line, &ln, "TEMP", swap ? in->b : in->a);
-            sh_app(line, (int)sizeof line, &ln, ".x, ");
+            sh_app(line, (int)sizeof line, &ln, ".xxxx, ");
             reg(line, (int)sizeof line, &ln, "TEMP", swap ? in->a : in->b);
-            sh_app(line, (int)sizeof line, &ln, ".x");
+            sh_app(line, (int)sizeof line, &ln, ".xxxx");
             op0(dst, cap, &n, &pc, line);
             break;
         }
