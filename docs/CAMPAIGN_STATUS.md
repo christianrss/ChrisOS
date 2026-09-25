@@ -24,9 +24,10 @@ rich panic record. P2 relative to the TLB bug. Not done.
 
 ### Phase 3 through 5 — toolchain, SH4, SH5
 
-P0 blocker: KCC cannot compile a real kernel file. ChrisAsm cannot assemble
-the privileged instructions the kernel uses. ChrisLd has not produced the
-boot ELF. SH4 and SH5 are not proven. Not started beyond the audit.
+P0 blocker: KCC compiles `serial.c` and `klog.c` on the host and links them
+with port and spin stubs (`host-kcc-test`). It does not compile the kernel.
+ChrisAsm cannot assemble the privileged instructions the kernel uses.
+ChrisLd has not produced the boot ELF. SH4 and SH5 are not proven.
 
 ### Phase 6 — hardware profile
 
@@ -55,6 +56,7 @@ Blocked on SH4 and SH5. No physical boot. Hardware stays unproven.
 | `host-task-window-test` | PASS |
 | `host-job-saturate-test` | PASS |
 | `host-kthread-smp-test` | PASS |
+| `host-kcc-test` | PASS (`test_kcc: ok`; level-0 fixture, `serial.c`, `klog.c`, link with stubs) |
 | Freestanding compile of `tlb_proto.c`, `mm.c`, `smp.c`, `job.c`, `jit.c` | PASS |
 | `make host-gates` | not run as a whole |
 | `make qemu-gates` | not run |

@@ -140,11 +140,49 @@ int main(void) {
             return 1;
         }
         {
+            ChrisoImage klog;
             ChrisoImage stubs;
-            const ChrisoImage *objs[2];
-            uint8_t elf[16384];
+            const ChrisoImage *objs[3];
+            uint8_t elf[65536];
             uint64_t entry;
             int n;
+            int saw_ring = 0;
+            static const char *kneed[] = {
+                "klog_init", "klog_putc", "klog_puts", "klog_copy"
+            };
+            char *ksrc = read_file("kernel/metal/klog.c");
+            if (!ksrc) {
+                fprintf(stderr, "cannot read klog.c\n");
+                return 1;
+            }
+            if (kcc_compile_named("kernel/metal/klog.c", ksrc, &klog) != 0) {
+                diag = kcc_last_error();
+                fprintf(stderr, "klog.c failed: %s:%d:%d: %s\n", diag->file,
+                        diag->line, diag->column, diag->message);
+                free(ksrc);
+                return 1;
+            }
+            free(ksrc);
+            for (i = 0; i < sizeof(kneed) / sizeof(kneed[0]); i++) {
+                if (!find_sym(&klog, kneed[i])) {
+                    fprintf(stderr, "klog.c missing %s\n", kneed[i]);
+                    return 1;
+                }
+            }
+            if (klog.sec_size[CHRISO_SEC_BSS] < 8192u) {
+                fprintf(stderr, "klog.c bss is %u\n", klog.sec_size[CHRISO_SEC_BSS]);
+                return 1;
+            }
+            for (i = 0; i < klog.nsym; i++) {
+                if (strcmp(klog.sym[i].name, "g_log") == 0 &&
+                    klog.sym[i].section == CHRISO_SEC_BSS) {
+                    saw_ring = 1;
+                }
+            }
+            if (!saw_ring) {
+                fprintf(stderr, "klog.c ring is not a bss object\n");
+                return 1;
+            }
             if (chrisasm_assemble(
                     "inb:\nmov rax, 0\nret\n"
                     "outb:\nret\n"
@@ -156,8 +194,9 @@ int main(void) {
                 return 1;
             }
             objs[0] = &img;
-            objs[1] = &stubs;
-            n = chrisld_link_objects(objs, 2u, 0x400000ull, elf, sizeof(elf), &entry);
+            objs[1] = &klog;
+            objs[2] = &stubs;
+            n = chrisld_link_objects(objs, 3u, 0x400000ull, elf, sizeof(elf), &entry);
             if (n < 64 || chrisld_validate(elf, (uint32_t)n) != 0 || elf[56] != 2) {
                 fprintf(stderr, "serial link failed phnum=%u n=%d\n", elf[56], n);
                 return 1;
