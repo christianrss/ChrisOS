@@ -10,6 +10,8 @@ extern void host_set_cpu(uint32_t id);
 extern volatile uint32_t cpu_online_count;
 
 void mm_tlb_poll(void) {}
+void mm_tlb_poll_cpu(uint32_t cpu) { (void)cpu; }
+int bootflag_noapic(void) { return 1; }
 
 void *kmalloc(uint64_t size) {
     void *p;

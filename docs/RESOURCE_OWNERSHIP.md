@@ -7,7 +7,7 @@ Who frees a resource when an app or process dies.
 | Process PML4 and user-half page tables | the process (`Proc.cr3`) | `proc_destroy` → `mm_free_user_space` |
 | User leaf frames (stack, heap, framebuffer, ELF) | `Proc.pages` | `proc_release_user` unmaps with `mm_unmap_cr3`, then `pmm_free` |
 | CLVM guest memory | the slot / VM | existing slot teardown (not changed here) |
-| JIT code pages | the JIT VA slot | `jit_free`: unmap, TLB shootdown, VA freelist, then `pmm_free_contig` |
+| JIT code pages | the JIT VA slot | `jit_free`: unmap, TLB shootdown, VA freelist, then `pmm_free_contig`. If a CPU was fenced and has not halted, the frames go to `mm_tlb_quarantine` and are freed by `mm_tlb_reap` only after `tlb_reuse_ok` |
 | Task framebuffer | the task | `task_close` clears the slot. `host-task-window-test` opens and closes 24 windows. Heap versus PMM bytes are not compared |
 | Z-buffer | the gfx slot (`ctx->zbuf`) | `clvm_sys_dispatch` binds that buffer for the call. The global pointer is only the current binding |
 | Native file descriptor | `g_ufile[fd].owner` process | `syscall_close_owner` from `proc_destroy` |

@@ -159,14 +159,21 @@ void jit_free(JitBuf *buf) {
     }
     pages = buf->pages ? buf->pages : 1u;
     if (buf->x != NULL) {
+        int synced;
         virt = (uint64_t)(uintptr_t)buf->x;
         for (i = 0; i < pages; ++i) {
             unmap_4k(virt + (uint64_t)i * PMM_PAGE);
         }
-        mm_tlb_shootdown_range(virt, (uint64_t)pages * PMM_PAGE);
+        synced = mm_tlb_shootdown_range(virt, (uint64_t)pages * PMM_PAGE) == 0;
         jit_va_free(virt);
+        if (synced) {
+            pmm_free_contig(buf->phys, pages);
+        } else {
+            mm_tlb_quarantine(buf->phys, pages);
+        }
+    } else {
+        pmm_free_contig(buf->phys, pages);
     }
-    pmm_free_contig(buf->phys, pages);
     buf->phys = 0;
     buf->w = NULL;
     buf->x = NULL;

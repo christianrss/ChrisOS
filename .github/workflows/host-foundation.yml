@@ -1,0 +1,13 @@
+name: host-foundation
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  tlb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: TLB membership and worker link
+        run: make host-tlb-proto-test host-job-saturate-test host-kthread-smp-test

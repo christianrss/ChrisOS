@@ -12,6 +12,7 @@
 #include "serial.h"
 #include "smp.h"
 #include "sse_init.h"
+#include "tlb_proto.h"
 
 volatile uint32_t cpu_online_count = 1u;
 uint64_t kernel_cr3;
@@ -93,6 +94,7 @@ static void ap_c_entry(uint32_t index) {
         g_lapic_of_cpu[index] = lapic;
         g_lapic_known[index] = 1u;
     }
+    tlb_runtime_online(index);
     __sync_fetch_and_add(&cpu_online_count, 1u);
     /* IF stays clear until the BSP finishes install. Enabling the LAPIC and
      * unmasking an AP during the ATA copy kept that copy from finishing. */
@@ -251,6 +253,21 @@ uint32_t smp_current_cpu(void) {
         return 0u;
     }
     return index;
+}
+
+void smp_retire_cpu(uint32_t cpu) {
+    uint32_t cur;
+
+    (void)cpu;
+    for (;;) {
+        cur = cpu_online_count;
+        if (cur <= 1u) {
+            return;
+        }
+        if (__sync_bool_compare_and_swap(&cpu_online_count, cur, cur - 1u)) {
+            return;
+        }
+    }
 }
 
 uint32_t smp_cpu_count(void) {

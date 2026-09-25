@@ -26,11 +26,14 @@ void mm_unmap_cr3(uint64_t cr3_phys, uint64_t virt);
 void mm_flush_tlb(void);
 /* Ask every online CPU to invlpg the latest unmap. Remote CPUs are poked
  * with a LAPIC IPI (vector 0xF0) and also notice it from mm_tlb_poll.
- * A CR3 reload here killed the machine. A CPU that never answers is skipped
- * so closing a program cannot halt the desktop. */
+ * A CR3 reload here killed the machine. A CPU that never answers is fenced:
+ * it leaves the online set and its frames are not reused until it halts.
+ * Returns 0 when reuse is safe, -1 when the caller must quarantine. */
 void mm_tlb_shootdown(void);
-/* invlpg [virt, virt+bytes) on this CPU, then the same IPI shootdown. */
-void mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes);
+int mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes);
+/* Hold frames that still might be cached on a fenced CPU. */
+void mm_tlb_quarantine(uint64_t phys, uint64_t pages);
+void mm_tlb_reap(void);
 /* Called from idle/worker paths so a CPU acknowledges a shootdown.
  * mm_tlb_poll_cpu uses the index assigned at boot. mm_tlb_poll derives it
  * from the stack, which is what an IPI handler has. */

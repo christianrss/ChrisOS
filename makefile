@@ -61,6 +61,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/metal/irq.o kernel/metal/syscall.o kernel/metal/user_enter.o \
 	kernel/metal/elf.o kernel/metal/pit.o kernel/metal/ps2.o \
 	kernel/metal/bootinfo.o kernel/metal/pmm.o kernel/metal/mm.o \
+	kernel/metal/tlb_proto.o \
 	kernel/metal/heap.o kernel/metal/pci.o \
 	kernel/net/virtio_net.o kernel/net/net.o kernel/net/sock.o \
 	kernel/crypto/sha256.o kernel/crypto/rng.o kernel/crypto/aes.o kernel/crypto/x25519.o \
@@ -529,21 +530,29 @@ host-pmm-heap-smp-test: tools/test_pmm_heap_smp.c tools/host_metal/metal_stub.c 
 	$(HOST_BIN)/test_pmm_heap_smp
 
 host-kthread-smp-test: tools/test_kthread_smp.c tools/host_metal/metal_stub.c \
-		kernel/metal/kthread.c kernel/metal/job.c kernel/metal/spin.c
+		kernel/metal/kthread.c kernel/metal/job.c kernel/metal/spin.c \
+		kernel/metal/tlb_proto.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DCHRIS_HOST_METAL -pthread \
 		-Ikernel/metal \
 		-o $(HOST_BIN)/test_kthread_smp tools/test_kthread_smp.c \
 		tools/host_metal/metal_stub.c kernel/metal/kthread.c kernel/metal/job.c \
-		kernel/metal/spin.c
+		kernel/metal/spin.c kernel/metal/tlb_proto.c
 	$(HOST_BIN)/test_kthread_smp
 
-host-job-saturate-test: tools/test_job_saturate.c kernel/metal/job.c kernel/metal/spin.c
+host-job-saturate-test: tools/test_job_saturate.c kernel/metal/job.c kernel/metal/spin.c \
+		kernel/metal/tlb_proto.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
 		-o $(HOST_BIN)/test_job_saturate tools/test_job_saturate.c \
-		kernel/metal/job.c kernel/metal/spin.c
+		kernel/metal/job.c kernel/metal/spin.c kernel/metal/tlb_proto.c
 	$(HOST_BIN)/test_job_saturate
+
+host-tlb-proto-test: tools/test_tlb_proto.c kernel/metal/tlb_proto.c kernel/metal/tlb_proto.h
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
+		-o $(HOST_BIN)/test_tlb_proto tools/test_tlb_proto.c kernel/metal/tlb_proto.c
+	$(HOST_BIN)/test_tlb_proto
 
 host-clvm-sync-test: tools/test_clvm_sync.c kernel/lang/clvm_sync.h
 	mkdir -p $(HOST_BIN)
@@ -1108,6 +1117,7 @@ host-gates: host-cfs-test host-cfs-v5-test host-fsck-test host-cfs-paths-test \
 	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates \
 	host-input-test test_keystate test_gfx2d \
 	host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
+	host-tlb-proto-test \
 	host-clvm-sync-test host-elf-malformed-test host-sock-owner-test \
 	host-cfs-lock-test host-gfx3d-ctx-test host-sys-write-test \
 	host-fuzz-cfs-test host-fuzz-elf-test host-fuzz-chrisc-test \
@@ -1119,6 +1129,7 @@ host-gate-audit:
 	python3 tools/check_test_gates.py
 
 host-stress: host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
+	host-tlb-proto-test \
 	host-cfs-lock-test host-fuzz-cfs-test host-fuzz-elf-test \
 	host-fuzz-chrisc-test host-fuzz-clvm-test host-task-window-test
 
@@ -1146,11 +1157,12 @@ host-sanitize: tools/test_pmm_heap_smp.c tools/host_metal/metal_stub.c \
 		-fsanitize=address,undefined -Ikernel/metal \
 		-o $(HOST_BIN)/test_kthread_smp_asan tools/test_kthread_smp.c \
 		tools/host_metal/metal_stub.c kernel/metal/kthread.c kernel/metal/job.c \
-		kernel/metal/spin.c
+		kernel/metal/spin.c kernel/metal/tlb_proto.c
 	$(HOST_BIN)/test_kthread_smp_asan
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 		-Ikernel/metal -o $(HOST_BIN)/test_job_saturate_asan \
-		tools/test_job_saturate.c kernel/metal/job.c kernel/metal/spin.c
+		tools/test_job_saturate.c kernel/metal/job.c kernel/metal/spin.c \
+		kernel/metal/tlb_proto.c
 	$(HOST_BIN)/test_job_saturate_asan
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
 		-Ikernel/gfx -o $(HOST_BIN)/test_keystate_asan \

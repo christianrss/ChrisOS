@@ -116,6 +116,12 @@ docs/*
 !docs/HARDWARE_COMPATIBILITY.md
 !docs/INSTALLATION.md
 !docs/HARDWARE_BRINGUP.md
+!docs/CURRENT_CAPABILITIES.md
+!docs/CURRENT_KERNEL_AUDIT.md
+!docs/CURRENT_HARDWARE_AUDIT.md
+!docs/CURRENT_SELFHOST_AUDIT.md
+!docs/CURRENT_GRAPHICS_AUDIT.md
+!docs/CAMPAIGN_STATUS.md
 backup/
 tools/gen_fase*.py
 tools/write_learn_book.py
