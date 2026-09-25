@@ -595,6 +595,23 @@ static int parse_line(const char *line, ChrisoImage *img) {
         }
         return 0;
     }
+    if (strcmp(op, "call") == 0) {
+        const char *save;
+        int reg;
+        skip_ws(&p);
+        save = p;
+        if (parse_ident(&p, a, sizeof(a)) == 0 && (reg = reg_any(a)) >= 0 &&
+            (*p == 0 || *p == ' ' || *p == '\t' || *p == '\n' || *p == ';')) {
+            if (reg > 15) {
+                return asm_fail();
+            }
+            emit_rex(1, 0, reg);
+            emit_u8(0xff);
+            emit_u8((uint8_t)(0xd0u | (reg & 7)));
+            return 0;
+        }
+        p = save;
+    }
     if (strcmp(op, "call") == 0 || jcc_of(op) != -1) {
         int cc = strcmp(op, "call") == 0 ? -3 : jcc_of(op);
         skip_ws(&p);
