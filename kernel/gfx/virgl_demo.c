@@ -33,6 +33,8 @@ static uint32_t g_h_vary_vs;
 static uint32_t g_h_vary_fs;
 static uint32_t g_h_light_vs;
 static uint32_t g_h_light_fs;
+static uint32_t g_h_world_vs;
+static uint32_t g_h_world_fs;
 static ShProgram *g_prog_tri;
 static ShProgram *g_prog_mvp;
 static ShProgram *g_prog_tex;
@@ -484,8 +486,8 @@ static int upload_uni(VirglCmd *c, ShProgram *p, int stage) {
 static int pipe_init(void) {
     uint32_t buf[VIRGL_CMD_MAX];
     VirglCmd c;
-    uint32_t world_vs = 0;
-    uint32_t world_fs = 0;
+    g_h_world_vs = 0;
+    g_h_world_fs = 0;
     if (g_pipe) {
         return 0;
     }
@@ -518,7 +520,7 @@ static int pipe_init(void) {
         build_prog("light.vert", SH_SRC_LIGHT_VERT, "light.frag", SH_SRC_LIGHT_FRAG, &g_prog_light,
                    &g_h_light_vs, &g_h_light_fs) != 0 ||
         build_prog("world.vert", SH_SRC_WORLD_VERT, "world.frag", SH_SRC_WORLD_FRAG, &g_prog_world,
-                   &world_vs, &world_fs) != 0) {
+                   &g_h_world_vs, &g_h_world_fs) != 0) {
         return -1;
     }
     serial_puts("PASS: glsl compile\n");
@@ -847,6 +849,149 @@ static int test_lighting(void) {
     return 0;
 }
 
+static int pix_dim1(uint32_t p) {
+    uint32_t r = (p >> 16) & 255u;
+    uint32_t g = (p >> 8) & 255u;
+    uint32_t b = p & 255u;
+    uint32_t hi = r;
+    uint32_t lo;
+    if (g > hi) {
+        hi = g;
+    }
+    if (b > hi) {
+        hi = b;
+    }
+    lo = r;
+    if (g < lo) {
+        lo = g;
+    }
+    if (b < lo) {
+        lo = b;
+    }
+    return hi >= 15u && hi <= 80u && lo <= 12u;
+}
+
+static void rot_y(float m[16], float deg) {
+    float c = gfx_cosf(deg);
+    float s = gfx_sinf(deg);
+    int i;
+    for (i = 0; i < 16; ++i) {
+        m[i] = 0.f;
+    }
+    m[0] = c;
+    m[2] = -s;
+    m[5] = 1.f;
+    m[8] = s;
+    m[10] = c;
+    m[15] = 1.f;
+}
+
+static int test_lit_mesh(void) {
+    static const float v[] = {
+        -0.85f, -0.65f, 0.0f, 1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f, 0.0f,
+        -0.05f, -0.65f, 0.0f, 1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 1.0f, 0.0f,
+        -0.45f, 0.70f,  0.0f, 1.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f, 1.0f,
+        0.05f,  -0.65f, 0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 0.0f,
+        0.85f,  -0.65f, 0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f,
+        0.45f,  0.70f,  0.0f, 1.0f, 0.0f, 0.0f, -1.0f, 0.0f, 0.0f, 1.0f,
+    };
+    float model[16];
+    float view[16];
+    float proj[16];
+    float nm[9];
+    float light[3];
+    float lcol[3];
+    float amb[3];
+    uint32_t buf[VIRGL_CMD_MAX];
+    VirglCmd c;
+    uint32_t vbo = 0;
+    uint32_t tex = 0;
+    uint32_t view_h;
+    uint32_t ve;
+    uint32_t off[3];
+    uint32_t fmt[3];
+    int red;
+    int blue;
+    int dim;
+    rot_y(model, 28.0f);
+    ident4(view);
+    ident4(proj);
+    nm[0] = model[0];
+    nm[1] = model[1];
+    nm[2] = model[2];
+    nm[3] = model[4];
+    nm[4] = model[5];
+    nm[5] = model[6];
+    nm[6] = model[8];
+    nm[7] = model[9];
+    nm[8] = model[10];
+    light[0] = 0.f;
+    light[1] = 0.f;
+    light[2] = 2.f;
+    lcol[0] = 1.f;
+    lcol[1] = 1.f;
+    lcol[2] = 1.f;
+    amb[0] = 0.15f;
+    amb[1] = 0.15f;
+    amb[2] = 0.15f;
+    if (sh_uniform_set(g_prog_world, sh_uniform_find(g_prog_world, "model"), model, 16) != 0 ||
+        sh_uniform_set(g_prog_world, sh_uniform_find(g_prog_world, "view"), view, 16) != 0 ||
+        sh_uniform_set(g_prog_world, sh_uniform_find(g_prog_world, "projection"), proj, 16) != 0 ||
+        sh_uniform_set(g_prog_world, sh_uniform_find(g_prog_world, "normalMatrix"), nm, 9) != 0 ||
+        sh_uniform_set(g_prog_world, sh_uniform_find(g_prog_world, "lightPosition"), light, 3) != 0 ||
+        sh_uniform_set(g_prog_world, sh_uniform_find(g_prog_world, "lightColor"), lcol, 3) != 0 ||
+        sh_uniform_set(g_prog_world, sh_uniform_find(g_prog_world, "ambientColor"), amb, 3) != 0) {
+        serial_puts("FAIL: virgl lit mesh uniforms\n");
+        return -1;
+    }
+    off[0] = 0;
+    off[1] = 16;
+    off[2] = 32;
+    fmt[0] = VIRGL_FORMAT_R32G32B32A32_FLOAT;
+    fmt[1] = VIRGL_FORMAT_R32G32B32A32_FLOAT;
+    fmt[2] = VIRGL_FORMAT_R32G32_FLOAT;
+    ve = obj();
+    view_h = obj();
+    if (clear_color(0, 0, 0, VIRGL_F32_ONE, 0) != 0 || upload_tex(&tex) != 0 ||
+        upload_buffer(VIRGL_BIND_VERTEX_BUFFER, v, sizeof v, &vbo) != 0) {
+        serial_puts("FAIL: virgl lit mesh upload\n");
+        return -1;
+    }
+    if (begin_cmd(&c, buf) != 0 || emit_fb(&c, 0) != 0 || emit_view(&c) != 0 ||
+        virgl_cmd_bind(&c, VIRGL_OBJECT_BLEND, g_blend) != 0 ||
+        virgl_cmd_bind(&c, VIRGL_OBJECT_DSA, g_dsa_off) != 0 ||
+        virgl_cmd_bind(&c, VIRGL_OBJECT_RASTERIZER, g_rs) != 0 ||
+        virgl_cmd_sview(&c, view_h, tex, VIRGL_FORMAT_B8G8R8A8_UNORM) != 0 ||
+        virgl_cmd_link(&c, g_h_world_vs, g_h_world_fs) != 0 ||
+        upload_uni(&c, g_prog_world, SH_STAGE_VERTEX) != 0 ||
+        upload_uni(&c, g_prog_world, SH_STAGE_FRAGMENT) != 0 ||
+        virgl_cmd_bind_sampler(&c, VIRGL_SHADER_FRAGMENT, g_samp) != 0 ||
+        virgl_cmd_set_views(&c, VIRGL_SHADER_FRAGMENT, view_h) != 0 ||
+        virgl_cmd_velems(&c, ve, 3, off, fmt) != 0 ||
+        virgl_cmd_bind(&c, VIRGL_OBJECT_VERTEX_ELEMENTS, ve) != 0 ||
+        virgl_cmd_vbuffers(&c, 40u, 0, vbo) != 0 ||
+        virgl_cmd_draw(&c, 0, 6u, 0, 0, 6u) != 0 || !virgl_cmd_ok(&c) ||
+        vgpu_submit3d(g_ctx, buf, virgl_cmd_len(&c)) != 0 || readback() != 0) {
+        serial_puts("FAIL: virgl lit mesh submit\n");
+        return -1;
+    }
+    red = count_if(pix_red);
+    blue = count_if(pix_blue);
+    dim = count_if(pix_dim1);
+    if (red < 5 || blue < 5 || dim < 5) {
+        serial_puts("FAIL: virgl lit mesh red=");
+        serial_write_u64((uint64_t)red);
+        serial_puts(" blue=");
+        serial_write_u64((uint64_t)blue);
+        serial_puts(" dim=");
+        serial_write_u64((uint64_t)dim);
+        serial_puts("\n");
+        return -1;
+    }
+    serial_puts("PASS: virgl lit mesh\n");
+    return 0;
+}
+
 static int test_switch(void) {
     static const float v[] = {
         -0.7f, -0.7f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
@@ -955,7 +1100,7 @@ int virgl_demo_run(void) {
     if (res3d_cycle(res_cycles) != 0 || make_color() != 0 || make_depth() != 0 ||
         pipe_init() != 0 || test_clear() != 0 || test_tri() != 0 || test_depth() != 0 ||
         test_cube(0) != 0 || test_cube(1) != 0 || test_varying() != 0 || test_lighting() != 0 ||
-        test_switch() != 0 || present_scanout() != 0) {
+        test_switch() != 0 || test_lit_mesh() != 0 || present_scanout() != 0) {
         cleanup();
         return -1;
     }

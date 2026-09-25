@@ -108,6 +108,7 @@ test-qemu-virgl: $(BUILD_DIR)/os-virgl.iso $(DISK_IMG)
 		--expect "PASS: virgl varying" \
 		--expect "PASS: virgl lighting" \
 		--expect "PASS: virgl shader switch" \
+		--expect "PASS: virgl lit mesh" \
 		--expect "PASS: shader mine link" \
 		--expect "PASS: virgl present" \
 		--expect "3D backend -> virgl" -- \

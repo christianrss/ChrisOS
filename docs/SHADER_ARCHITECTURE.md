@@ -57,6 +57,8 @@ Varyings are matched by name at link time. A missing fragment input or a type mi
 
 The triangle, depth, colored cube, textured cube, RGB varying, and Lambert lighting draws all use that TGSI. There is no demo-specific TGSI string left in the renderer.
 
+`world.vert` and `world.frag` are also drawn once in that boot: a Y rotation of 28 degrees, identity view and projection, the matching `mat3` normal matrix, a checker `sampler2D`, and ambient plus Lambert diffuse under a white light. The serial line is `PASS: virgl lit mesh`. The model is a pure rotation. It is not the clip-space matrix used by the colored cube.
+
 ## Software backend
 
 `sh_soft_vs` and `sh_soft_fs` run the same CSIR. `sh_soft_triangle` rasterizes one triangle with perspective-correct varyings into a buffer of at most 128x128. The older `tri.c` rasterizer is unchanged and does not execute CSIR.
@@ -69,7 +71,7 @@ Syscall numbers 260–274. Handles belong to the language slot. `sh_guest_drop_o
 
 ## Mine Chris
 
-`world.vert` and `world.frag` are compiled and linked during the VirGL boot (`PASS: shader mine link`). The voxel renderer in `GAMES/MINE/MINE.CC` still calls the software scene path. There is no `#ifdef VIRGL` in that game. Drawing those voxels through VirGL is unimplemented.
+`world.vert` and `world.frag` are compiled, linked, and submitted during the VirGL boot (`PASS: shader mine link`). The same pair is the shader for `PASS: virgl lit mesh`. The voxel renderer in `GAMES/MINE/MINE.CC` still calls the software scene path. There is no `#ifdef VIRGL` in that game. Drawing those voxels through VirGL is unimplemented.
 
 ## Limits
 
