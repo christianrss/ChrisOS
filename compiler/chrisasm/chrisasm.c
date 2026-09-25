@@ -9,12 +9,30 @@
 #endif
 
 #define ASM_SEC_MAX 65536u
+#define ASM_LOCAL_MAX 1024
+#define ASM_FIX_MAX 4096
 
 static uint8_t g_buf[3][ASM_SEC_MAX];
 static uint32_t g_len[4];
 static int g_cur;
 static int g_overflow;
 static int g_force_local;
+
+/* Same-section .L branches are patched here. They are not ChrisO symbols:
+ * a real kernel file has more local labels than CHRISO_SYM_MAX. */
+static struct {
+    char name[32];
+    int sec;
+    uint32_t off;
+    int defined;
+} g_loc[ASM_LOCAL_MAX];
+static int g_nloc;
+static struct {
+    char name[32];
+    int sec;
+    uint32_t at;
+} g_fix[ASM_FIX_MAX];
+static int g_nfix;
 
 static int asm_fail(void) {
     return -1;
@@ -102,6 +120,10 @@ static int parse_u64(const char **p, uint64_t *out) {
             return -1;
         }
         if (d >= base) {
+            *p = save;
+            return -1;
+        }
+        if (v > (18446744073709551615ull - (uint64_t)d) / (uint64_t)base) {
             *p = save;
             return -1;
         }
@@ -294,6 +316,78 @@ static int emit_mem_modrm(ChrisoImage *img, int reg, int rip, int base, int disp
     return 0;
 }
 
+static int is_local_lab(const char *name) {
+    return name[0] == '.' && name[1] == 'L';
+}
+
+static int local_find(const char *name) {
+    int i;
+    for (i = 0; i < g_nloc; i++) {
+        if (strcmp(g_loc[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int local_define(const char *name, int sec, uint32_t off) {
+    int id = local_find(name);
+    if (id >= 0) {
+        if (g_loc[id].defined) {
+            return -1;
+        }
+        g_loc[id].defined = 1;
+        g_loc[id].sec = sec;
+        g_loc[id].off = off;
+        return id;
+    }
+    if (g_nloc >= ASM_LOCAL_MAX) {
+        return -1;
+    }
+    memset(&g_loc[g_nloc], 0, sizeof(g_loc[g_nloc]));
+    strncpy(g_loc[g_nloc].name, name, sizeof(g_loc[g_nloc].name) - 1u);
+    g_loc[g_nloc].sec = sec;
+    g_loc[g_nloc].off = off;
+    g_loc[g_nloc].defined = 1;
+    return g_nloc++;
+}
+
+static int add_fix(const char *name, int sec, uint32_t at) {
+    if (g_nfix >= ASM_FIX_MAX) {
+        return -1;
+    }
+    memset(&g_fix[g_nfix], 0, sizeof(g_fix[g_nfix]));
+    strncpy(g_fix[g_nfix].name, name, sizeof(g_fix[g_nfix].name) - 1u);
+    g_fix[g_nfix].sec = sec;
+    g_fix[g_nfix].at = at;
+    g_nfix++;
+    return 0;
+}
+
+static int patch_fixups(void) {
+    int i;
+    for (i = 0; i < g_nfix; i++) {
+        int id = local_find(g_fix[i].name);
+        int32_t disp;
+        uint32_t at;
+        int sec;
+        if (id < 0 || !g_loc[id].defined || g_loc[id].sec != g_fix[i].sec) {
+            return -1;
+        }
+        sec = g_fix[i].sec;
+        at = g_fix[i].at;
+        if (sec < 0 || sec >= 3 || at + 4u > g_len[sec]) {
+            return -1;
+        }
+        disp = (int32_t)g_loc[id].off - (int32_t)(at + 4u);
+        g_buf[sec][at] = (uint8_t)((uint32_t)disp & 0xffu);
+        g_buf[sec][at + 1u] = (uint8_t)(((uint32_t)disp >> 8) & 0xffu);
+        g_buf[sec][at + 2u] = (uint8_t)(((uint32_t)disp >> 16) & 0xffu);
+        g_buf[sec][at + 3u] = (uint8_t)(((uint32_t)disp >> 24) & 0xffu);
+    }
+    return 0;
+}
+
 static int emit_call_or_jmp(ChrisoImage *img, const char *sym, int cond) {
     int id = add_sym(img, sym, CHRISO_BIND_UNDEF, CHRISO_KIND_FUNC, 0, 0);
     uint32_t at;
@@ -312,6 +406,33 @@ static int emit_call_or_jmp(ChrisoImage *img, const char *sym, int cond) {
     at = g_len[g_cur];
     emit_u32(0);
     return add_reloc(img, at, (uint32_t)id, -4, R_X86_64_PLT32);
+}
+
+static int emit_local_branch(ChrisoImage *img, const char *sym, int cond) {
+    int id = local_find(sym);
+    uint32_t at;
+    if (id >= 0 && g_loc[id].defined && g_loc[id].sec != g_cur) {
+        return emit_call_or_jmp(img, sym, cond);
+    }
+    if (cond == -1) {
+        emit_u8(0xe8);
+    } else if (cond == -2) {
+        emit_u8(0xe9);
+    } else {
+        emit_u8(0x0f);
+        emit_u8((uint8_t)cond);
+    }
+    at = g_len[g_cur];
+    if (id >= 0 && g_loc[id].defined && g_loc[id].sec == g_cur) {
+        int32_t disp = (int32_t)g_loc[id].off - (int32_t)(at + 4u);
+        emit_u32((uint32_t)disp);
+        return g_overflow ? -1 : 0;
+    }
+    emit_u32(0);
+    if (add_fix(sym, g_cur, at) != 0) {
+        return -1;
+    }
+    return g_overflow ? -1 : 0;
 }
 
 static int parse_mem(const char **p, int *rip, int *base, int *disp, int *has_disp,
@@ -560,6 +681,17 @@ static int parse_line(const char *line, ChrisoImage *img) {
         uint8_t kind = (uint8_t)(g_cur == CHRISO_SEC_TEXT ? CHRISO_KIND_FUNC
                                                          : CHRISO_KIND_OBJECT);
         g_force_local = 0;
+        if (is_local_lab(op)) {
+            if (local_define(op, g_cur, g_len[g_cur]) < 0) {
+                return asm_fail();
+            }
+            /* Text-local labels stay in the fixup table. A label already
+             * referenced from another section, or any non-text label, is
+             * a real symbol so ChrisLd can apply the reloc. */
+            if (g_cur == CHRISO_SEC_TEXT && find_sym(img, op) < 0) {
+                return 0;
+            }
+        }
         if (add_sym(img, op, bind, kind, (uint32_t)g_cur, g_len[g_cur]) < 0) {
             return asm_fail();
         }
@@ -574,6 +706,96 @@ static int parse_line(const char *line, ChrisoImage *img) {
         emit_u8(0x0f);
         emit_u8(0x05);
         return 0;
+    }
+    if (strcmp(op, "cli") == 0) {
+        emit_u8(0xfa);
+        return 0;
+    }
+    if (strcmp(op, "sti") == 0) {
+        emit_u8(0xfb);
+        return 0;
+    }
+    if (strcmp(op, "hlt") == 0) {
+        emit_u8(0xf4);
+        return 0;
+    }
+    if (strcmp(op, "pause") == 0) {
+        emit_u8(0xf3);
+        emit_u8(0x90);
+        return 0;
+    }
+    if (strcmp(op, "not") == 0) {
+        int reg;
+        skip_ws(&p);
+        if (parse_ident(&p, a, sizeof(a)) != 0) {
+            return asm_fail();
+        }
+        reg = reg_any(a);
+        if (reg < 0 || reg > 15) {
+            return asm_fail();
+        }
+        emit_rex(1, 0, reg);
+        emit_u8(0xf7);
+        emit_u8((uint8_t)(0xd0u | (reg & 7)));
+        return 0;
+    }
+    if (strcmp(op, "in") == 0) {
+        skip_ws(&p);
+        if (parse_ident(&p, a, sizeof(a)) != 0) {
+            return asm_fail();
+        }
+        skip_ws(&p);
+        if (*p != ',') {
+            return asm_fail();
+        }
+        p++;
+        skip_ws(&p);
+        if (parse_ident(&p, b, sizeof(b)) != 0 || strcmp(b, "dx") != 0) {
+            return asm_fail();
+        }
+        if (strcmp(a, "al") == 0) {
+            emit_u8(0xec);
+            return 0;
+        }
+        if (strcmp(a, "ax") == 0) {
+            emit_u8(0x66);
+            emit_u8(0xed);
+            return 0;
+        }
+        if (strcmp(a, "eax") == 0) {
+            emit_u8(0xed);
+            return 0;
+        }
+        return asm_fail();
+    }
+    if (strcmp(op, "out") == 0) {
+        skip_ws(&p);
+        if (parse_ident(&p, a, sizeof(a)) != 0 || strcmp(a, "dx") != 0) {
+            return asm_fail();
+        }
+        skip_ws(&p);
+        if (*p != ',') {
+            return asm_fail();
+        }
+        p++;
+        skip_ws(&p);
+        if (parse_ident(&p, b, sizeof(b)) != 0) {
+            return asm_fail();
+        }
+        if (strcmp(b, "al") == 0) {
+            emit_u8(0xee);
+            return 0;
+        }
+        if (strcmp(b, "ax") == 0) {
+            emit_u8(0x66);
+            emit_u8(0xef);
+            return 0;
+        }
+        if (strcmp(b, "eax") == 0) {
+            emit_u8(0xef);
+            return 0;
+        }
+        return asm_fail();
     }
     if (op[0] == 'p' && op[1] == 'u' && op[2] == 's' && op[3] == 'h') {
         skip_ws(&p);
@@ -617,6 +839,10 @@ static int parse_line(const char *line, ChrisoImage *img) {
         skip_ws(&p);
         if (parse_ident(&p, a, sizeof(a)) != 0) {
             return asm_fail();
+        }
+        if (is_local_lab(a)) {
+            int code = cc == -3 ? -1 : cc;
+            return emit_local_branch(img, a, code) != 0 ? asm_fail() : 0;
         }
         if (cc == -3) {
             return emit_call_or_jmp(img, a, -1) != 0 ? asm_fail() : 0;
@@ -864,6 +1090,8 @@ int chrisasm_assemble(const char *src, ChrisoImage *out) {
     chriso_init(out);
     g_overflow = 0;
     g_force_local = 0;
+    g_nloc = 0;
+    g_nfix = 0;
     g_cur = CHRISO_SEC_TEXT;
     for (i = 0; i < 4; i++) {
         g_len[i] = 0;
@@ -891,7 +1119,7 @@ int chrisasm_assemble(const char *src, ChrisoImage *out) {
             return -1;
         }
     }
-    if (g_overflow) {
+    if (g_overflow || patch_fixups() != 0) {
         return -1;
     }
     return publish_secs(out);
