@@ -15,5 +15,6 @@ typedef struct KccDiag {
 int kcc_compile_source(const char *src, ChrisoImage *out);
 int kcc_compile_named(const char *file, const char *src, ChrisoImage *out);
 const KccDiag *kcc_last_error(void);
+const char *kcc_last_asm(void);
 
 #endif

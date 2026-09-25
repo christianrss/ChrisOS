@@ -203,6 +203,61 @@ int main(void) {
             }
         }
     }
+    {
+        static const char vol[] =
+            "uint32_t port;\n"
+            "volatile uint32_t mmio;\n"
+            "void plain(void) {\n"
+            "    port = 1;\n"
+            "    port = 2;\n"
+            "}\n"
+            "void poke(void) {\n"
+            "    mmio = 1;\n"
+            "    mmio = 2;\n"
+            "}\n"
+            "uint32_t peek(void) {\n"
+            "    uint32_t a;\n"
+            "    uint32_t b;\n"
+            "    a = mmio;\n"
+            "    b = mmio;\n"
+            "    return a + b;\n"
+            "}\n";
+        const char *as;
+        int port_stores;
+        int mmio_stores;
+        int mmio_loads;
+        const char *p;
+        if (kcc_compile_named("volatile.c", vol, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "volatile failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            return 1;
+        }
+        as = kcc_last_asm();
+        port_stores = 0;
+        mmio_stores = 0;
+        mmio_loads = 0;
+        p = as;
+        while (p && (p = strstr(p, "mov [rel port], rax")) != 0) {
+            port_stores++;
+            p += 18;
+        }
+        p = as;
+        while (p && (p = strstr(p, "mov dword [rel mmio], eax")) != 0) {
+            mmio_stores++;
+            p += 26;
+        }
+        p = as;
+        while (p && (p = strstr(p, "mov eax, dword [rel mmio]")) != 0) {
+            mmio_loads++;
+            p += 26;
+        }
+        if (port_stores != 1 || mmio_stores != 2 || mmio_loads != 2) {
+            fprintf(stderr, "volatile asm port=%d mmio_st=%d mmio_ld=%d\n%s\n",
+                    port_stores, mmio_stores, mmio_loads, as);
+            return 1;
+        }
+    }
     puts("test_kcc: ok");
     return 0;
 }
