@@ -15,9 +15,9 @@
 #define KCC_PP_MAX (256u * 1024u)
 #define KCC_SYM_MAX 256
 #define KCC_MAC_MAX 96
-#define KCC_STRUCT_MAX 16
-#define KCC_FIELD_MAX 8
-#define KCC_TYPEDEF_MAX 32
+#define KCC_STRUCT_MAX 48
+#define KCC_FIELD_MAX 32
+#define KCC_TYPEDEF_MAX 64
 
 enum {
     TY_VOID = 0,
@@ -43,6 +43,7 @@ typedef struct Type {
     int align;
     int is_volatile;
     int pointee_volatile;
+    int is_func_ptr;
 } Type;
 
 typedef struct Field {
@@ -109,6 +110,7 @@ static int g_lab;
 static int g_dead_ok;
 static int g_dead_at;
 static char g_dead_sym[64];
+static int g_storage_extern;
 
 static void diag_clear(void) {
     memset(&g_diag, 0, sizeof(g_diag));
@@ -969,11 +971,29 @@ static int sym_add(const Sym *s) {
     return id;
 }
 
+static int builtin_width(const char *name) {
+    if (strcmp(name, "uint8_t") == 0 || strcmp(name, "int8_t") == 0) {
+        return 1;
+    }
+    if (strcmp(name, "uint16_t") == 0 || strcmp(name, "int16_t") == 0) {
+        return 2;
+    }
+    if (strcmp(name, "uint32_t") == 0 || strcmp(name, "int32_t") == 0) {
+        return 4;
+    }
+    if (strcmp(name, "uint64_t") == 0 || strcmp(name, "int64_t") == 0 ||
+        strcmp(name, "size_t") == 0 || strcmp(name, "ssize_t") == 0 ||
+        strcmp(name, "uintptr_t") == 0 || strcmp(name, "intptr_t") == 0 ||
+        strcmp(name, "ptrdiff_t") == 0) {
+        return 8;
+    }
+    return 0;
+}
+
 static int is_type_name(const char *name) {
     if (strcmp(name, "void") == 0 || strcmp(name, "bool") == 0 ||
         strcmp(name, "char") == 0 || strcmp(name, "int") == 0 ||
-        strcmp(name, "uint8_t") == 0 || strcmp(name, "uint16_t") == 0 ||
-        strcmp(name, "uint32_t") == 0 || strcmp(name, "uint64_t") == 0) {
+        builtin_width(name) > 0) {
         return 1;
     }
     return td_find(name) >= 0;
@@ -1026,8 +1046,23 @@ static int type_from_name(const char *name, Type *t) {
         *t = type_make(TY_U32, 4, 4);
         return 1;
     }
-    if (strcmp(name, "uint64_t") == 0) {
+    if (strcmp(name, "uint64_t") == 0 || strcmp(name, "int64_t") == 0 ||
+        strcmp(name, "size_t") == 0 || strcmp(name, "ssize_t") == 0 ||
+        strcmp(name, "uintptr_t") == 0 || strcmp(name, "intptr_t") == 0 ||
+        strcmp(name, "ptrdiff_t") == 0) {
         *t = type_make(TY_U64, 8, 8);
+        return 1;
+    }
+    if (strcmp(name, "int8_t") == 0) {
+        *t = type_make(TY_CHAR, 1, 1);
+        return 1;
+    }
+    if (strcmp(name, "int16_t") == 0) {
+        *t = type_make(TY_U16, 2, 2);
+        return 1;
+    }
+    if (strcmp(name, "int32_t") == 0) {
+        *t = type_make(TY_U32, 4, 4);
         return 1;
     }
     id = td_find(name);
@@ -1041,7 +1076,57 @@ static int type_from_name(const char *name, Type *t) {
 static int parse_expr(Val *out);
 static int parse_stmt(void);
 
-static int parse_struct_body(int id) {
+static int struct_find(const char *name) {
+    int i;
+    if (!name || !name[0]) {
+        return -1;
+    }
+    for (i = 0; i < g_nstruct; i++) {
+        if (strcmp(g_struct[i].name, name) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static int skip_attribute(int *packed) {
+    const char *start;
+    int depth;
+    skip();
+    if (strncmp(g_p, "__attribute__", 13) != 0) {
+        return 0;
+    }
+    start = g_p;
+    g_p += 13;
+    skip();
+    if (*g_p != '(') {
+        return fail("bad attribute");
+    }
+    depth = 0;
+    do {
+        if (*g_p == '(') {
+            depth++;
+        } else if (*g_p == ')') {
+            depth--;
+        }
+        if (*g_p == '\n') {
+            g_line++;
+        }
+        g_p++;
+    } while (*g_p && depth > 0);
+    if (packed && !(*packed)) {
+        const char *s;
+        for (s = start; s + 6 < g_p; s++) {
+            if (s[0] == 'p' && s[1] == 'a' && s[2] == 'c' && s[3] == 'k' &&
+                s[4] == 'e' && s[5] == 'd') {
+                *packed = 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int parse_struct_body(int id, int packed) {
     int off = 0;
     int max_align = 1;
     g_struct[id].nfield = 0;
@@ -1054,6 +1139,7 @@ static int parse_struct_body(int id) {
         int is_static = 0;
         int is_inline = 0;
         int is_unsigned = 0;
+        int is_volatile = 0;
         char tname[64];
         Field *f;
         int al;
@@ -1061,11 +1147,21 @@ static int parse_struct_body(int id) {
             return fail("too many fields");
         }
         for (;;) {
-            if (eat_kw("const") || eat_kw("volatile")) {
+            if (eat_kw("volatile")) {
+                is_volatile = 1;
+                continue;
+            }
+            if (eat_kw("const")) {
                 continue;
             }
             if (eat_kw("unsigned")) {
                 is_unsigned = 1;
+                continue;
+            }
+            if (skip_attribute(0) != 0) {
+                return -1;
+            }
+            if (strncmp(g_p, "__attribute__", 13) == 0) {
                 continue;
             }
             break;
@@ -1084,13 +1180,24 @@ static int parse_struct_body(int id) {
         while (eat_op("*")) {
             ft = type_ptr(ft);
         }
+        ft.is_volatile = is_volatile;
         if (!take_ident(fname, 32)) {
             return fail("field name expected");
+        }
+        if (eat_op("[")) {
+            uint64_t bound = 0;
+            int elem = ft.size < 1 ? 1 : ft.size;
+            if (!take_number(&bound) || bound == 0u || !eat_op("]")) {
+                return fail("bad array bound");
+            }
+            ft.pointee_size = elem;
+            ft.array_len = (int)bound;
+            ft.size = elem * (int)bound;
         }
         if (!eat_op(";")) {
             return fail("expected semicolon");
         }
-        al = ft.align < 1 ? 1 : ft.align;
+        al = packed ? 1 : (ft.align < 1 ? 1 : ft.align);
         off = (off + al - 1) & ~(al - 1);
         f = &g_struct[id].fields[g_struct[id].nfield++];
         memset(f, 0, sizeof(*f));
@@ -1116,13 +1223,24 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
     char name[64];
     *is_static = 0;
     *is_inline = 0;
+    g_storage_extern = 0;
     for (;;) {
+        if (eat_kw("extern")) {
+            g_storage_extern = 1;
+            continue;
+        }
         if (eat_kw("static")) {
             *is_static = 1;
             continue;
         }
-        if (eat_kw("inline")) {
+        if (eat_kw("inline") || eat_kw("_Noreturn")) {
             *is_inline = 1;
+            continue;
+        }
+        if (skip_attribute(0) != 0) {
+            return -1;
+        }
+        if (strncmp(g_p, "__attribute__", 13) == 0) {
             continue;
         }
         if (eat_kw("volatile")) {
@@ -1139,14 +1257,51 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
         break;
     }
     if (eat_kw("struct")) {
-        int id;
-        if (g_nstruct >= KCC_STRUCT_MAX) {
-            return fail("too many structs");
-        }
-        id = g_nstruct++;
-        memset(&g_struct[id], 0, sizeof(g_struct[id]));
-        if (parse_struct_body(id) != 0) {
+        char tag[32];
+        int has_tag = 0;
+        int packed = 0;
+        int id = -1;
+        tag[0] = 0;
+        if (skip_attribute(&packed) != 0) {
             return -1;
+        }
+        if (take_ident(tag, 32)) {
+            has_tag = 1;
+        }
+        if (skip_attribute(&packed) != 0) {
+            return -1;
+        }
+        skip();
+        if (*g_p == '{') {
+            if (has_tag) {
+                id = struct_find(tag);
+            }
+            if (id < 0) {
+                if (g_nstruct >= KCC_STRUCT_MAX) {
+                    return fail("too many structs");
+                }
+                id = g_nstruct++;
+                memset(&g_struct[id], 0, sizeof(g_struct[id]));
+                if (has_tag) {
+                    copy_str(g_struct[id].name, 32, tag);
+                }
+            }
+            if (parse_struct_body(id, packed) != 0) {
+                return -1;
+            }
+        } else if (has_tag) {
+            id = struct_find(tag);
+            if (id < 0) {
+                if (g_nstruct >= KCC_STRUCT_MAX) {
+                    return fail("too many structs");
+                }
+                id = g_nstruct++;
+                memset(&g_struct[id], 0, sizeof(g_struct[id]));
+                copy_str(g_struct[id].name, 32, tag);
+                g_struct[id].align = 1;
+            }
+        } else {
+            return fail("expected struct body");
         }
         *t = type_make(TY_STRUCT, g_struct[id].size, g_struct[id].align);
         t->struct_id = id;
@@ -1156,7 +1311,8 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
         }
         return 0;
     }
-    if (!take_ident(name, 64)) {
+    skip();
+    if (!is_ident_start(*g_p)) {
         if (is_unsigned) {
             *t = type_make(TY_U32, 4, 4);
             t->is_volatile = is_volatile;
@@ -1167,8 +1323,22 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
         }
         return fail("type expected");
     }
-    if (!type_from_name(name, t)) {
-        return fail("type expected");
+    {
+        const char *save = g_p;
+        int line = g_line;
+        if (!take_ident(name, 64) || !type_from_name(name, t)) {
+            if (is_unsigned) {
+                g_p = save;
+                g_line = line;
+                *t = type_make(TY_U32, 4, 4);
+                t->is_volatile = is_volatile;
+                while (eat_op("*")) {
+                    *t = type_ptr(*t);
+                }
+                return 0;
+            }
+            return fail("type expected");
+        }
     }
     if (is_unsigned && t->kind == TY_INT) {
         *t = type_make(TY_U32, 4, 4);
@@ -1409,6 +1579,8 @@ static int emit_ro_string(const char *s, int n, char *lab) {
 }
 
 static int parse_unary(Val *out);
+static int parse_postfix(Val *out);
+static int postfix_tail(Val *out);
 
 static int parse_primary(Val *out) {
     uint64_t num;
@@ -1486,15 +1658,15 @@ static int parse_primary(Val *out) {
     }
 }
 
-static int parse_args(const char *name) {
-    int slots[6];
+static int parse_args(const char *name, int indirect) {
+    int slots[8];
     int n = 0;
     static const char *regs[] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
     int i;
     if (!eat_op(")")) {
         do {
             Val arg;
-            if (n >= 6) {
+            if (n >= 8) {
                 return fail("too many arguments");
             }
             if (parse_expr(&arg) != 0) {
@@ -1507,12 +1679,55 @@ static int parse_args(const char *name) {
             return fail("expected closing parenthesis");
         }
     }
-    for (i = 0; i < n; i++) {
+    for (i = 0; i < n && i < 6; i++) {
         load_frame_rax(slots[i]);
         asm_cat("mov ", regs[i], ", rax", 0);
     }
+    if (n > 6) {
+        int extra = n - 6;
+        int space = (extra + (extra & 1)) * 8;
+        char num[16];
+        u64_dec(num, (uint64_t)space);
+        asm_cat("sub rsp, ", num, 0, 0);
+        for (i = 0; i < extra; i++) {
+            char mem[32];
+            load_frame_rax(slots[6 + i]);
+            mem[0] = '[';
+            mem[1] = 'r';
+            mem[2] = 's';
+            mem[3] = 'p';
+            if (i == 0) {
+                mem[4] = ']';
+                mem[5] = 0;
+            } else {
+                char off[16];
+                int k = 0;
+                u64_dec(off, (uint64_t)i * 8u);
+                mem[4] = '+';
+                while (off[k]) {
+                    mem[5 + k] = off[k];
+                    k++;
+                }
+                mem[5 + k] = ']';
+                mem[6 + k] = 0;
+            }
+            asm_cat("mov ", mem, ", rax", 0);
+        }
+    }
     dead_store_clear();
-    asm_cat("call ", name, 0, 0);
+    if (indirect) {
+        load_frame_rax(indirect);
+        asm_line("call rax");
+    } else {
+        asm_cat("call ", name, 0, 0);
+    }
+    if (n > 6) {
+        int extra = n - 6;
+        int space = (extra + (extra & 1)) * 8;
+        char num[16];
+        u64_dec(num, (uint64_t)space);
+        asm_cat("add rsp, ", num, 0, 0);
+    }
     return 0;
 }
 
@@ -1549,16 +1764,20 @@ static int inc_lv(Val *v, int delta, int prefix) {
     return 0;
 }
 
-static int parse_postfix(Val *out) {
-    if (parse_primary(out) != 0) {
-        return -1;
-    }
+static int postfix_tail(Val *out) {
     for (;;) {
         if (eat_op("(")) {
-            if (!out->func) {
+            if (!out->func && !out->type.is_func_ptr) {
                 return fail("call target is not a function");
             }
-            if (parse_args(out->gname) != 0) {
+            if (out->type.is_func_ptr) {
+                int slot;
+                load_val(out);
+                slot = save_rax();
+                if (parse_args(0, slot) != 0) {
+                    return -1;
+                }
+            } else if (parse_args(out->gname, 0) != 0) {
                 return -1;
             }
             out->func = 0;
@@ -1621,7 +1840,65 @@ static int parse_postfix(Val *out) {
             }
             continue;
         }
-        break;
+        {
+            int arrow = 0;
+            int is_mem = 0;
+            char fname[32];
+            Field *field = 0;
+            int sid;
+            int fi;
+            if (g_p[0] == '-' && g_p[1] == '>') {
+                arrow = 1;
+                is_mem = 1;
+                g_p += 2;
+            } else if (g_p[0] == '.' && g_p[1] != '.') {
+                is_mem = 1;
+                g_p++;
+            }
+            if (!is_mem) {
+                break;
+            }
+            if (arrow) {
+                if (!out->type.is_ptr || out->type.struct_id < 0) {
+                    return fail("arrow on a non-struct pointer");
+                }
+                sid = out->type.struct_id;
+                load_val(out);
+            } else {
+                if (out->type.is_ptr || out->type.struct_id < 0) {
+                    return fail("dot on a non-struct");
+                }
+                sid = out->type.struct_id;
+                if (out->lvalue) {
+                    gen_addr(out);
+                }
+            }
+            if (!take_ident(fname, 32)) {
+                return fail("field name expected");
+            }
+            if (sid < 0 || sid >= g_nstruct) {
+                return fail("unknown field");
+            }
+            for (fi = 0; fi < g_struct[sid].nfield; fi++) {
+                if (strcmp(g_struct[sid].fields[fi].name, fname) == 0) {
+                    field = &g_struct[sid].fields[fi];
+                    break;
+                }
+            }
+            if (!field) {
+                return fail("unknown field");
+            }
+            if (field->offset != 0) {
+                asm_mov_imm("rcx", (uint64_t)field->offset);
+                asm_line("add rax, rcx");
+            }
+            out->frame = save_rax();
+            out->lv = LV_ADDR;
+            out->lvalue = 1;
+            out->func = 0;
+            out->type = field->type;
+            continue;
+        }
     }
     return 0;
 }
@@ -1638,6 +1915,20 @@ static int parse_unary(Val *out) {
             return -1;
         }
         return inc_lv(out, -1, 1);
+    }
+    skip();
+    if (g_p[0] == '-' && g_p[1] != '-' && g_p[1] != '=' && g_p[1] != '>') {
+        g_p++;
+        if (parse_unary(out) != 0) {
+            return -1;
+        }
+        load_val(out);
+        asm_line("mov rcx, rax");
+        asm_mov_imm("rax", 0);
+        asm_line("sub rax, rcx");
+        out->lvalue = 0;
+        out->lv = LV_NONE;
+        return 0;
     }
     if (eat_op("!")) {
         if (parse_unary(out) != 0) {
@@ -1711,9 +2002,16 @@ static int parse_unary(Val *out) {
         if (!eat_op(")")) {
             return fail("expected closing parenthesis");
         }
-        return 0;
+        return postfix_tail(out);
     }
     return parse_postfix(out);
+}
+
+static int parse_postfix(Val *out) {
+    if (parse_primary(out) != 0) {
+        return -1;
+    }
+    return postfix_tail(out);
 }
 
 static int parse_binary(Val *out, int prec);
@@ -1848,6 +2146,35 @@ static int parse_binary(Val *out, int prec) {
     if (prec != 0) {
         return 0;
     }
+    if (eat_op("?")) {
+        Val yes;
+        Val no;
+        char lno[16];
+        char ldone[16];
+        new_lab(lno);
+        new_lab(ldone);
+        load_val(out);
+        asm_line("cmp rax, 0");
+        asm_cat("je ", lno, 0, 0);
+        if (parse_expr(&yes) != 0) {
+            return -1;
+        }
+        if (!eat_op(":")) {
+            return fail("expected colon");
+        }
+        load_val(&yes);
+        asm_cat("jmp ", ldone, 0, 0);
+        asm_label(lno);
+        if (parse_expr(&no) != 0) {
+            return -1;
+        }
+        load_val(&no);
+        asm_label(ldone);
+        out->lvalue = 0;
+        out->lv = LV_NONE;
+        out->type = no.type;
+        return 0;
+    }
     if (eat_op("-=")) {
         Val right;
         Val saved;
@@ -1865,6 +2192,34 @@ static int parse_binary(Val *out, int prec) {
         asm_line("mov rcx, rax");
         load_frame_rax(ls);
         asm_line("sub rax, rcx");
+        store_val(&saved);
+        out->lvalue = 0;
+        out->lv = LV_NONE;
+        return 0;
+    }
+    if (eat_op("|=") || eat_op("&=") || eat_op("^=")) {
+        Val right;
+        Val saved;
+        int ls;
+        const char *op = "or rax, rcx";
+        if (g_p[-2] == '&') {
+            op = "and rax, rcx";
+        } else if (g_p[-2] == '^') {
+            op = "xor rax, rcx";
+        }
+        if (!out->lvalue) {
+            return fail("operand is not assignable");
+        }
+        saved = *out;
+        load_val(out);
+        ls = save_rax();
+        if (parse_expr(&right) != 0) {
+            return -1;
+        }
+        load_val(&right);
+        asm_line("mov rcx, rax");
+        load_frame_rax(ls);
+        asm_line(op);
         store_val(&saved);
         out->lvalue = 0;
         out->lv = LV_NONE;
@@ -2261,32 +2616,62 @@ static int parse_params(Sym *params, int *np) {
     if (eat_op(")")) {
         return 0;
     }
-    if (eat_kw("void")) {
-        if (eat_op(")")) {
+    skip();
+    if (strncmp(g_p, "void", 4) == 0 && !is_ident_ch(g_p[4])) {
+        const char *save = g_p;
+        int line = g_line;
+        g_p += 4;
+        skip();
+        if (*g_p == ')') {
+            g_p++;
             return 0;
         }
-        return fail("bad parameter list");
+        g_p = save;
+        g_line = line;
     }
     do {
         Type t;
         int is_static = 0;
         int is_inline = 0;
         char name[64];
-        if (*np >= 6) {
+        if (*np >= 8) {
             return fail("too many parameters");
         }
         if (parse_base(&t, &is_static, &is_inline) != 0) {
             return -1;
         }
-        if (!take_ident(name, 64)) {
+        if (eat_op("(")) {
+            int depth;
+            if (!eat_op("*") || !take_ident(name, 64) || !eat_op(")") || !eat_op("(")) {
+                return fail("parameter name expected");
+            }
+            depth = 1;
+            while (*g_p && depth > 0) {
+                if (*g_p == '(') {
+                    depth++;
+                } else if (*g_p == ')') {
+                    depth--;
+                }
+                if (*g_p == '\n') {
+                    g_line++;
+                }
+                g_p++;
+            }
+            t = type_ptr(t);
+            t.is_func_ptr = 1;
+        } else if (!take_ident(name, 64)) {
             return fail("parameter name expected");
         }
         memset(&params[*np], 0, sizeof(params[*np]));
         copy_str(params[*np].name, 64, name);
         params[*np].type = t;
-        params[*np].frame = alloc_slot(8);
-        if (params[*np].frame == 0) {
-            return fail("frame is full");
+        if (*np < 6) {
+            params[*np].frame = alloc_slot(8);
+            if (params[*np].frame == 0) {
+                return fail("frame is full");
+            }
+        } else {
+            params[*np].frame = 16 + (*np - 6) * 8;
         }
         (*np)++;
     } while (eat_op(","));
@@ -2323,6 +2708,9 @@ static int parse_global(void) {
         return -1;
     }
     if (!take_ident(name, 64)) {
+        if (t.kind == TY_STRUCT && eat_op(";")) {
+            return 0;
+        }
         return fail("declaration expected");
     }
     if (eat_op("[")) {
@@ -2358,7 +2746,7 @@ static int parse_global(void) {
         return 0;
     }
     if (eat_op("(")) {
-        Sym params[6];
+        Sym params[8];
         int np = 0;
         int i;
         int existing;
@@ -2411,8 +2799,10 @@ static int parse_global(void) {
             if (sym_add(&params[i]) < 0) {
                 return fail("too many symbols");
             }
-            asm_cat("mov rax, ", arg_reg(i), 0, 0);
-            store_rax_frame(params[i].frame);
+            if (i < 6) {
+                asm_cat("mov rax, ", arg_reg(i), 0, 0);
+                store_rax_frame(params[i].frame);
+            }
         }
         while (!eat_op("}")) {
             if (parse_stmt() != 0) {
@@ -2430,7 +2820,9 @@ static int parse_global(void) {
     s.global = 1;
     s.is_static = is_static;
     if (eat_op(";")) {
-        if (emit_global_bss(name, t.size, is_static) != 0) {
+        if (g_storage_extern) {
+            asm_cat("extern ", name, 0, 0);
+        } else if (emit_global_bss(name, t.size, is_static) != 0) {
             return -1;
         }
         if (sym_add(&s) < 0) {
@@ -2456,6 +2848,42 @@ static int compile_unit(void) {
             char name[64];
             if (parse_base(&t, &is_static, &is_inline) != 0) {
                 return -1;
+            }
+            if (eat_op("(")) {
+                int depth;
+                if (!eat_op("*")) {
+                    return fail("typedef name expected");
+                }
+                if (!take_ident(name, 64)) {
+                    return fail("typedef name expected");
+                }
+                if (!eat_op(")") || !eat_op("(")) {
+                    return fail("typedef name expected");
+                }
+                depth = 1;
+                while (*g_p && depth > 0) {
+                    if (*g_p == '(') {
+                        depth++;
+                    } else if (*g_p == ')') {
+                        depth--;
+                    }
+                    if (*g_p == '\n') {
+                        g_line++;
+                    }
+                    g_p++;
+                }
+                if (!eat_op(";")) {
+                    return fail("expected semicolon");
+                }
+                t = type_ptr(t);
+                t.is_func_ptr = 1;
+                if (g_ntd >= KCC_TYPEDEF_MAX) {
+                    return fail("too many typedefs");
+                }
+                copy_str(g_td_name[g_ntd], 64, name);
+                g_td_type[g_ntd] = t;
+                g_ntd++;
+                continue;
             }
             if (!take_ident(name, 64)) {
                 return fail("typedef name expected");

@@ -26,12 +26,11 @@ the path in the tree (`SYS/BOOT.LOG` is). QEMU was not booted in this pass.
 
 ### Phase 3 through 5 — toolchain, SH4, SH5
 
-P0 blocker: KCC compiles `serial.c`, `klog.c`, and a volatile MMIO fixture
-on the host (`host-kcc-test`). It does not compile the kernel. A plain
-`uint32_t` store of the same global is folded to the last store. A
-`volatile uint32_t` keeps both 32-bit stores and both loads. ChrisAsm
-still cannot assemble `cli`, `hlt`, or `invlpg`. ChrisLd has not produced
-the boot ELF. SH4 and SH5 are not proven.
+P0 blocker: KCC compiles six `kernel/metal` files on the host
+(`ioapic.c`, `klog.c`, `meminfo.c`, `pit.c`, `serial.c`, `string.c`).
+It does not compile the kernel. ChrisAsm still cannot assemble `cli`,
+`hlt`, or `invlpg`. ChrisLd has not produced the boot ELF. SH4 and SH5
+are not proven.
 
 ### Phase 6 — hardware profile
 
@@ -52,7 +51,7 @@ Blocked on SH4 and SH5. No physical boot. Hardware stays unproven.
 | Gate | Result |
 | --- | --- |
 | `host-tlb-proto-test` | PASS (`tlb proto tests passed`, including halt-without-invlpg) |
-| `host-kcc-test` | PASS (`test_kcc: ok`; level-0 fixture, `serial.c`, `klog.c`, link with stubs, volatile MMIO fixture) |
+| `host-kcc-test` | PASS (`test_kcc: ok`; level-0, `serial.c`, `klog.c`, `string.c`, `pit.c`, `meminfo.c`, volatile MMIO, struct layout) |
 | `host-chrisasm-test` | PASS |
 | Freestanding `mm.c`, `job.c`, `idt.c`, `apic.c`, `idt_stubs.asm` | PASS |
 | `host-klog-test`, `host-buildinfo-test`, `host-buildstamp-test`, `host-meminfo-test`, `host-pmm-cycle-test`, `host-task-window-test` | not re-run on this branch |
