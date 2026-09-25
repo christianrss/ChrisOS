@@ -121,6 +121,11 @@ docs/*
 !docs/CURRENT_HARDWARE_AUDIT.md
 !docs/CURRENT_SELFHOST_AUDIT.md
 !docs/CURRENT_GRAPHICS_AUDIT.md
+!docs/GRAPHICS_ARCHITECTURE.md
+!docs/VIRTIO_GPU.md
+!docs/VIRGL.md
+!docs/GFX2D.md
+!docs/GFX3D.md
 !docs/CAMPAIGN_STATUS.md
 backup/
 tools/gen_fase*.py
