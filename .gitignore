@@ -129,6 +129,10 @@ docs/*
 !docs/CAMPAIGN_STATUS.md
 !docs/SHADER_ARCHITECTURE.md
 !docs/GLSL_SUPPORT.md
+!docs/chrisvm-boot-protocol.md
+!docs/chrisvm-spec-v1.md
+!docs/chrisvm/
+!docs/chrisvm/**
 backup/
 tools/gen_fase*.py
 tools/write_learn_book.py

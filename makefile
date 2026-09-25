@@ -185,7 +185,7 @@ $(OBJ_DIR)/kernel/lang/clvm_sys.o: kernel/lang/clvm_sys.c
 	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
 
 
-.PHONY: all iso run run-stop clean disk disk.img host-gates seed-selfhost disk-seed kernel apps
+.PHONY: all iso run run-stop clean disk disk.img host-gates seed-selfhost disk-seed kernel apps chrisvm chrisvm-test
 
 disk-seed: seed-selfhost
 
@@ -1566,6 +1566,12 @@ $(RISCV_ELF): kernel/arch/riscv/boot.S kernel/arch/riscv/main.c kernel/arch/risc
 		-nostdlib -fuse-ld=lld -Wl,-T,kernel/arch/riscv/link.ld -o $@ \
 		kernel/arch/riscv/boot.S kernel/arch/riscv/main.c \
 		compiler/clvm/clvm_vm.c compiler/clvm/clvm_format.c
+
+chrisvm:
+	$(MAKE) -C chrisvm
+
+chrisvm-test:
+	$(MAKE) -C chrisvm test
 
 clean:
 	rm -rf $(BUILD_DIR)
