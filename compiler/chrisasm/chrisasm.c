@@ -236,6 +236,10 @@ static int reg_any(const char *r) {
         strcmp(r, "bl") == 0) {
         return r[0] == 'a' ? 0 : r[0] == 'c' ? 1 : r[0] == 'd' ? 2 : 3;
     }
+    if (strcmp(r, "eax") == 0 || strcmp(r, "ecx") == 0 || strcmp(r, "edx") == 0 ||
+        strcmp(r, "ebx") == 0) {
+        return r[1] == 'a' ? 0 : r[1] == 'c' ? 1 : r[1] == 'd' ? 2 : 3;
+    }
     return -1;
 }
 
@@ -638,6 +642,12 @@ static int parse_line(const char *line, ChrisoImage *img) {
             p += 4;
             skip_ws(&p);
         }
+        if (p[0] == 'd' && p[1] == 'w' && p[2] == 'o' && p[3] == 'r' && p[4] == 'd' &&
+            (p[5] == ' ' || p[5] == '\t' || p[5] == '[')) {
+            size = 4;
+            p += 5;
+            skip_ws(&p);
+        }
         save = p;
         if (*p == '[') {
             dst_mem = 1;
@@ -672,6 +682,12 @@ static int parse_line(const char *line, ChrisoImage *img) {
             (p[4] == ' ' || p[4] == '\t' || p[4] == '[')) {
             size = 1;
             p += 4;
+            skip_ws(&p);
+        }
+        if (p[0] == 'd' && p[1] == 'w' && p[2] == 'o' && p[3] == 'r' && p[4] == 'd' &&
+            (p[5] == ' ' || p[5] == '\t' || p[5] == '[')) {
+            size = 4;
+            p += 5;
             skip_ws(&p);
         }
         if (*p == '[') {
@@ -718,14 +734,14 @@ static int parse_line(const char *line, ChrisoImage *img) {
         }
         if (strcmp(op, "mov") == 0 && dst_mem && src_reg >= 0) {
             int opc = size == 1 ? 0x88 : 0x89;
-            int w = size == 1 ? 0 : 1;
+            int w = size == 8 ? 1 : 0;
             return emit_rm(img, w, opc, src_reg, dst_rip, dst_base, dst_disp, dst_has, dsym,
                            0, 0) != 0
                        ? asm_fail()
                        : 0;
         }
         if (strcmp(op, "mov") == 0 && !dst_mem && src_mem) {
-            emit_rex(1, dst_reg, rip ? 0 : base);
+            emit_rex(size == 8 ? 1 : 0, dst_reg, rip ? 0 : base);
             emit_u8(0x8b);
             return emit_mem_modrm(img, dst_reg, rip, base, disp, has_disp, ssym) != 0
                        ? asm_fail()

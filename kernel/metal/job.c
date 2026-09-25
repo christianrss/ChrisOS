@@ -52,6 +52,7 @@ void job_worker_once(uint32_t cpu_index) {
     Job job;
 
     if (tlb_runtime_is_fenced(cpu_index)) {
+        mm_tlb_poll_cpu(cpu_index);
         tlb_runtime_mark_halted(cpu_index);
         return;
     }
@@ -82,8 +83,10 @@ void job_worker_forever(uint32_t cpu_index) {
     int irqs = 0;
     for (;;) {
         if (tlb_runtime_is_fenced(cpu_index)) {
+            mm_tlb_poll_cpu(cpu_index);
             tlb_runtime_mark_halted(cpu_index);
             for (;;) {
+                __asm__ volatile ("cli");
                 __asm__ volatile ("hlt");
             }
         }

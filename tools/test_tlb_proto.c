@@ -82,7 +82,7 @@ static void test_hole_is_not_a_prefix(void) {
     }
     expect(tlb_cpu_state(&world, 1u) == TLB_CPU_FENCED, "middle CPU fenced");
     expect(tlb_cpu_state(&world, 2u) == TLB_CPU_ONLINE, "high CPU stays online");
-    tlb_cpu_halted(&world, 1u);
+    tlb_cpu_stop(&world, 1u);
 
     tlb_publish(&world, 0u, 0x4000u, 4096u);
     n = tlb_ipi_targets(&world, 0u, targets, 8u);
@@ -94,6 +94,26 @@ static void test_hole_is_not_a_prefix(void) {
     step = tlb_wait_step(&world, 0u, &fenced);
     expect(step == 0 && tlb_reuse_ok(&world), "reuse after the live high CPU acks");
     expect(tlb_cpu_state(&world, 1u) == TLB_CPU_FENCED, "fenced CPU stays out");
+}
+
+static void test_halt_without_invlpg_blocks_reuse(void) {
+    TlbWorld world;
+    uint32_t fenced = 0u;
+    int step;
+    int i;
+
+    bring(&world, 2u);
+    tlb_publish(&world, 0u, 0x6000u, 4096u);
+    step = 1;
+    for (i = 0; i < 8 && step == 1; i++) {
+        step = tlb_wait_step(&world, 0u, &fenced);
+    }
+    expect(tlb_cpu_state(&world, 1u) == TLB_CPU_FENCED, "silent CPU is fenced");
+    tlb_cpu_halted(&world, 1u);
+    expect(!tlb_reuse_ok(&world), "halt without invlpg does not release frames");
+    tlb_ack(&world, 1u);
+    expect(tlb_reuse_ok(&world), "reuse after the fenced CPU invalidates and halts");
+    expect(tlb_cpu_state(&world, 1u) == TLB_CPU_FENCED, "stop does not unfence the CPU");
 }
 
 static void test_heartbeat_resets_quiet(void) {
@@ -118,6 +138,7 @@ int main(void) {
     test_all_ack();
     test_silent_cpu_is_fenced();
     test_hole_is_not_a_prefix();
+    test_halt_without_invlpg_blocks_reuse();
     test_heartbeat_resets_quiet();
     if (g_fail) {
         fprintf(stderr, "tlb proto tests failed\n");

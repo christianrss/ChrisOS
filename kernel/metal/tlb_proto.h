@@ -17,6 +17,8 @@ typedef struct TlbCpu {
     volatile uint64_t seen;
     volatile uint64_t heartbeat;
     volatile uint32_t halted;
+    /* 1 after this CPU has invalidated the generation that fenced it. */
+    volatile uint32_t flushed;
 } TlbCpu;
 
 typedef struct TlbWorld {
@@ -37,6 +39,9 @@ uint32_t tlb_cpu_state(const TlbWorld *world, uint32_t cpu);
 uint32_t tlb_online_count(const TlbWorld *world);
 void tlb_cpu_heartbeat(TlbWorld *world, uint32_t cpu);
 void tlb_cpu_halted(TlbWorld *world, uint32_t cpu);
+/* NMI model: invalidate the published generation, then halt. The CPU
+ * stays fenced. Reuse requires both. */
+void tlb_cpu_stop(TlbWorld *world, uint32_t cpu);
 void tlb_publish(TlbWorld *world, uint32_t self, uint64_t virt, uint64_t bytes);
 int tlb_pending(const TlbWorld *world, uint32_t cpu, uint64_t *virt, uint64_t *bytes);
 void tlb_ack(TlbWorld *world, uint32_t cpu);

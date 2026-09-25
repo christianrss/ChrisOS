@@ -25,7 +25,7 @@ static void recompute_reuse(TlbWorld *world) {
             return;
         }
         if (world->cpu[i].state == TLB_CPU_FENCED &&
-            world->cpu[i].halted == 0u) {
+            (world->cpu[i].halted == 0u || world->cpu[i].flushed == 0u)) {
             world->reuse_ok = 0;
             return;
         }
@@ -44,6 +44,7 @@ void tlb_world_init(TlbWorld *world, uint32_t quiet_limit) {
         world->cpu[i].seen = 0u;
         world->cpu[i].heartbeat = 0u;
         world->cpu[i].halted = 0u;
+        world->cpu[i].flushed = 0u;
         world->hb_snap[i] = 0u;
         world->quiet[i] = 0u;
     }
@@ -107,6 +108,19 @@ void tlb_cpu_halted(TlbWorld *world, uint32_t cpu) {
     recompute_reuse(world);
 }
 
+void tlb_cpu_stop(TlbWorld *world, uint32_t cpu) {
+    if (!world || cpu >= TLB_CPU_CAP) {
+        return;
+    }
+    if (world->cpu[cpu].state != TLB_CPU_FENCED) {
+        return;
+    }
+    world->cpu[cpu].seen = world->gen;
+    world->cpu[cpu].flushed = 1u;
+    world->cpu[cpu].halted = 1u;
+    recompute_reuse(world);
+}
+
 void tlb_publish(TlbWorld *world, uint32_t self, uint64_t virt, uint64_t bytes) {
     uint32_t i;
     uint64_t gen;
@@ -162,6 +176,9 @@ void tlb_ack(TlbWorld *world, uint32_t cpu) {
         return;
     }
     world->cpu[cpu].seen = world->gen;
+    if (world->cpu[cpu].state == TLB_CPU_FENCED) {
+        world->cpu[cpu].flushed = 1u;
+    }
     recompute_reuse(world);
 }
 
@@ -199,6 +216,7 @@ static int fence_cpu(TlbWorld *world, uint32_t cpu) {
     }
     world->cpu[cpu].state = TLB_CPU_FENCED;
     world->cpu[cpu].halted = 0u;
+    world->cpu[cpu].flushed = 0u;
     return 1;
 }
 

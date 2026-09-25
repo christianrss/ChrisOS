@@ -41,6 +41,8 @@ typedef struct Type {
     int struct_id;
     int size;
     int align;
+    int is_volatile;
+    int pointee_volatile;
 } Type;
 
 typedef struct Field {
@@ -104,6 +106,9 @@ static int g_ntd;
 static int g_frame;
 static int g_ntemp;
 static int g_lab;
+static int g_dead_ok;
+static int g_dead_at;
+static char g_dead_sym[64];
 
 static void diag_clear(void) {
     memset(&g_diag, 0, sizeof(g_diag));
@@ -929,6 +934,7 @@ static Type type_ptr(Type elem) {
         t.pointee_size = 1;
     }
     t.struct_id = elem.struct_id;
+    t.pointee_volatile = elem.is_volatile;
     return t;
 }
 
@@ -1106,6 +1112,7 @@ static int parse_struct_body(int id) {
 
 static int parse_base(Type *t, int *is_static, int *is_inline) {
     int is_unsigned = 0;
+    int is_volatile = 0;
     char name[64];
     *is_static = 0;
     *is_inline = 0;
@@ -1118,7 +1125,11 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
             *is_inline = 1;
             continue;
         }
-        if (eat_kw("const") || eat_kw("volatile")) {
+        if (eat_kw("volatile")) {
+            is_volatile = 1;
+            continue;
+        }
+        if (eat_kw("const")) {
             continue;
         }
         if (eat_kw("unsigned")) {
@@ -1139,6 +1150,7 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
         }
         *t = type_make(TY_STRUCT, g_struct[id].size, g_struct[id].align);
         t->struct_id = id;
+        t->is_volatile = is_volatile;
         while (eat_op("*")) {
             *t = type_ptr(*t);
         }
@@ -1147,6 +1159,7 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
     if (!take_ident(name, 64)) {
         if (is_unsigned) {
             *t = type_make(TY_U32, 4, 4);
+            t->is_volatile = is_volatile;
             while (eat_op("*")) {
                 *t = type_ptr(*t);
             }
@@ -1160,6 +1173,7 @@ static int parse_base(Type *t, int *is_static, int *is_inline) {
     if (is_unsigned && t->kind == TY_INT) {
         *t = type_make(TY_U32, 4, 4);
     }
+    t->is_volatile = is_volatile;
     while (eat_op("*")) {
         *t = type_ptr(*t);
     }
@@ -1234,6 +1248,41 @@ static void gen_addr(const Val *v) {
     load_frame_rax(v->frame);
 }
 
+static void dead_store_clear(void) {
+    g_dead_ok = 0;
+}
+
+static void dead_store_drop(const char *sym) {
+    int end;
+    int n;
+    if (!g_dead_ok || strcmp(g_dead_sym, sym) != 0) {
+        return;
+    }
+    end = g_dead_at;
+    if (end < 0 || end > g_asm_len) {
+        g_dead_ok = 0;
+        return;
+    }
+    while (end < g_asm_len && g_asm[end] != '\n') {
+        end++;
+    }
+    if (end < g_asm_len && g_asm[end] == '\n') {
+        end++;
+    }
+    n = g_asm_len - end;
+    if (n > 0) {
+        memmove(g_asm + g_dead_at, g_asm + end, (size_t)n);
+    }
+    g_asm_len = g_dead_at + n;
+    g_dead_ok = 0;
+}
+
+static void dead_store_note(const char *sym) {
+    copy_str(g_dead_sym, 64, sym);
+    g_dead_at = g_asm_len;
+    g_dead_ok = 1;
+}
+
 static void load_val(Val *v) {
     if (v->func) {
         return;
@@ -1248,17 +1297,23 @@ static void load_val(Val *v) {
     if (!v->lvalue) {
         return;
     }
+    dead_store_clear();
     if (v->lv == LV_LOCAL) {
         load_frame_rax(v->frame);
     } else if (v->lv == LV_GLOBAL) {
-        if (v->type.size <= 1 && !v->type.is_ptr) {
+        if (v->type.is_volatile && v->type.size == 4 && !v->type.is_ptr) {
+            asm_cat("mov eax, dword [rel ", v->gname, "]", 0);
+        } else if (v->type.size <= 1 && !v->type.is_ptr) {
             asm_cat("movzx rax, byte [rel ", v->gname, "]", 0);
         } else {
             asm_cat("mov rax, [rel ", v->gname, "]", 0);
         }
     } else if (v->lv == LV_ADDR) {
         gen_addr(v);
-        if (v->type.size <= 1 && !v->type.is_ptr) {
+        if (v->type.is_volatile && v->type.size == 4 && !v->type.is_ptr) {
+            asm_line("mov rcx, rax");
+            asm_line("mov eax, dword [rcx]");
+        } else if (v->type.size <= 1 && !v->type.is_ptr) {
             asm_line("movzx rax, byte [rax]");
         } else {
             asm_line("mov rcx, rax");
@@ -1277,10 +1332,27 @@ static void store_val(const Val *dst) {
         return;
     }
     if (dst->lv == LV_GLOBAL && dst->type.size <= 1 && !dst->type.is_ptr) {
+        if (dst->type.is_volatile) {
+            dead_store_clear();
+        } else {
+            dead_store_drop(dst->gname);
+            dead_store_note(dst->gname);
+        }
         asm_cat("mov byte [rel ", dst->gname, "], al", 0);
         return;
     }
     if (dst->lv == LV_GLOBAL) {
+        if (dst->type.is_volatile) {
+            dead_store_clear();
+            if (dst->type.size == 4 && !dst->type.is_ptr) {
+                asm_cat("mov dword [rel ", dst->gname, "], eax", 0);
+            } else {
+                asm_cat("mov [rel ", dst->gname, "], rax", 0);
+            }
+            return;
+        }
+        dead_store_drop(dst->gname);
+        dead_store_note(dst->gname);
         asm_cat("mov [rel ", dst->gname, "], rax", 0);
         return;
     }
@@ -1288,7 +1360,9 @@ static void store_val(const Val *dst) {
     gen_addr(dst);
     asm_line("mov rcx, rax");
     load_frame_rax(tmp);
-    if (dst->type.size <= 1 && !dst->type.is_ptr) {
+    if (dst->type.is_volatile && dst->type.size == 4 && !dst->type.is_ptr) {
+        asm_line("mov dword [rcx], eax");
+    } else if (dst->type.size <= 1 && !dst->type.is_ptr) {
         asm_line("mov byte [rcx], al");
     } else {
         asm_line("mov [rcx], rax");
@@ -1437,6 +1511,7 @@ static int parse_args(const char *name) {
         load_frame_rax(slots[i]);
         asm_cat("mov ", regs[i], ", rax", 0);
     }
+    dead_store_clear();
     asm_cat("call ", name, 0, 0);
     return 0;
 }
@@ -1599,6 +1674,7 @@ static int parse_unary(Val *out) {
         {
             int elem = out->type.pointee_size < 1 ? 1 : out->type.pointee_size;
             Type et = type_make(out->type.kind, elem, elem < 8 ? elem : 8);
+            et.is_volatile = out->type.pointee_volatile;
             out->frame = save_rax();
             out->lv = LV_ADDR;
             out->lvalue = 1;
@@ -2329,6 +2405,7 @@ static int parse_global(void) {
         asm_line("push rbp");
         asm_line("mov rbp, rsp");
         asm_line("sub rsp, 512");
+        dead_store_clear();
         mark = g_nsym;
         for (i = 0; i < np; i++) {
             if (sym_add(&params[i]) < 0) {
@@ -2416,6 +2493,7 @@ int kcc_compile_named(const char *file, const char *src, ChrisoImage *out) {
     g_frame = 0;
     g_ntemp = 0;
     g_lab = 0;
+    g_dead_ok = 0;
     memset(g_mac, 0, sizeof(g_mac));
     memset(g_sym, 0, sizeof(g_sym));
     copy_str(g_file, 96, file ? file : "");
@@ -2445,4 +2523,8 @@ int kcc_compile_named(const char *file, const char *src, ChrisoImage *out) {
 
 int kcc_compile_source(const char *src, ChrisoImage *out) {
     return kcc_compile_named(0, src, out);
+}
+
+const char *kcc_last_asm(void) {
+    return g_asm;
 }
