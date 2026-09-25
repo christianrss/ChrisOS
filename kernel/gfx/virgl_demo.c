@@ -3,6 +3,8 @@
 #include "bootinfo.h"
 #include "math3d.h"
 #include "serial.h"
+#include "shader/sh_pub.h"
+#include "shader/sh_src.h"
 #include "vgpu.h"
 #include "virgl_cmd.h"
 #include "virgl_proto.h"
@@ -21,11 +23,24 @@ static uint32_t g_dsa;
 static uint32_t g_dsa_off;
 static uint32_t g_rs;
 static uint32_t g_rs_cull;
-static uint32_t g_vs;
-static uint32_t g_fs;
-static uint32_t g_vs_mvp;
-static uint32_t g_vs_col;
-static uint32_t g_fs_tex;
+static uint32_t g_h_tri_vs;
+static uint32_t g_h_tri_fs;
+static uint32_t g_h_mvp_vs;
+static uint32_t g_h_mvp_fs;
+static uint32_t g_h_tex_vs;
+static uint32_t g_h_tex_fs;
+static uint32_t g_h_vary_vs;
+static uint32_t g_h_vary_fs;
+static uint32_t g_h_light_vs;
+static uint32_t g_h_light_fs;
+static ShProgram *g_prog_tri;
+static ShProgram *g_prog_mvp;
+static ShProgram *g_prog_tex;
+static ShProgram *g_prog_vary;
+static ShProgram *g_prog_light;
+static ShProgram *g_prog_world;
+static ShShader *g_sh_keep[16];
+static int g_nsh;
 static uint32_t g_trash[24];
 static int g_ntrash;
 static uint32_t g_samp;
@@ -329,60 +344,148 @@ static int emit_view(VirglCmd *c) {
                               fbits((float)DEMO_H * 0.5f), VIRGL_F32_HALF);
 }
 
+static int text_len(const char *s) {
+    int n = 0;
+    if (!s) {
+        return 0;
+    }
+    while (s[n]) {
+        ++n;
+    }
+    return n;
+}
+
+static int keep_shader(ShShader *s) {
+    if (!s || g_nsh >= 16) {
+        return -1;
+    }
+    g_sh_keep[g_nsh++] = s;
+    return 0;
+}
+
+static int submit_shader(uint32_t handle, uint32_t stage, const char *text) {
+    uint32_t buf[VIRGL_CMD_MAX];
+    VirglCmd c;
+    if (text_len(text) <= 0 || text_len(text) > 3500) {
+        serial_puts("FAIL: glsl tgsi size\n");
+        return -1;
+    }
+    if (begin_cmd(&c, buf) != 0 || virgl_cmd_shader(&c, handle, stage, text) != 0 ||
+        !virgl_cmd_ok(&c) || vgpu_submit3d(g_ctx, buf, virgl_cmd_len(&c)) != 0) {
+        serial_puts("FAIL: glsl shader submit\n");
+        return -1;
+    }
+    return 0;
+}
+
+static int build_prog(const char *vn, const char *vs, const char *fn, const char *fs,
+                      ShProgram **out, uint32_t *hvs, uint32_t *hfs) {
+    ShShader *a = sh_compile(SH_STAGE_VERTEX, vn, vs);
+    ShShader *b = sh_compile(SH_STAGE_FRAGMENT, fn, fs);
+    ShProgram *p = sh_program_create();
+    if (!a || !b || !p || keep_shader(a) != 0 || keep_shader(b) != 0) {
+        serial_puts("FAIL: glsl alloc\n");
+        return -1;
+    }
+    if (!sh_shader_ok(a)) {
+        serial_puts(sh_shader_log(a));
+        serial_puts("FAIL: glsl vertex\n");
+        return -1;
+    }
+    if (!sh_shader_ok(b)) {
+        serial_puts(sh_shader_log(b));
+        serial_puts("FAIL: glsl fragment\n");
+        return -1;
+    }
+    if (sh_program_attach(p, a) != 0 || sh_program_attach(p, b) != 0 || sh_program_link(p) != 0 ||
+        !sh_program_ok(p)) {
+        serial_puts(sh_program_log(p));
+        serial_puts("FAIL: glsl link\n");
+        return -1;
+    }
+    *hvs = obj();
+    *hfs = obj();
+    if (submit_shader(*hvs, VIRGL_SHADER_VERTEX, sh_program_tgsi(p, SH_STAGE_VERTEX)) != 0 ||
+        submit_shader(*hfs, VIRGL_SHADER_FRAGMENT, sh_program_tgsi(p, SH_STAGE_FRAGMENT)) != 0) {
+        return -1;
+    }
+    *out = p;
+    return 0;
+}
+
+static void ident4(float m[16]) {
+    int i;
+    for (i = 0; i < 16; ++i) {
+        m[i] = 0.f;
+    }
+    m[0] = m[5] = m[10] = m[15] = 1.f;
+}
+
+static void model_from_deg(float m[16], float deg) {
+    float c = gfx_cosf(deg);
+    float s = gfx_sinf(deg);
+    float sx = 1.1f;
+    float sy = 1.1f;
+    int i;
+    for (i = 0; i < 16; ++i) {
+        m[i] = 0.f;
+    }
+    m[0] = sx * c;
+    m[2] = -0.5f * s;
+    m[3] = s;
+    m[5] = sy;
+    m[8] = sx * s;
+    m[10] = 0.5f * c;
+    m[11] = -c;
+    m[14] = -0.5f;
+    m[15] = 3.0f;
+}
+
+static int set_mvp(ShProgram *p, float deg) {
+    float model[16];
+    float view[16];
+    float proj[16];
+    model_from_deg(model, deg);
+    ident4(view);
+    ident4(proj);
+    if (sh_uniform_set(p, sh_uniform_find(p, "model"), model, 16) != 0 ||
+        sh_uniform_set(p, sh_uniform_find(p, "view"), view, 16) != 0 ||
+        sh_uniform_set(p, sh_uniform_find(p, "projection"), proj, 16) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
+static int upload_uni(VirglCmd *c, ShProgram *p, int stage) {
+    const float *w;
+    int nvec = 0;
+    uint32_t bits[64];
+    int i;
+    int n;
+    uint32_t gst;
+    if (!p) {
+        return 0;
+    }
+    w = sh_uniform_words(p, stage, &nvec);
+    if (nvec <= 0) {
+        return 0;
+    }
+    n = nvec * 4;
+    if (!w || n > 64) {
+        return -1;
+    }
+    for (i = 0; i < n; ++i) {
+        bits[i] = fbits(w[i]);
+    }
+    gst = stage == SH_STAGE_FRAGMENT ? VIRGL_SHADER_FRAGMENT : VIRGL_SHADER_VERTEX;
+    return virgl_cmd_consts(c, gst, bits, (uint32_t)n);
+}
+
 static int pipe_init(void) {
     uint32_t buf[VIRGL_CMD_MAX];
     VirglCmd c;
-    static const char vs[] =
-        "VERT\n"
-        "DCL IN[0]\n"
-        "DCL IN[1]\n"
-        "DCL OUT[0], POSITION\n"
-        "DCL OUT[1], COLOR\n"
-        "  0: MOV OUT[0], IN[0]\n"
-        "  1: MOV OUT[1], IN[1]\n"
-        "  2: END\n";
-    static const char fs[] =
-        "FRAG\n"
-        "DCL IN[0], COLOR, LINEAR\n"
-        "DCL OUT[0], COLOR\n"
-        "  0: MOV OUT[0], IN[0]\n"
-        "  1: END\n";
-    static const char vs_col[] =
-        "VERT\n"
-        "DCL IN[0]\n"
-        "DCL IN[1]\n"
-        "DCL OUT[0], POSITION\n"
-        "DCL OUT[1], COLOR\n"
-        "DCL CONST[0][0..3]\n"
-        "DCL TEMP[0]\n"
-        "  0: MUL TEMP[0], IN[0].xxxx, CONST[0][0]\n"
-        "  1: MAD TEMP[0], IN[0].yyyy, CONST[0][1], TEMP[0]\n"
-        "  2: MAD TEMP[0], IN[0].zzzz, CONST[0][2], TEMP[0]\n"
-        "  3: MAD OUT[0], IN[0].wwww, CONST[0][3], TEMP[0]\n"
-        "  4: MOV OUT[1], IN[1]\n"
-        "  5: END\n";
-    static const char vs_mvp[] =
-        "VERT\n"
-        "DCL IN[0]\n"
-        "DCL IN[1]\n"
-        "DCL OUT[0], POSITION\n"
-        "DCL OUT[1], GENERIC[0]\n"
-        "DCL CONST[0][0..3]\n"
-        "DCL TEMP[0]\n"
-        "  0: MUL TEMP[0], IN[0].xxxx, CONST[0][0]\n"
-        "  1: MAD TEMP[0], IN[0].yyyy, CONST[0][1], TEMP[0]\n"
-        "  2: MAD TEMP[0], IN[0].zzzz, CONST[0][2], TEMP[0]\n"
-        "  3: MAD OUT[0], IN[0].wwww, CONST[0][3], TEMP[0]\n"
-        "  4: MOV OUT[1], IN[1]\n"
-        "  5: END\n";
-    static const char fs_tex[] =
-        "FRAG\n"
-        "DCL IN[0], GENERIC[0], PERSPECTIVE\n"
-        "DCL OUT[0], COLOR\n"
-        "DCL SAMP[0]\n"
-        "DCL SVIEW[0], 2D, FLOAT\n"
-        "  0: TEX OUT[0], IN[0], SAMP[0], 2D\n"
-        "  1: END\n";
+    uint32_t world_vs = 0;
+    uint32_t world_fs = 0;
     if (g_pipe) {
         return 0;
     }
@@ -394,29 +497,32 @@ static int pipe_init(void) {
     g_dsa_off = obj();
     g_rs = obj();
     g_rs_cull = obj();
-    g_vs = obj();
-    g_fs = obj();
-    g_vs_mvp = obj();
-    g_vs_col = obj();
-    g_fs_tex = obj();
     g_samp = obj();
-    if (virgl_cmd_blend_opaque(&c, g_blend) != 0 ||
-        virgl_cmd_dsa(&c, g_dsa, 1, 1u) != 0 ||
-        virgl_cmd_dsa(&c, g_dsa_off, 0, 7u) != 0 ||
-        virgl_cmd_raster(&c, g_rs, 0u) != 0 ||
-        virgl_cmd_raster(&c, g_rs_cull, 2u) != 0 ||
-        virgl_cmd_shader(&c, g_vs, VIRGL_SHADER_VERTEX, vs) != 0 ||
-        virgl_cmd_shader(&c, g_fs, VIRGL_SHADER_FRAGMENT, fs) != 0 ||
-        virgl_cmd_shader(&c, g_vs_mvp, VIRGL_SHADER_VERTEX, vs_mvp) != 0 ||
-        virgl_cmd_shader(&c, g_vs_col, VIRGL_SHADER_VERTEX, vs_col) != 0 ||
-        virgl_cmd_shader(&c, g_fs_tex, VIRGL_SHADER_FRAGMENT, fs_tex) != 0 ||
-        virgl_cmd_sampler(&c, g_samp) != 0) {
+    if (virgl_cmd_blend_opaque(&c, g_blend) != 0 || virgl_cmd_dsa(&c, g_dsa, 1, 1u) != 0 ||
+        virgl_cmd_dsa(&c, g_dsa_off, 0, 7u) != 0 || virgl_cmd_raster(&c, g_rs, 0u) != 0 ||
+        virgl_cmd_raster(&c, g_rs_cull, 2u) != 0 || virgl_cmd_sampler(&c, g_samp) != 0) {
         return -1;
     }
     if (!virgl_cmd_ok(&c) || vgpu_submit3d(g_ctx, buf, virgl_cmd_len(&c)) != 0) {
         serial_puts("FAIL: virgl pipeline\n");
         return -1;
     }
+    if (build_prog("tri.vert", SH_SRC_TRI_VERT, "tri.frag", SH_SRC_TRI_FRAG, &g_prog_tri,
+                   &g_h_tri_vs, &g_h_tri_fs) != 0 ||
+        build_prog("mvp.vert", SH_SRC_MVP_VERT, "tri.frag", SH_SRC_TRI_FRAG, &g_prog_mvp,
+                   &g_h_mvp_vs, &g_h_mvp_fs) != 0 ||
+        build_prog("tex.vert", SH_SRC_TEX_VERT, "tex.frag", SH_SRC_TEX_FRAG, &g_prog_tex,
+                   &g_h_tex_vs, &g_h_tex_fs) != 0 ||
+        build_prog("vary.vert", SH_SRC_VARY_VERT, "vary.frag", SH_SRC_VARY_FRAG, &g_prog_vary,
+                   &g_h_vary_vs, &g_h_vary_fs) != 0 ||
+        build_prog("light.vert", SH_SRC_LIGHT_VERT, "light.frag", SH_SRC_LIGHT_FRAG, &g_prog_light,
+                   &g_h_light_vs, &g_h_light_fs) != 0 ||
+        build_prog("world.vert", SH_SRC_WORLD_VERT, "world.frag", SH_SRC_WORLD_FRAG, &g_prog_world,
+                   &world_vs, &world_fs) != 0) {
+        return -1;
+    }
+    serial_puts("PASS: glsl compile\n");
+    serial_puts("PASS: shader mine link\n");
     g_pipe = 1;
     return 0;
 }
@@ -435,18 +541,17 @@ static int clear_color(uint32_t c0, uint32_t c1, uint32_t c2, uint32_t c3, int d
     return vgpu_submit3d(g_ctx, buf, virgl_cmd_len(&c));
 }
 
-static int bind_color_pipe(VirglCmd *c, int depth) {
+static int bind_color_pipe(VirglCmd *c, int depth, uint32_t vs, uint32_t fs) {
     if (virgl_cmd_bind(c, VIRGL_OBJECT_BLEND, g_blend) != 0 ||
         virgl_cmd_bind(c, VIRGL_OBJECT_DSA, depth ? g_dsa : g_dsa_off) != 0 ||
-        virgl_cmd_bind(c, VIRGL_OBJECT_RASTERIZER, g_rs) != 0 ||
-        virgl_cmd_link(c, g_vs, g_fs) != 0) {
+        virgl_cmd_bind(c, VIRGL_OBJECT_RASTERIZER, g_rs) != 0 || virgl_cmd_link(c, vs, fs) != 0) {
         return -1;
     }
     return 0;
 }
 
 static int draw_arrays(const float *verts, uint32_t nbytes, uint32_t stride, uint32_t count,
-                       int depth) {
+                       int depth, uint32_t vs, uint32_t fs, ShProgram *prog) {
     uint32_t buf[VIRGL_CMD_MAX];
     VirglCmd c;
     uint32_t vbo = 0;
@@ -461,36 +566,14 @@ static int draw_arrays(const float *verts, uint32_t nbytes, uint32_t stride, uin
         return -1;
     }
     if (begin_cmd(&c, buf) != 0 || emit_fb(&c, depth) != 0 || emit_view(&c) != 0 ||
-        bind_color_pipe(&c, depth) != 0 || virgl_cmd_velems(&c, ve, 2, off, fmt) != 0 ||
+        bind_color_pipe(&c, depth, vs, fs) != 0 || upload_uni(&c, prog, SH_STAGE_VERTEX) != 0 ||
+        upload_uni(&c, prog, SH_STAGE_FRAGMENT) != 0 || virgl_cmd_velems(&c, ve, 2, off, fmt) != 0 ||
         virgl_cmd_bind(&c, VIRGL_OBJECT_VERTEX_ELEMENTS, ve) != 0 ||
         virgl_cmd_vbuffers(&c, stride, 0, vbo) != 0 ||
         virgl_cmd_draw(&c, 0, count, 0, 0, count) != 0) {
         return -1;
     }
     return vgpu_submit3d(g_ctx, buf, virgl_cmd_len(&c));
-}
-
-static void mvp_words(uint32_t w[16], float deg) {
-    float c = gfx_cosf(deg);
-    float s = gfx_sinf(deg);
-    float sx = 1.1f;
-    float sy = 1.1f;
-    w[0] = fbits(sx * c);
-    w[1] = 0;
-    w[2] = fbits(-0.5f * s);
-    w[3] = fbits(s);
-    w[4] = 0;
-    w[5] = fbits(sy);
-    w[6] = 0;
-    w[7] = 0;
-    w[8] = fbits(sx * s);
-    w[9] = 0;
-    w[10] = fbits(0.5f * c);
-    w[11] = fbits(-c);
-    w[12] = 0;
-    w[13] = 0;
-    w[14] = fbits(-0.5f);
-    w[15] = fbits(3.0f);
 }
 
 static int draw_indexed(const float *verts, uint32_t vbytes, const uint16_t *idx,
@@ -501,9 +584,11 @@ static int draw_indexed(const float *verts, uint32_t vbytes, const uint16_t *idx
     uint32_t vbo = 0;
     uint32_t ib = 0;
     uint32_t ve = obj();
-    uint32_t words[16];
     uint32_t off[2];
     uint32_t fmt[2];
+    ShProgram *prog = textured ? g_prog_tex : g_prog_mvp;
+    uint32_t hvs = textured ? g_h_tex_vs : g_h_mvp_vs;
+    uint32_t hfs = textured ? g_h_tex_fs : g_h_mvp_fs;
     off[0] = 0;
     fmt[0] = VIRGL_FORMAT_R32G32B32A32_FLOAT;
     if (textured) {
@@ -513,11 +598,13 @@ static int draw_indexed(const float *verts, uint32_t vbytes, const uint16_t *idx
         off[1] = 16;
         fmt[1] = VIRGL_FORMAT_R32G32B32A32_FLOAT;
     }
+    if (set_mvp(prog, 28.0f) != 0) {
+        return -1;
+    }
     if (upload_buffer(VIRGL_BIND_VERTEX_BUFFER, verts, vbytes, &vbo) != 0 ||
         upload_buffer(VIRGL_BIND_INDEX_BUFFER, idx, ibytes, &ib) != 0) {
         return -1;
     }
-    mvp_words(words, 28.0f);
     if (begin_cmd(&c, buf) != 0 || emit_fb(&c, 1) != 0 || emit_view(&c) != 0) {
         return -1;
     }
@@ -531,14 +618,12 @@ static int draw_indexed(const float *verts, uint32_t vbytes, const uint16_t *idx
             g_view = obj();
         }
         if (virgl_cmd_sview(&c, g_view, tex, VIRGL_FORMAT_B8G8R8A8_UNORM) != 0 ||
-            virgl_cmd_link(&c, g_vs_mvp, g_fs_tex) != 0 ||
-            virgl_cmd_consts(&c, VIRGL_SHADER_VERTEX, words, 16) != 0 ||
+            virgl_cmd_link(&c, hvs, hfs) != 0 || upload_uni(&c, prog, SH_STAGE_VERTEX) != 0 ||
             virgl_cmd_bind_sampler(&c, VIRGL_SHADER_FRAGMENT, g_samp) != 0 ||
             virgl_cmd_set_views(&c, VIRGL_SHADER_FRAGMENT, g_view) != 0) {
             return -1;
         }
-    } else if (virgl_cmd_link(&c, g_vs_col, g_fs) != 0 ||
-               virgl_cmd_consts(&c, VIRGL_SHADER_VERTEX, words, 16) != 0) {
+    } else if (virgl_cmd_link(&c, hvs, hfs) != 0 || upload_uni(&c, prog, SH_STAGE_VERTEX) != 0) {
         return -1;
     }
     if (virgl_cmd_velems(&c, ve, 2, off, fmt) != 0 ||
@@ -576,7 +661,7 @@ static int test_tri(void) {
     };
     int red;
     int green;
-    if (draw_arrays(v, sizeof v, 32u, 3u, 0) != 0 || readback() != 0) {
+    if (draw_arrays(v, sizeof v, 32u, 3u, 0, g_h_tri_vs, g_h_tri_fs, 0) != 0 || readback() != 0) {
         serial_puts("FAIL: virgl triangle submit\n");
         return -1;
     }
@@ -606,7 +691,7 @@ static int test_depth(void) {
     int red;
     int green;
     if (clear_color(0, 0, VIRGL_F32_ONE, VIRGL_F32_ONE, 1) != 0 ||
-        draw_arrays(v, sizeof v, 32u, 6u, 1) != 0 || readback() != 0) {
+        draw_arrays(v, sizeof v, 32u, 6u, 1, g_h_tri_vs, g_h_tri_fs, 0) != 0 || readback() != 0) {
         serial_puts("FAIL: virgl depth submit\n");
         return -1;
     }
@@ -677,6 +762,112 @@ static int test_cube(int textured) {
     return 0;
 }
 
+static int pix_dim(uint32_t p) {
+    uint32_t r = (p >> 16) & 255u;
+    uint32_t g = (p >> 8) & 255u;
+    uint32_t b = p & 255u;
+    return r >= 15u && r <= 90u && g >= 15u && g <= 90u && b >= 15u && b <= 90u;
+}
+
+static int test_varying(void) {
+    static const float v[] = {
+        -0.8f, -0.7f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+        0.8f,  -0.7f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 1.0f,
+        0.0f,  0.7f,  0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f,
+    };
+    int red;
+    int green;
+    int blue;
+    if (clear_color(0, 0, 0, VIRGL_F32_ONE, 0) != 0 ||
+        draw_arrays(v, sizeof v, 32u, 3u, 0, g_h_vary_vs, g_h_vary_fs, 0) != 0 ||
+        readback() != 0) {
+        serial_puts("FAIL: virgl varying submit\n");
+        return -1;
+    }
+    red = count_if(pix_red);
+    green = count_if(pix_green);
+    blue = count_if(pix_blue);
+    if (red < 5 || green < 5 || blue < 5) {
+        serial_puts("FAIL: virgl varying\n");
+        return -1;
+    }
+    serial_puts("PASS: virgl varying\n");
+    return 0;
+}
+
+static int test_lighting(void) {
+    static const float v[] = {
+        -0.85f, -0.65f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, -0.05f, -0.65f, 0.0f, 1.0f,
+        0.0f,   0.0f,   1.0f, 0.0f, -0.45f, 0.70f, 0.0f, 1.0f, 0.0f, 0.0f,   1.0f, 0.0f,
+        0.05f,  -0.65f, 0.0f, 1.0f, 0.0f,  0.0f,  -1.0f, 0.0f, 0.85f, -0.65f, 0.0f, 1.0f,
+        0.0f,   0.0f,   -1.0f, 0.0f, 0.45f, 0.70f, 0.0f, 1.0f, 0.0f,  0.0f,   -1.0f, 0.0f,
+    };
+    float id[16];
+    float light[3];
+    float lcol[3];
+    float amb[3];
+    int bright;
+    int dim;
+    ident4(id);
+    light[0] = 0.f;
+    light[1] = 0.f;
+    light[2] = 2.f;
+    lcol[0] = 1.f;
+    lcol[1] = 0.f;
+    lcol[2] = 0.f;
+    amb[0] = 0.12f;
+    amb[1] = 0.12f;
+    amb[2] = 0.12f;
+    if (sh_uniform_set(g_prog_light, sh_uniform_find(g_prog_light, "model"), id, 16) != 0 ||
+        sh_uniform_set(g_prog_light, sh_uniform_find(g_prog_light, "view"), id, 16) != 0 ||
+        sh_uniform_set(g_prog_light, sh_uniform_find(g_prog_light, "projection"), id, 16) != 0 ||
+        sh_uniform_set(g_prog_light, sh_uniform_find(g_prog_light, "lightPosition"), light, 3) != 0 ||
+        sh_uniform_set(g_prog_light, sh_uniform_find(g_prog_light, "lightColor"), lcol, 3) != 0 ||
+        sh_uniform_set(g_prog_light, sh_uniform_find(g_prog_light, "ambientColor"), amb, 3) != 0) {
+        serial_puts("FAIL: virgl lighting uniforms\n");
+        return -1;
+    }
+    if (clear_color(0, 0, 0, VIRGL_F32_ONE, 0) != 0 ||
+        draw_arrays(v, sizeof v, 32u, 6u, 0, g_h_light_vs, g_h_light_fs, g_prog_light) != 0 ||
+        readback() != 0) {
+        serial_puts("FAIL: virgl lighting submit\n");
+        return -1;
+    }
+    bright = count_if(pix_red);
+    dim = count_if(pix_dim);
+    if (bright < 15 || dim < 15) {
+        serial_puts("FAIL: virgl lighting bright=");
+        serial_write_u64((uint64_t)bright);
+        serial_puts(" dim=");
+        serial_write_u64((uint64_t)dim);
+        serial_puts("\n");
+        return -1;
+    }
+    serial_puts("PASS: virgl lighting\n");
+    return 0;
+}
+
+static int test_switch(void) {
+    static const float v[] = {
+        -0.7f, -0.7f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+        0.7f,  -0.7f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+        0.0f,  0.7f,  0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+    };
+    int red;
+    if (clear_color(0, 0, VIRGL_F32_ONE, VIRGL_F32_ONE, 0) != 0 ||
+        draw_arrays(v, sizeof v, 32u, 3u, 0, g_h_tri_vs, g_h_tri_fs, 0) != 0 || readback() != 0) {
+        serial_puts("FAIL: virgl shader switch submit\n");
+        return -1;
+    }
+    red = count_if(pix_red);
+    if (red < 40) {
+        serial_puts("FAIL: virgl shader switch\n");
+        return -1;
+    }
+    serial_puts("PASS: virgl shader switch\n");
+    return 0;
+}
+
 static int present_scanout(void) {
     uint32_t sw = 0;
     uint32_t sh = 0;
@@ -694,8 +885,30 @@ static int present_scanout(void) {
     return 0;
 }
 
+static void free_shaders(void) {
+    int i;
+    sh_program_free(g_prog_tri);
+    sh_program_free(g_prog_mvp);
+    sh_program_free(g_prog_tex);
+    sh_program_free(g_prog_vary);
+    sh_program_free(g_prog_light);
+    sh_program_free(g_prog_world);
+    g_prog_tri = 0;
+    g_prog_mvp = 0;
+    g_prog_tex = 0;
+    g_prog_vary = 0;
+    g_prog_light = 0;
+    g_prog_world = 0;
+    for (i = 0; i < g_nsh; ++i) {
+        sh_shader_free(g_sh_keep[i]);
+        g_sh_keep[i] = 0;
+    }
+    g_nsh = 0;
+}
+
 static void cleanup(void) {
     int i;
+    free_shaders();
     if (g_ctx != 0u && g_color != 0u) {
         (void)vgpu_ctx_detach(g_ctx, g_color);
     }
@@ -741,7 +954,8 @@ int virgl_demo_run(void) {
     }
     if (res3d_cycle(res_cycles) != 0 || make_color() != 0 || make_depth() != 0 ||
         pipe_init() != 0 || test_clear() != 0 || test_tri() != 0 || test_depth() != 0 ||
-        test_cube(0) != 0 || test_cube(1) != 0 || present_scanout() != 0) {
+        test_cube(0) != 0 || test_cube(1) != 0 || test_varying() != 0 || test_lighting() != 0 ||
+        test_switch() != 0 || present_scanout() != 0) {
         cleanup();
         return -1;
     }
