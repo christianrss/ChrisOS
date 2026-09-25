@@ -104,6 +104,11 @@ test-qemu-virgl: $(BUILD_DIR)/os-virgl.iso $(DISK_IMG)
 		--expect "PASS: virgl cube" \
 		--expect "PASS: virgl depth" \
 		--expect "PASS: virgl textured cube" \
+		--expect "PASS: glsl compile" \
+		--expect "PASS: virgl varying" \
+		--expect "PASS: virgl lighting" \
+		--expect "PASS: virgl shader switch" \
+		--expect "PASS: shader mine link" \
 		--expect "PASS: virgl present" \
 		--expect "3D backend -> virgl" -- \
 		$(QEMU) -M pc -m 2048 -smp 1 -boot order=dc -display $$disp \
