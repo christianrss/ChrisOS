@@ -51,7 +51,13 @@ ChrisMachine *chris_machine_create(const ChrisConfig *cfg) {
         return 0;
     }
     chris_serial_attach(m);
+    if (chris_fb_attach(m) != 0) {
+        free(m->ram);
+        free(m);
+        return 0;
+    }
     if (m->backend->create_cpu(m, 0) != 0) {
+        free(m->fb.pix);
         free(m->ram);
         free(m);
         return 0;
@@ -67,6 +73,7 @@ void chris_machine_destroy(ChrisMachine *m) {
         m->backend->shutdown(m->cpu);
     }
     free(m->cpu);
+    free(m->fb.pix);
     free(m->ram);
     free(m);
 }

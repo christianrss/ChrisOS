@@ -10,7 +10,7 @@ Páginas de 4 KiB e de 2 MiB estão no caminhante. O bit PS no PD (nível 2) ou 
 
 Página de 1 GiB não é formada pelo boot. Um PS no PDPT seria aceito pelo caminhante como página de 1 GiB; ninguém instala essa entrada hoje. Bits reservados dessa forma não são checados.
 
-O PDPT inicial tem uma entrada. Ela cobre o primeiro 1 GiB. Um VA como `0xF0000000` usa `PDPT[3]` e não encontra a tabela, mesmo que alguém escreva um PDE no PD do primeiro gigabyte. MMIO de teste usa um VA ainda no primeiro gigabyte e acima dos 16 MiB de RAM, por exemplo `0x02000000`, e grava o PDE correspondente depois do boot.
+O PDPT inicial tem uma entrada. Ela cobre o primeiro 1 GiB. Um VA como `0xF0000000` usa `PDPT[3]` e não encontra a tabela, mesmo que alguém escreva um PDE no PD do primeiro gigabyte. O boot mapeia a RAM e a página do framebuffer em `0x02000000` (índice 16 do PD). MMIO de teste usa `0x06000000` e grava o PDE correspondente depois do boot. `0x01000000` e `0x04000000` permanecem sem página.
 
 Flags honradas: Present, RW, US, Accessed, Dirty, Page Size, NX (se `EFER.NXE`). PWT, PCD e Global são aceitos na entrada e não mudam o comportamento, porque não há cache.
 

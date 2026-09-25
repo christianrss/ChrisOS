@@ -196,6 +196,8 @@ void chris_format_insn(const ChrisInsn *in, char *dst, int cap) {
             snprintf(dst, (size_t)cap, "MOV %s, %s", reg_name(in->os, in->rex, in->reg),
                      reg_name(in->os, in->rex, in->rm));
         }
+    } else if (in->op == CHRIS_OP_STOS) {
+        snprintf(dst, (size_t)cap, "%sSTOS", in->rep ? "REP " : "");
     } else if (in->op == CHRIS_OP_MOV && in->reg_only_push) {
         snprintf(dst, (size_t)cap, "MOV %s, 0x%llx", reg_name(in->os, in->rex, in->rm),
                  (unsigned long long)in->imm);
@@ -229,6 +231,7 @@ int chris_decode(const uint8_t *bytes, int avail, ChrisInsn *out) {
             in.lock = 1;
             in.rex = 0;
         } else if (p == 0xf2 || p == 0xf3) {
+            in.rep = p == 0xf3 ? 1 : 2;
             in.rex = 0;
         } else if (p == 0x26 || p == 0x2e || p == 0x36 || p == 0x3e || p == 0x64 || p == 0x65) {
             in.rex = 0;
@@ -491,6 +494,11 @@ int chris_decode(const uint8_t *bytes, int avail, ChrisInsn *out) {
         i = imm_n(bytes, avail, i, &in, 1);
     } else if (!two && op == 0xf4) {
         in.op = CHRIS_OP_HLT;
+    } else if (!two && (op == 0xaa || op == 0xab)) {
+        in.op = CHRIS_OP_STOS;
+        if (op == 0xaa) {
+            in.os = 1;
+        }
     } else if (!two && (op == 0xf6 || op == 0xf7)) {
         if (op == 0xf6) {
             in.os = 1;

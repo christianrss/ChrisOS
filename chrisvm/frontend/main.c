@@ -90,11 +90,14 @@ int main(int argc, char **argv) {
     ChrisMachine *m;
     int reason;
     int rc = 1;
+    int dump_ok = 1;
     chris_config_init(&cfg);
     err[0] = 0;
     if (chris_config_from_args(&cfg, argc, argv, &image, err, sizeof err) != 0) {
         fprintf(stderr, "chrisvm: %s\n", err[0] ? err : "usage");
-        fprintf(stderr, "usage: chrisvm [--backend=chriscpu] [--trace] [--debug] [--headless] guest.elf\n");
+        fprintf(stderr,
+                "usage: chrisvm [--backend=chriscpu] [--trace] [--debug] [--headless] "
+                "[--fb-dump=path] guest.elf\n");
         return 2;
     }
     if (load_file(image, &buf, &n) != 0) {
@@ -125,8 +128,19 @@ int main(int argc, char **argv) {
     fprintf(stderr, "chrisvm: exit %d steps %llu rip %016llx rax %016llx\n", reason,
             (unsigned long long)chris_steps(m), (unsigned long long)chris_get_rip(m),
             (unsigned long long)chris_get_gpr(m, 0));
-    if (reason == CHRIS_EXIT_HLT || reason == CHRIS_EXIT_SHUTDOWN) {
+    if (cfg.fb_dump && chris_fb_write_image(m, cfg.fb_dump) != 0) {
+        fprintf(stderr, "chrisvm: framebuffer dump failed\n");
+        dump_ok = 0;
+    }
+    if (!cfg.headless && chris_fb_dirty(m)) {
+        if (chris_view_show(m, 4000) != 0) {
+            fprintf(stderr, "chrisvm: display unavailable\n");
+        }
+    }
+    if ((reason == CHRIS_EXIT_HLT || reason == CHRIS_EXIT_SHUTDOWN) && dump_ok) {
         rc = 0;
+    } else if (!dump_ok) {
+        rc = 2;
     }
     chris_machine_destroy(m);
     return rc;

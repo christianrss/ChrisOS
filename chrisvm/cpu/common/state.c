@@ -74,6 +74,8 @@ const char *chris_op_name(int op) {
         return "SETcc";
     case CHRIS_OP_CMOV:
         return "CMOVcc";
+    case CHRIS_OP_STOS:
+        return "STOS";
     case CHRIS_OP_UD:
         return "UD";
     case CHRIS_OP_UNIMPL:
