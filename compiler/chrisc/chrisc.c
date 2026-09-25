@@ -533,7 +533,15 @@ static const Builtin builtins[] = {
     {"sys_active_apps", 124, 0, 1, 0},
     {"app_raise", 125, 1, 1, 0},
     {"textruns", 126, 2, 0, 0},
-    {"dbg_ctl", 250, 2, 1, 0}, {"dbg_text", 251, 2, 1, 0}
+    {"dbg_ctl", 250, 2, 1, 0}, {"dbg_text", 251, 2, 1, 0},
+    {"shader_make", 260, 2, 1, 0}, {"shader_ok", 261, 1, 1, 0},
+    {"shader_log", 262, 2, 1, 0}, {"shader_drop", 263, 1, 1, 0},
+    {"prog_make", 264, 0, 1, 0}, {"prog_attach", 265, 2, 1, 0},
+    {"prog_link", 266, 1, 1, 0}, {"prog_ok", 267, 1, 1, 0},
+    {"prog_log", 268, 2, 1, 0}, {"prog_drop", 269, 1, 1, 0},
+    {"prog_uniloc", 270, 2, 1, 0}, {"prog_setf", 271, 4, 1, 0},
+    {"prog_samp", 272, 2, 1, 0}, {"shader_vert", 273, 0, 1, 0},
+    {"shader_frag", 274, 0, 1, 0}
 };
 
 static int alpha(int c) {
