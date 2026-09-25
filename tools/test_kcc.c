@@ -52,6 +52,56 @@ static int find_sym(const ChrisoImage *img, const char *name) {
     return 0;
 }
 
+static int text_has(const ChrisoImage *img, const uint8_t *pat, uint32_t n) {
+    uint32_t i;
+    if (!img->sec[CHRISO_SEC_TEXT] || img->sec_size[CHRISO_SEC_TEXT] < n) {
+        return 0;
+    }
+    for (i = 0; i + n <= img->sec_size[CHRISO_SEC_TEXT]; i++) {
+        if (memcmp(img->sec[CHRISO_SEC_TEXT] + i, pat, n) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int compile_must(const char *path, const char *sym, ChrisoImage *img) {
+    char *src = read_file(path);
+    const KccDiag *diag;
+    if (!src) {
+        fprintf(stderr, "cannot read %s\n", path);
+        return 1;
+    }
+    if (kcc_compile_named(path, src, img) != 0) {
+        diag = kcc_last_error();
+        fprintf(stderr, "%s failed: %s:%d:%d: %s\n", path, diag->file, diag->line,
+                diag->column, diag->message);
+        free(src);
+        return 1;
+    }
+    free(src);
+    if (sym && !find_sym(img, sym)) {
+        fprintf(stderr, "%s missing %s\n", path, sym);
+        return 1;
+    }
+    return 0;
+}
+
+static int compile_fails(const char *name, const char *src, const char *needle) {
+    ChrisoImage img;
+    const KccDiag *diag;
+    if (kcc_compile_named(name, src, &img) == 0) {
+        fprintf(stderr, "%s compiled but must fail\n", name);
+        return 1;
+    }
+    diag = kcc_last_error();
+    if (!diag->message[0] || !strstr(diag->message, needle)) {
+        fprintf(stderr, "%s diagnostic %s, want %s\n", name, diag->message, needle);
+        return 1;
+    }
+    return 0;
+}
+
 int main(void) {
     ChrisoImage img;
     const KccDiag *diag;
@@ -341,6 +391,131 @@ int main(void) {
         }
         free(msrc);
         free(psrc);
+    }
+    {
+        static const char *paths[] = {
+            "kernel/metal/acpi.c", "kernel/metal/apic.c", "kernel/metal/elf.c",
+            "kernel/metal/heap.c", "kernel/metal/ioapic.c", "kernel/metal/job.c",
+            "kernel/metal/pci.c", "kernel/metal/port.c", "kernel/metal/tlb_proto.c"
+        };
+        static const char *syms[] = {
+            "acpi_probe", "apic_ipi_nmi", "elf_load", "kmalloc", "ioapic_init",
+            "job_worker_forever", "pci_read", "inb", "tlb_runtime_init"
+        };
+        unsigned i;
+        for (i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            if (compile_must(paths[i], syms[i], &img) != 0) {
+                return 1;
+            }
+            if (strcmp(syms[i], "inb") == 0) {
+                static const uint8_t in_al[] = {0xec};
+                static const uint8_t out_al[] = {0xee};
+                static const uint8_t in_ax[] = {0x66, 0xed};
+                static const uint8_t out_ax[] = {0x66, 0xef};
+                static const uint8_t in_eax[] = {0xed};
+                static const uint8_t out_eax[] = {0xef};
+                static const uint8_t hlt[] = {0xf4};
+                if (!text_has(&img, in_al, 1) || !text_has(&img, out_al, 1) ||
+                    !text_has(&img, in_ax, 2) || !text_has(&img, out_ax, 2) ||
+                    !text_has(&img, in_eax, 1) || !text_has(&img, out_eax, 1) ||
+                    !text_has(&img, hlt, 1)) {
+                    fprintf(stderr, "port.c missing in/out/hlt bytes\n");
+                    return 1;
+                }
+            }
+        }
+    }
+    {
+        static const char src[] =
+            "int acc(int n) {\n"
+            "    int i;\n"
+            "    int s;\n"
+            "    s = 0;\n"
+            "    for (i = 0; i < n; i = i + 1) {\n"
+            "        if (i == 1) continue;\n"
+            "        if (i == 4) break;\n"
+            "        s = s + 1;\n"
+            "    }\n"
+            "    return s;\n"
+            "}\n"
+            "int eq(int i) { return i == 1; }\n"
+            "uint32_t pack(uint32_t bus) { return bus << 16; }\n"
+            "uint64_t bits(uint64_t v) { return ~v; }\n"
+            "uint64_t sz(void) { return sizeof(uint32_t); }\n"
+            "_Static_assert(sizeof(uint32_t) == 4, \"u32\");\n"
+            "_Static_assert((~0ull & 1ull) == 1ull, \"lowbit\");\n"
+            "void halt(void) { __asm__ volatile (\"hlt\"); }\n"
+            "void pause_once(void) { __asm__ volatile (\"pause\"); }\n"
+            "void irqs(void) { __asm__ volatile (\"cli\"); __asm__ volatile (\"sti\"); }\n";
+        const char *as;
+        const char *add;
+        const char *back;
+        static const uint8_t not_rax[] = {0x48, 0xf7, 0xd0};
+        static const uint8_t hlt[] = {0xf4};
+        static const uint8_t pause[] = {0xf3, 0x90};
+        static const uint8_t cli[] = {0xfa};
+        static const uint8_t sti[] = {0xfb};
+        if (kcc_compile_named("subset.c", src, &img) != 0) {
+            diag = kcc_last_error();
+            fprintf(stderr, "subset failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                    diag->column, diag->message);
+            return 1;
+        }
+        as = kcc_last_asm();
+        /* continue targets the step, which adds before jumping to the head. */
+        {
+            int ok = 0;
+            const char *p = as;
+            while ((p = strstr(p, "jmp .L")) != 0) {
+                char lab[16];
+                int n = 0;
+                const char *q = p + 4;
+                const char *at;
+                while (*q && *q != '\n' && n < 15) {
+                    lab[n++] = *q++;
+                }
+                lab[n] = 0;
+                at = q;
+                while ((at = strstr(at, lab)) != 0 && at[n] != ':') {
+                    at += n;
+                }
+                if (at && at[n] == ':') {
+                    add = strstr(at, "\nadd ");
+                    back = strstr(at, "\njmp ");
+                    if (add && back && add < back) {
+                        ok = 1;
+                        break;
+                    }
+                }
+                p += 4;
+            }
+            if (!ok) {
+                fprintf(stderr, "continue does not reach the for step\n%s\n", as);
+                return 1;
+            }
+        }
+        if (!strstr(as, "mov rax, 1\nmov rcx, rax\n") ||
+            !strstr(as, "mov rax, 16\nmov rcx, rax\n") || !strstr(as, "not rax") ||
+            !strstr(as, "mov rax, 4\n")) {
+            fprintf(stderr, "literal or sizeof asm:\n%s\n", as);
+            return 1;
+        }
+        if (!text_has(&img, not_rax, 3) || !text_has(&img, hlt, 1) ||
+            !text_has(&img, pause, 2) || !text_has(&img, cli, 1) || !text_has(&img, sti, 1)) {
+            fprintf(stderr, "subset missing not/hlt/pause/cli/sti bytes\n");
+            return 1;
+        }
+    }
+    if (compile_fails("break.c", "void x(void) { break; }\n", "break outside loop") != 0 ||
+        compile_fails("assert0.c", "_Static_assert(0, \"no\");\n", "static assert failed") != 0 ||
+        compile_fails("assertn.c", "void x(int n) { _Static_assert(n, \"n\"); }\n",
+                      "constant expression expected") != 0 ||
+        compile_fails("cr3.c",
+                      "void x(void) { uint64_t v; __asm__ volatile (\"mov %%cr3, %0\" : \"=r\"(v)); }\n",
+                      "asm template is outside this subset") != 0 ||
+        compile_fails("sync.c", "int x(int *p) { return __sync_fetch_and_add(p, 1); }\n",
+                      "builtin is outside this subset") != 0) {
+        return 1;
     }
     puts("test_kcc: ok");
     return 0;
