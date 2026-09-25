@@ -31,6 +31,8 @@
 #include "hwgate.h"
 #include "acpi.h"
 #include "install.h"
+#include "buildid.h"
+#include "klog.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -42,6 +44,7 @@ void kstart(void) {
         }
     }
     serial_puts("ChrisOS selfhost=1\n");
+    build_info_log();
 
     bootinfo_init();
     if (bootflag_safe()) {
@@ -94,6 +97,15 @@ void kstart(void) {
     fs_init();
     (void)install_selftest();
     (void)install_auto();
+    if (fs_backend() == FS_BACKEND_CFS) {
+        static char bootlog[4096];
+        uint32_t n = klog_copy(bootlog, sizeof bootlog);
+        if (n > 0u && fs_write("SYS/BOOT.LOG", bootlog, (int)n) >= 0) {
+            serial_puts("boot log SYS/BOOT.LOG\n");
+        } else {
+            serial_puts("boot log write failed\n");
+        }
+    }
     lang_init(clvm_sys_dispatch, 0);
     speaker_off();
     if (!bootflag_noac97()) {

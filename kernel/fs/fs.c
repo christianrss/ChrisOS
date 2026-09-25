@@ -180,6 +180,10 @@ static void seed_dirs(Cfs *fs) {
     if (rc != CFS_OK && rc != CFS_EEXIST) {
         seed_log_fail("GAMES", rc);
     }
+    rc = cfs_mkdir(fs, "SYS");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("SYS", rc);
+    }
     rc = cfs_mkdir(fs, "SRC");
     if (rc != CFS_OK && rc != CFS_EEXIST) {
         seed_log_fail("SRC", rc);

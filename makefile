@@ -25,9 +25,13 @@ KINC := -Ikernel/metal -Ikernel/gfx -Ikernel/wm -Ikernel/tools \
 
 HOST_CHRIS_INC := -Icompiler/chrisld -Icompiler/chrisasm -Icompiler/kcc
 
+CHRIS_GIT := $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
+CHRIS_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)
 CFLAGS := -std=c11 -m64 -ffreestanding -fno-stack-protector -fno-pic -fno-pie \
 	-fcf-protection=none -mno-red-zone -mcmodel=kernel -mno-mmx -mno-sse -mno-sse2 \
 	-DLIMINE_API_REVISION=3 -D__freestanding__ -I$(LIMINE_DIR) $(KINC) \
+	-DCHRIS_GIT=\"$(CHRIS_GIT)\" -DCHRIS_BUILD_ID=\"$(CHRIS_GIT)-$(CHRIS_DATE)\" \
+	-DCHRIS_DATE=\"$(CHRIS_DATE)\" \
 	-Wall -Wextra -Werror
 LDFLAGS := -m elf_x86_64 -nostdlib -static -z max-page-size=0x1000 \
 	-z noexecstack -T kernel/metal/linker.ld
@@ -61,7 +65,8 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/metal/irq.o kernel/metal/syscall.o kernel/metal/user_enter.o \
 	kernel/metal/elf.o kernel/metal/pit.o kernel/metal/ps2.o \
 	kernel/metal/bootinfo.o kernel/metal/pmm.o kernel/metal/mm.o \
-	kernel/metal/tlb_proto.o \
+	kernel/metal/tlb_proto.o kernel/metal/klog.o kernel/metal/buildid.o \
+	kernel/metal/meminfo.o \
 	kernel/metal/heap.o kernel/metal/pci.o \
 	kernel/net/virtio_net.o kernel/net/net.o kernel/net/sock.o \
 	kernel/crypto/sha256.o kernel/crypto/rng.o kernel/crypto/aes.o kernel/crypto/x25519.o \
@@ -547,6 +552,41 @@ host-job-saturate-test: tools/test_job_saturate.c kernel/metal/job.c kernel/meta
 		-o $(HOST_BIN)/test_job_saturate tools/test_job_saturate.c \
 		kernel/metal/job.c kernel/metal/spin.c kernel/metal/tlb_proto.c
 	$(HOST_BIN)/test_job_saturate
+
+host-klog-test: tools/test_klog.c kernel/metal/klog.c kernel/metal/spin.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
+		-o $(HOST_BIN)/test_klog tools/test_klog.c kernel/metal/klog.c kernel/metal/spin.c
+	$(HOST_BIN)/test_klog
+
+host-buildinfo-test: tools/test_buildinfo.c kernel/metal/buildid.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
+		-DCHRIS_GIT=\"abc\" -DCHRIS_BUILD_ID=\"abc-2026\" -DCHRIS_DATE=\"2026-09-25\" \
+		-o $(HOST_BIN)/test_buildinfo tools/test_buildinfo.c kernel/metal/buildid.c
+	$(HOST_BIN)/test_buildinfo
+
+host-buildstamp-test: tools/test_buildstamp.c tools/buildstamp.c kernel/crypto/sha256.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/crypto \
+		-o $(HOST_BIN)/test_buildstamp tools/test_buildstamp.c tools/buildstamp.c \
+		kernel/crypto/sha256.c
+	$(HOST_BIN)/test_buildstamp
+
+host-meminfo-test: tools/test_meminfo.c kernel/metal/meminfo.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/metal \
+		-o $(HOST_BIN)/test_meminfo tools/test_meminfo.c kernel/metal/meminfo.c
+	$(HOST_BIN)/test_meminfo
+
+host-pmm-cycle-test: tools/test_pmm_cycle.c tools/host_metal/metal_stub.c kernel/metal/pmm.c \
+		kernel/metal/spin.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DCHRIS_HOST_METAL \
+		-Itools/host_metal -Ikernel/metal \
+		-o $(HOST_BIN)/test_pmm_cycle tools/test_pmm_cycle.c \
+		tools/host_metal/metal_stub.c kernel/metal/pmm.c kernel/metal/spin.c
+	$(HOST_BIN)/test_pmm_cycle
 
 host-tlb-proto-test: tools/test_tlb_proto.c kernel/metal/tlb_proto.c kernel/metal/tlb_proto.h
 	mkdir -p $(HOST_BIN)
@@ -1117,7 +1157,8 @@ host-gates: host-cfs-test host-cfs-v5-test host-fsck-test host-cfs-paths-test \
 	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates \
 	host-input-test test_keystate test_gfx2d \
 	host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
-	host-tlb-proto-test \
+	host-tlb-proto-test host-klog-test host-buildinfo-test \
+	host-buildstamp-test host-meminfo-test host-pmm-cycle-test \
 	host-clvm-sync-test host-elf-malformed-test host-sock-owner-test \
 	host-cfs-lock-test host-gfx3d-ctx-test host-sys-write-test \
 	host-fuzz-cfs-test host-fuzz-elf-test host-fuzz-chrisc-test \
@@ -1129,7 +1170,7 @@ host-gate-audit:
 	python3 tools/check_test_gates.py
 
 host-stress: host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
-	host-tlb-proto-test \
+	host-tlb-proto-test host-klog-test host-pmm-cycle-test \
 	host-cfs-lock-test host-fuzz-cfs-test host-fuzz-elf-test \
 	host-fuzz-chrisc-test host-fuzz-clvm-test host-task-window-test
 
@@ -1370,9 +1411,15 @@ $(OBJ_DIR)/kernel/metal/%.o: kernel/metal/%.asm
 	@mkdir -p $(dir $@)
 	nasm -f elf64 $< -o $@
 
-$(KERNEL): $(OBJECTS) kernel/metal/linker.ld
+$(HOST_BIN)/stamp_kernel: tools/stamp_kernel.c tools/buildstamp.c kernel/crypto/sha256.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -Ikernel/crypto \
+		-o $@ tools/stamp_kernel.c tools/buildstamp.c kernel/crypto/sha256.c
+
+$(KERNEL): $(OBJECTS) kernel/metal/linker.ld $(HOST_BIN)/stamp_kernel
 	@mkdir -p $(dir $@)
 	$(LD) $(LDFLAGS) -o $@ $(OBJECTS)
+	$(HOST_BIN)/stamp_kernel $@
 
 $(ISO_ROOT)/boot/limine/limine.conf: $(LIMINE_CONF_SRC)
 	@mkdir -p $(dir $@)
