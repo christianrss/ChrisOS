@@ -9,7 +9,8 @@
 #define STOR_DISK_BYTES        (STOR_SECTOR_SIZE * STOR_DISK_SECTORS)
 
 #define CFS_MAGIC              0x31534643u
-#define CFS_VERSION            4u
+#define CFS_VERSION            5u
+#define CFS_VERSION_V4         4u
 #define CFS_VERSION_COMPAT     3u
 #define CFS_SUPER_LBA          0u
 #define CFS_BITMAP_LBA         1u

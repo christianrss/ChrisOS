@@ -134,22 +134,17 @@ void jit_seal(JitBuf *buf) {
     serial_write_u64((uint64_t)buf->pages);
     serial_puts("\n");
     virt = (uint64_t)(uintptr_t)buf->x;
+    /*
+     * These translations were never present, so a global CR3 reload is
+     * unnecessary. Reloading CR3 here (via the TLB IPI) killed the machine
+     * mid-serial, before "jit: map exec done" finished. invlpg drops a
+     * cached not-present entry on this CPU only. Another CPU picks the
+     * mapping up when it loads CR3 to run the process.
+     */
     for (i = 0; i < buf->pages; ++i) {
-        map_4k_nosync(virt + (uint64_t)i * PMM_PAGE,
-                      buf->phys + (uint64_t)i * PMM_PAGE,
-                      MM_PRESENT);
-    }
-    mm_tlb_shootdown();
-    {
-        uint32_t eax, ebx, ecx, edx;
-        eax = 0;
-        __asm__ volatile("cpuid"
-                         : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx)
-                         : "a"(eax)
-                         : "memory");
-        (void)ebx;
-        (void)ecx;
-        (void)edx;
+        map_4k(virt + (uint64_t)i * PMM_PAGE,
+               buf->phys + (uint64_t)i * PMM_PAGE,
+               MM_PRESENT);
     }
     serial_puts("jit: map exec done\n");
 }

@@ -444,6 +444,24 @@ static int clamp_int(int value, int low, int high) {
     return value;
 }
 
+void input_mouse_add(int dx, int dy, int buttons) {
+    bool left = (buttons & 1) != 0;
+    g_acc_dx += dx;
+    g_acc_dy += dy;
+    ++g_mouse.version;
+    compiler_barrier();
+    g_mouse.x = clamp_int(g_mouse.x + dx, 0, g_screen_width - 1);
+    g_mouse.y = clamp_int(g_mouse.y + dy, 0, g_screen_height - 1);
+    if (left && !g_mouse.left_down) {
+        ++g_mouse.left_press_sequence;
+    }
+    g_mouse.left_down = left;
+    g_mouse.right_down = (buttons & 2) != 0;
+    g_mouse.middle_down = (buttons & 4) != 0;
+    compiler_barrier();
+    ++g_mouse.version;
+}
+
 static void apply_mouse_packet(void) {
     uint8_t flags = g_mouse_packet[0];
     int dx;

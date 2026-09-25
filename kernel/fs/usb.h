@@ -10,10 +10,8 @@
  *           └── USB MSC (BOT)
  *
  * EHCI can be added as another host controller beside UHCI.
- * TODO xHCI: map the capability/operational/runtime registers, allocate a
- * device context and one transfer ring, enumerate the port, then hand the
- * bulk endpoints to the existing MSC BOT code. Do not pretend the UHCI
- * driver speaks xHCI.
+ * xHCI is a separate poll-only HID path in xhci.c (boot keyboard and
+ * mouse). It does not speak MSC and the UHCI driver does not speak xHCI.
  */
 
 enum {

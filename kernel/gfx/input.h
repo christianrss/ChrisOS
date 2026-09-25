@@ -81,6 +81,7 @@ int input_key_down(int scancode);
 void input_keystate_clear(void);
 /* Screen-space deltas (positive x right, positive y down). Consumed. */
 void input_mouse_delta(int *dx, int *dy);
+void input_mouse_add(int dx, int dy, int buttons);
 /* Capture belongs to a task id. -1 releases. Unfocused owners lose it. */
 void input_capture_set(int task_id);
 void input_capture_release_task(int task_id);

@@ -44,6 +44,12 @@ void kstart(void) {
     serial_puts("ChrisOS selfhost=1\n");
 
     bootinfo_init();
+    if (bootflag_safe()) {
+        serial_puts("safe mode\n");
+    }
+    if (bootflag_nojit()) {
+        lang_force_interp();
+    }
     gdt_init();
     idt_init();
     syscall_init();
@@ -90,7 +96,9 @@ void kstart(void) {
     (void)install_auto();
     lang_init(clvm_sys_dispatch, 0);
     speaker_off();
-    (void)ac97_init();
+    if (!bootflag_noac97()) {
+        (void)ac97_init();
+    }
 
     /* Compile with interrupts off. The timer preempts the guest compiler. */
     gfx_clear(CHRIS_DESKTOP_COLOR);
@@ -102,7 +110,7 @@ void kstart(void) {
     desktop_init();
     desktop_boot_apps();
     gfx_present();
-    if (!net_init()) {
+    if (!bootflag_nonet() && !net_init()) {
         serial_puts("ChrisOS: net unavailable\n");
     }
     serial_puts("ChrisOS: desktop 60Hz\n");

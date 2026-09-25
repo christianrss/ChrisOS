@@ -10,6 +10,7 @@
 #include "task.h"
 #include "ui.h"
 #include "usb_msc.h"
+#include "xhci.h"
 
 static void boot_diag(const char *what, const char *path) {
     const char *err = lang_last_error();
@@ -88,6 +89,7 @@ void desktop_frame(uint64_t ticks) {
     InputMouse mouse;
 
     usb_tablet_poll();
+    xhci_hid_poll();
     mouse = input_mouse_snapshot();
     InputEvent event;
     int focus;

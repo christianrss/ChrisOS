@@ -1,7 +1,7 @@
 .PHONY: run-riscv qemu-gates full-gates \
 	test-qemu-ata test-qemu-ahci test-qemu-nvme test-qemu-vblk \
 	test-qemu-usb test-qemu-gpu test-qemu-install test-qemu-riscv \
-	test-qemu-noata test-qemu-smp1
+	test-qemu-noata test-qemu-smp1 test-qemu-safe test-qemu-xhci
 
 run-riscv: $(RISCV_ELF)
 	@test -f $(BUILD_DIR)/vblk.img || dd if=/dev/zero of=$(BUILD_DIR)/vblk.img bs=1M count=32 status=none
@@ -139,6 +139,37 @@ test-qemu-install: $(ISO) $(DISK_IMG) host-cfs-put-file
 test-qemu-smp1: $(ISO) $(DISK_IMG)
 	$(MAKE) test-qemu-ata QEMU_SMP=1
 
-qemu-gates: test-qemu-ata test-qemu-ahci test-qemu-nvme test-qemu-vblk test-qemu-usb test-qemu-gpu test-qemu-riscv test-qemu-noata test-qemu-install
+$(BUILD_DIR)/os-safe.iso: $(ISO)
+	python3 -c "import pathlib; p=pathlib.Path('$(ISO_ROOT)/boot/limine/limine.conf'); t=p.read_text(); needle='resolution: 1920x1080x32\n'; ins=needle+'    cmdline: safe\n'; p.write_text(t.replace(needle, ins, 1) if 'cmdline:' not in t else t)"
+	$(XORRISO) -as mkisofs -R -r -J \
+		-b boot/limine/limine-bios-cd.bin \
+		-no-emul-boot -boot-load-size 4 -boot-info-table \
+		-hfsplus -apm-block-size 2048 \
+		--efi-boot boot/limine/limine-uefi-cd.bin \
+		-efi-boot-part --efi-boot-image \
+		--protective-msdos-label $(ISO_ROOT) -o $@; \
+	st=$$?; cp $(LIMINE_CONF_SRC) $(ISO_ROOT)/boot/limine/limine.conf; exit $$st
+	$(LIMINE_DIR)/limine bios-install $@
+
+test-qemu-xhci: $(ISO) $(DISK_IMG)
+	rm -f $(BUILD_DIR)/qemu-test.txt
+	$(QEMU_GATE) --timeout 90 \
+		--expect "xhci hid ready" -- \
+		$(QEMU) $(QEMU_HEAD) -boot order=dc \
+		-drive file=$(DISK_IMG),format=raw,if=ide,index=0,file.locking=off \
+		-drive file=$(ISO),format=raw,if=ide,index=2,media=cdrom \
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device usb-mouse,bus=xhci.0
+
+test-qemu-safe: $(BUILD_DIR)/os-safe.iso $(DISK_IMG)
+	rm -f $(BUILD_DIR)/qemu-test.txt
+	$(QEMU_GATE) --timeout 90 \
+		--expect "safe mode" --expect "smp off" --expect "desktop 60Hz" -- \
+		$(QEMU) $(QEMU_HEAD) -boot order=dc \
+		-drive file=$(DISK_IMG),format=raw,if=ide,index=0,file.locking=off \
+		-drive file=$(BUILD_DIR)/os-safe.iso,format=raw,if=ide,index=2,media=cdrom
+
+qemu-gates: test-qemu-ata test-qemu-ahci test-qemu-nvme test-qemu-vblk test-qemu-usb test-qemu-gpu test-qemu-riscv test-qemu-noata test-qemu-install test-qemu-safe test-qemu-xhci
 
 full-gates: host-gates qemu-gates test-qemu-smp1

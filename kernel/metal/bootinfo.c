@@ -39,12 +39,84 @@ static volatile struct limine_mp_request mp_request = {
     .flags = 0
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_executable_cmdline_request cmdline_request = {
+    .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST,
+    .revision = 0,
+    .response = 0
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile LIMINE_REQUESTS_END_MARKER;
 
 static struct bootinfo info;
 static struct limine_memmap_response *memmap_response;
 static int bootinfo_ready;
+static int g_safe;
+static int g_nosmp;
+static int g_noapic;
+static int g_noac97;
+static int g_nonet;
+static int g_nojit;
+
+static int boot_tok(const char *s, uint32_t n, const char *lit) {
+    uint32_t i = 0u;
+    while (lit[i] != 0) {
+        if (i >= n || s[i] != lit[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return i == n;
+}
+
+static void bootflag_parse(const char *cmd) {
+    const char *p;
+    if (cmd == 0) {
+        return;
+    }
+    p = cmd;
+    while (*p != 0) {
+        const char *start;
+        uint32_t n;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (*p == 0) {
+            break;
+        }
+        start = p;
+        while (*p != 0 && *p != ' ' && *p != '\t') {
+            p++;
+        }
+        n = (uint32_t)(p - start);
+        if (boot_tok(start, n, "safe")) {
+            g_safe = 1;
+            g_nosmp = 1;
+            g_noapic = 1;
+            g_noac97 = 1;
+            g_nonet = 1;
+            g_nojit = 1;
+        } else if (boot_tok(start, n, "nosmp")) {
+            g_nosmp = 1;
+        } else if (boot_tok(start, n, "noapic")) {
+            g_noapic = 1;
+        } else if (boot_tok(start, n, "noac97")) {
+            g_noac97 = 1;
+        } else if (boot_tok(start, n, "nonet")) {
+            g_nonet = 1;
+        } else if (boot_tok(start, n, "nojit")) {
+            g_nojit = 1;
+        }
+    }
+}
+
+int bootflag_safe(void) { return g_safe; }
+int bootflag_nosmp(void) { return g_nosmp; }
+int bootflag_noapic(void) { return g_noapic; }
+int bootflag_noac97(void) { return g_noac97; }
+int bootflag_nonet(void) { return g_nonet; }
+int bootflag_nojit(void) { return g_nojit; }
 
 static const char *memmap_type_name(uint64_t type) {
     switch (type) {
@@ -164,6 +236,10 @@ void bootinfo_init(void) {
     info.bsp_lapic_id = mp->bsp_lapic_id;
     memmap_response = memmap;
     bootinfo_ready = 1;
+    if (cmdline_request.response != 0 &&
+        cmdline_request.response->cmdline != 0) {
+        bootflag_parse(cmdline_request.response->cmdline);
+    }
 
     serial_puts("ChrisOS: bootinfo revision 3\n");
     serial_puts("HHDM offset=");

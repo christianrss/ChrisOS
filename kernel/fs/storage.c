@@ -5,6 +5,7 @@
 #include "part.h"
 #include "storage.h"
 #include "usb_msc.h"
+#include "xhci.h"
 #include "virtio_blk.h"
 
 #include "ata_pio.h"
@@ -244,6 +245,7 @@ int storage_init(void) {
     (void)nvme_probe();
     (void)virtio_blk_probe();
     (void)usb_msc_probe();
+    (void)xhci_hid_probe();
     serial_puts("disk scan\n");
     if (!discover_root()) {
         serial_puts("root miss disks=");

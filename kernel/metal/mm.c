@@ -20,6 +20,31 @@ static int mm_ready;
 static Spinlock mm_lock;
 static volatile uint64_t mm_tlb_gen;
 static volatile uint64_t mm_tlb_seen[SMP_CPU_CAP];
+/* Published before mm_tlb_gen so a CPU that observes the new generation
+ * also observes the range. x86 store order makes that pair safe. */
+static volatile uint64_t mm_tlb_virt;
+static volatile uint64_t mm_tlb_bytes;
+
+static void mm_invlpg_span(uint64_t virt, uint64_t bytes) {
+    uint64_t page;
+    uint64_t last;
+
+    if (bytes == 0u) {
+        return;
+    }
+    if (virt > ~0ull - (bytes - 1ull)) {
+        bytes = ~0ull - virt;
+    }
+    page = virt & ~(PMM_PAGE - 1ull);
+    last = (virt + bytes - 1ull) & ~(PMM_PAGE - 1ull);
+    for (;;) {
+        __asm__ volatile ("invlpg (%0)" : : "r"(page) : "memory");
+        if (page == last || page > ~0ull - PMM_PAGE) {
+            break;
+        }
+        page += PMM_PAGE;
+    }
+}
 
 #define MMIO_LIMIT (MMIO_WINDOW + 256ull * PMM_PAGE)
 
@@ -155,7 +180,8 @@ void map_4k_nosync(uint64_t virt, uint64_t phys, uint64_t flags) {
 void mm_tlb_poll(void) {
     uint32_t cpu = smp_current_cpu();
     uint64_t gen;
-    uint64_t cr3;
+    uint64_t virt;
+    uint64_t bytes;
 
     if (cpu >= SMP_CPU_CAP) {
         cpu = 0u;
@@ -164,12 +190,13 @@ void mm_tlb_poll(void) {
     if (mm_tlb_seen[cpu] == gen) {
         return;
     }
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(cr3));
-    __asm__ volatile ("mov %0, %%cr3" :: "r"(cr3) : "memory");
+    virt = mm_tlb_virt;
+    bytes = mm_tlb_bytes;
+    mm_invlpg_span(virt, bytes);
     mm_tlb_seen[cpu] = gen;
 }
 
-void mm_tlb_shootdown(void) {
+static void mm_tlb_shootdown_with(uint64_t virt, uint64_t bytes) {
     uint32_t self = smp_current_cpu();
     uint32_t online;
     uint32_t spins = 0u;
@@ -179,8 +206,12 @@ void mm_tlb_shootdown(void) {
         self = 0u;
     }
     mm_enter();
+    mm_tlb_virt = virt;
+    mm_tlb_bytes = bytes;
+    __asm__ volatile ("" ::: "memory");
     gen = mm_tlb_gen + 1u;
     mm_tlb_gen = gen;
+    /* This CPU already invlpg'd. Reloading CR3 here killed the machine. */
     mm_tlb_seen[self] = gen;
     online = cpu_online_count;
     if (online > 1u) {
@@ -227,27 +258,17 @@ void mm_tlb_shootdown(void) {
     mm_leave();
 }
 
-void mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes) {
-    uint64_t page;
-    uint64_t last;
+void mm_tlb_shootdown(void) {
+    mm_tlb_shootdown_with(0, 0);
+}
 
+void mm_tlb_shootdown_range(uint64_t virt, uint64_t bytes) {
     if (!mm_ready || bytes == 0u) {
-        mm_tlb_shootdown();
+        mm_tlb_shootdown_with(0, 0);
         return;
     }
-    if (virt > ~0ull - (bytes - 1ull)) {
-        bytes = ~0ull - virt;
-    }
-    page = virt & ~(PMM_PAGE - 1ull);
-    last = (virt + bytes - 1ull) & ~(PMM_PAGE - 1ull);
-    for (;;) {
-        __asm__ volatile ("invlpg (%0)" : : "r"(page) : "memory");
-        if (page == last || page > ~0ull - PMM_PAGE) {
-            break;
-        }
-        page += PMM_PAGE;
-    }
-    mm_tlb_shootdown();
+    mm_invlpg_span(virt, bytes);
+    mm_tlb_shootdown_with(virt, bytes);
 }
 
 void unmap_4k(uint64_t virt) {

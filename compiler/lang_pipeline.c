@@ -101,6 +101,11 @@ static char g_last_clv[LANG_NAME_MAX];
 static char g_last_err[160];
 static char g_app_arg[FS_PATH];
 static int g_want_debug;
+static int g_nojit;
+
+void lang_force_interp(void) {
+    g_nojit = 1;
+}
 static ClvmSysFn system_fn;
 static void *system_user;
 
@@ -1107,7 +1112,7 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
      * UI CLVs (Editor/Shell) need JIT; Doom-sized games already did.
      * Debugger keeps the interpreter.
      */
-    if (!g_want_debug) {
+    if (!g_want_debug && !g_nojit) {
         use_jit = 1;
     }
     if (use_jit && !g_want_debug) {

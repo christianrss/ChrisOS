@@ -77,7 +77,7 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/fs/ata_pio.o kernel/fs/cfs.o kernel/fs/cfs_fsck.o \
 	kernel/fs/storage.o kernel/fs/fs.o kernel/fs/bdev.o kernel/fs/part.o \
 	kernel/fs/ahci.o kernel/fs/nvme.o kernel/fs/virtio_blk.o \
-	kernel/fs/usb_msc.o kernel/fs/install.o kernel/metal/acpi.o \
+	kernel/fs/usb_msc.o kernel/fs/xhci.o kernel/fs/install.o kernel/metal/acpi.o \
 	kernel/lang/lang_sys.o kernel/lang/clvm_sys.o \
 	compiler/lang_pipeline.o compiler/debug/cdbg.o compiler/debug/dbg_session.o \
 	compiler/chrisc/chrisc.o \
@@ -690,6 +690,13 @@ host-cfs-journal-test: tools/test_cfs_journal.c kernel/fs/cfs.c kernel/fs/cfs_fs
 		kernel/fs/cfs.c kernel/fs/cfs_fsck.c
 	$(HOST_BIN)/test_cfs_journal
 
+host-cfs-v5-test: tools/test_cfs_v5.c kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/fs \
+		-o $(HOST_BIN)/test_cfs_v5 tools/test_cfs_v5.c \
+		kernel/fs/cfs.c kernel/fs/cfs_fsck.c
+	$(HOST_BIN)/test_cfs_v5
+
 host-cfs-chmod: tools/cfs_chmod.c kernel/fs/cfs.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) $(HOST_CFLAGS) -Ikernel/fs \
@@ -1094,7 +1101,7 @@ test_native_link: tools/test_native_link.c compiler/chrisasm/chrisasm.c \
 
 host-gfx3d: test_sse_init test_math3d test_math3d_view test_zbuf test_tri test_mesh test_cube_mesh test_cube_mesh_f test_chunk_mesh test_chrisc_arrays test_chrisc_float test_chrisc_ptr_float test_chrisc_move test_chrisc_fn test_chrisc_struct test_chrisc_trig test_chrisc_games test_chrisc_include test_chrisc_apps test_editor_vi test_chrisc_string test_chrisc_lang test_chrisc_c17 test_chrisc_doom test_doom_compile test_doom_engine test_cla_gc test_cls test_clasm test_clasm_games test_tile test_tile_bin
 
-host-gates: host-cfs-test host-fsck-test host-cfs-paths-test \
+host-gates: host-cfs-test host-cfs-v5-test host-fsck-test host-cfs-paths-test \
 	host-cfs-indirect-test host-cfs-journal-test host-cfs-chmod-test \
 	host-cfs-maxwrite-test \
 	host-jit-test host-jit-vm-test host-jit-native-test host-jit-bench-test host-chriso-test host-chrisasm-test host-chrisld-test \
@@ -1168,11 +1175,11 @@ host-chrisld-test: tools/test_chrisld.c compiler/chrisasm/chrisasm.c \
 	$(HOST_BIN)/test_chrisld
 
 host-kcc-test: tools/test_kcc.c compiler/kcc/kcc.c compiler/chrisasm/chrisasm.c \
-		compiler/chrisld/chriso.c
+		compiler/chrisld/chriso.c compiler/chrisld/chrisld.c
 	mkdir -p $(HOST_BIN)
 	$(HOST_CC) -std=c11 -Wall -Wextra -Werror $(HOST_CHRIS_INC) \
 		tools/test_kcc.c compiler/kcc/kcc.c compiler/chrisasm/chrisasm.c \
-		compiler/chrisld/chriso.c -o $(HOST_BIN)/test_kcc
+		compiler/chrisld/chriso.c compiler/chrisld/chrisld.c -o $(HOST_BIN)/test_kcc
 	$(HOST_BIN)/test_kcc
 
 host-kcc-kernel-l0: host-kcc-test

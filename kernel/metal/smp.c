@@ -126,6 +126,13 @@ void smp_init(void) {
 
     kernel_cr3 = read_cr3();
     cpu_online_count = 1u;
+    if (bootflag_nosmp()) {
+        serial_puts("smp off\n");
+        if (!bootflag_noapic()) {
+            apic_enable_local();
+        }
+        return;
+    }
 
     mp = bootinfo_mp_response();
     if (mp == 0) {
@@ -187,7 +194,9 @@ void smp_init(void) {
     serial_puts("cpu_online_count=");
     serial_write_u64(cpu_online_count);
     serial_puts(" (BSP+AP)\n");
-    apic_enable_local();
+    if (!bootflag_noapic()) {
+        apic_enable_local();
+    }
 }
 
 uint32_t smp_lapic_of(uint32_t cpu, int *known) {

@@ -1,5 +1,6 @@
 #include "job.h"
 #include "apic.h"
+#include "bootinfo.h"
 #include "mm.h"
 #include "panic.h"
 #include "serial.h"
@@ -76,7 +77,9 @@ void job_worker_forever(uint32_t cpu_index) {
     int irqs = 0;
     for (;;) {
         if (!irqs && g_ap_irq_enable) {
-            apic_enable_local();
+            if (!bootflag_noapic()) {
+                apic_enable_local();
+            }
             __asm__ volatile ("sti");
             irqs = 1;
         }

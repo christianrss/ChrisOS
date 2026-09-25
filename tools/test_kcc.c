@@ -1,4 +1,6 @@
 #include "kcc.h"
+#include "chrisasm.h"
+#include "chrisld.h"
 #include "chriso.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,22 +98,71 @@ int main(void) {
         fprintf(stderr, "cannot read serial.c\n");
         return 1;
     }
-    if (kcc_compile_named(serial_path, src, &img) == 0) {
-        fprintf(stderr, "serial.c was accepted\n");
+    if (kcc_compile_named(serial_path, src, &img) != 0) {
+        diag = kcc_last_error();
+        fprintf(stderr, "serial.c failed: %s:%d:%d: %s\n", diag->file, diag->line,
+                diag->column, diag->message);
         free(src);
         return 1;
     }
     free(src);
-    diag = kcc_last_error();
-    if (diag->severity != 1 || diag->line < 1 || diag->column < 1 ||
-        diag->message[0] == 0 || strcmp(diag->file, serial_path) != 0) {
-        fprintf(stderr, "serial.c diagnostic is incomplete\n");
-        return 1;
-    }
-    if (strstr(diag->message, "preprocessor") == 0) {
-        fprintf(stderr, "serial.c should fail on its preprocessor line: %s\n",
-                diag->message);
-        return 1;
+    {
+        static const char *need[] = {
+            "serial_init", "serial_putc", "serial_puts",
+            "serial_write_hex", "serial_write_u64",
+            "serial_available", "g_serial_lock"
+        };
+        uint32_t i;
+        int saw_avail = 0;
+        int saw_lock = 0;
+        for (i = 0; i < sizeof(need) / sizeof(need[0]); i++) {
+            if (!find_sym(&img, need[i])) {
+                fprintf(stderr, "serial.c missing %s\n", need[i]);
+                return 1;
+            }
+        }
+        if (img.sec_size[CHRISO_SEC_RODATA] == 0u) {
+            fprintf(stderr, "serial.c produced no rodata\n");
+            return 1;
+        }
+        for (i = 0; i < img.nsym; i++) {
+            if (strcmp(img.sym[i].name, "serial_available") == 0 &&
+                img.sym[i].section == CHRISO_SEC_BSS) {
+                saw_avail = 1;
+            }
+            if (strcmp(img.sym[i].name, "g_serial_lock") == 0 &&
+                img.sym[i].section == CHRISO_SEC_BSS) {
+                saw_lock = 1;
+            }
+        }
+        if (!saw_avail || !saw_lock) {
+            fprintf(stderr, "serial.c bss objects missing\n");
+            return 1;
+        }
+        {
+            ChrisoImage stubs;
+            const ChrisoImage *objs[2];
+            uint8_t elf[16384];
+            uint64_t entry;
+            int n;
+            if (chrisasm_assemble(
+                    "inb:\nmov rax, 0\nret\n"
+                    "outb:\nret\n"
+                    "spin_init:\nret\n"
+                    "spin_lock:\nret\n"
+                    "spin_unlock:\nret\n",
+                    &stubs) != 0) {
+                fprintf(stderr, "stub assemble failed\n");
+                return 1;
+            }
+            objs[0] = &img;
+            objs[1] = &stubs;
+            n = chrisld_link_objects(objs, 2u, 0x400000ull, elf, sizeof(elf), &entry);
+            if (n < 64 || chrisld_validate(elf, (uint32_t)n) != 0 || elf[56] != 2) {
+                fprintf(stderr, "serial link failed phnum=%u n=%d\n", elf[56], n);
+                return 1;
+            }
+        }
     }
     puts("test_kcc: ok");
     return 0;

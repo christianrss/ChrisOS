@@ -253,7 +253,7 @@ static int jnl_write_hdr(Cfs *fs, uint32_t state, uint32_t seq, uint32_t nrec) {
     cfs_put32(s + 8, state);
     cfs_put32(s + 12, nrec);
     cfs_put32(s + 16, cfs_checksum(s, 16u));
-    return cache_write_raw(fs, CFS_JOURNAL_LBA, s);
+    return cache_write_raw(fs, fs->super.journal_lba, s);
 }
 
 int jnl_begin(Jnl *j, Cfs *fs) {
@@ -271,7 +271,7 @@ int jnl_log(Jnl *j, uint32_t lba, const uint8_t data[512]) {
     uint8_t s[STOR_SECTOR_SIZE];
     uint32_t slot;
     if (j->nrec >= JNL_MAX_REC) return CFS_ENOSPC;
-    slot = CFS_JOURNAL_LBA + 1u + j->nrec * 2u;
+    slot = j->fs->super.journal_lba + 1u + j->nrec * 2u;
     cfs_zero(s, STOR_SECTOR_SIZE);
     cfs_put32(s + 0, lba);
     cfs_put32(s + 4, cfs_checksum(data, 512u));
@@ -298,7 +298,7 @@ int jnl_replay(Cfs *fs, uint32_t *replayed) {
     uint8_t data[STOR_SECTOR_SIZE];
     uint32_t magic, state, nrec, i, slot, lba, sum;
     if (replayed) *replayed = 0u;
-    if (cache_read(fs, CFS_JOURNAL_LBA, hdr) != CFS_OK) return CFS_EIO;
+    if (cache_read(fs, fs->super.journal_lba, hdr) != CFS_OK) return CFS_EIO;
     magic = cfs_get32(hdr + 0);
     if (!magic) return CFS_OK;
     if (magic != JNL_MAGIC) return CFS_ECORRUPT;
@@ -308,11 +308,11 @@ int jnl_replay(Cfs *fs, uint32_t *replayed) {
     if (state == JNL_EMPTY) return CFS_OK;
     if (state == JNL_BEGIN) {
         cfs_zero(hdr, STOR_SECTOR_SIZE);
-        return cache_write_raw(fs, CFS_JOURNAL_LBA, hdr);
+        return cache_write_raw(fs, fs->super.journal_lba, hdr);
     }
     if (state != JNL_COMMIT) return CFS_ECORRUPT;
     for (i = 0; i < nrec && i < JNL_MAX_REC; i++) {
-        slot = CFS_JOURNAL_LBA + 1u + i * 2u;
+        slot = fs->super.journal_lba + 1u + i * 2u;
         if (cache_read(fs, slot, meta) != CFS_OK) return CFS_EIO;
         if (cache_read(fs, slot + 1u, data) != CFS_OK) return CFS_EIO;
         lba = cfs_get32(meta + 0);
@@ -325,7 +325,7 @@ int jnl_replay(Cfs *fs, uint32_t *replayed) {
     cfs_put32(hdr + 0, JNL_MAGIC);
     cfs_put32(hdr + 8, JNL_EMPTY);
     cfs_put32(hdr + 16, cfs_checksum(hdr, 16u));
-    return cache_write_raw(fs, CFS_JOURNAL_LBA, hdr);
+    return cache_write_raw(fs, fs->super.journal_lba, hdr);
 }
 
 static void jnl_serial_mount(uint32_t state, uint32_t replayed) {
@@ -349,16 +349,16 @@ static void jnl_serial_mount(uint32_t state, uint32_t replayed) {
 #define CFS_READAHEAD 16u
 static uint8_t g_cfs_ra[CFS_READAHEAD * 512u];
 
-static int data_lba_valid(uint32_t lba) {
-    return lba >= CFS_DATA_LBA &&
-           lba < CFS_DATA_LBA + CFS_DATA_SECTORS;
+static int data_lba_valid(const Cfs *fs, uint32_t lba) {
+    return lba >= fs->super.data_lba &&
+           lba < fs->super.data_lba + fs->super.data_sectors;
 }
 
 static int inode_read(Cfs *fs, uint32_t id, CfsInode *out) {
     uint32_t per_sector = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
     uint32_t lba, off;
-    if (id >= CFS_INODE_COUNT) return CFS_ECORRUPT;
-    lba = CFS_INODE_LBA + id / per_sector;
+    if (id >= fs->super.inode_count) return CFS_ECORRUPT;
+    lba = fs->super.inode_lba + id / per_sector;
     off = (id % per_sector) * CFS_INODE_SIZE;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
     if (cfs_inode_decode(out, fs->sector + off) != 0)
@@ -369,8 +369,8 @@ static int inode_read(Cfs *fs, uint32_t id, CfsInode *out) {
 static int inode_write(Cfs *fs, uint32_t id, const CfsInode *in) {
     uint32_t per_sector = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
     uint32_t lba, off;
-    if (id >= CFS_INODE_COUNT) return CFS_ECORRUPT;
-    lba = CFS_INODE_LBA + id / per_sector;
+    if (id >= fs->super.inode_count) return CFS_ECORRUPT;
+    lba = fs->super.inode_lba + id / per_sector;
     off = (id % per_sector) * CFS_INODE_SIZE;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
     cfs_inode_encode(fs->sector + off, in);
@@ -379,8 +379,8 @@ static int inode_write(Cfs *fs, uint32_t id, const CfsInode *in) {
 
 static int bitmap_set(Cfs *fs, uint32_t index, int used) {
     uint32_t lba, byte, bit;
-    if (index >= CFS_DATA_SECTORS) return CFS_ECORRUPT;
-    lba = CFS_BITMAP_LBA + index / (STOR_SECTOR_SIZE * 8u);
+    if (index >= fs->super.data_sectors) return CFS_ECORRUPT;
+    lba = fs->super.bitmap_lba + index / (STOR_SECTOR_SIZE * 8u);
     byte = (index / 8u) % STOR_SECTOR_SIZE;
     bit = index % 8u;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
@@ -393,8 +393,8 @@ static int bitmap_set(Cfs *fs, uint32_t index, int used) {
 
 static int bitmap_get(Cfs *fs, uint32_t index, int *used) {
     uint32_t lba, byte, bit;
-    if (index >= CFS_DATA_SECTORS) return CFS_ECORRUPT;
-    lba = CFS_BITMAP_LBA + index / (STOR_SECTOR_SIZE * 8u);
+    if (index >= fs->super.data_sectors) return CFS_ECORRUPT;
+    lba = fs->super.bitmap_lba + index / (STOR_SECTOR_SIZE * 8u);
     byte = (index / 8u) % STOR_SECTOR_SIZE;
     bit = index % 8u;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
@@ -407,25 +407,25 @@ static int block_alloc(Cfs *fs, uint32_t *lba) {
     uint32_t start;
     int used, rc;
     start = fs->alloc_hint;
-    if (start >= CFS_DATA_SECTORS)
+    if (start >= fs->super.data_sectors)
         start = 0u;
-    for (n = 0; n < CFS_DATA_SECTORS; n++) {
+    for (n = 0; n < fs->super.data_sectors; n++) {
         uint32_t i = start + n;
-        if (i >= CFS_DATA_SECTORS)
-            i -= CFS_DATA_SECTORS;
+        if (i >= fs->super.data_sectors)
+            i -= fs->super.data_sectors;
         rc = bitmap_get(fs, i, &used);
         if (rc != CFS_OK) return rc;
         if (!used) {
             rc = bitmap_set(fs, i, 1);
             if (rc != CFS_OK) return rc;
             bytes_zero(fs->sector, STOR_SECTOR_SIZE);
-            rc = cache_write(fs, CFS_DATA_LBA + i, fs->sector);
+            rc = cache_write(fs, fs->super.data_lba + i, fs->sector);
             if (rc != CFS_OK) {
                 (void)bitmap_set(fs, i, 0);
                 return rc;
             }
             fs->alloc_hint = i + 1u;
-            *lba = CFS_DATA_LBA + i;
+            *lba = fs->super.data_lba + i;
             return CFS_OK;
         }
     }
@@ -434,8 +434,8 @@ static int block_alloc(Cfs *fs, uint32_t *lba) {
 
 static int block_free(Cfs *fs, uint32_t lba) {
     uint32_t index;
-    if (!data_lba_valid(lba)) return CFS_ECORRUPT;
-    index = lba - CFS_DATA_LBA;
+    if (!data_lba_valid(fs, lba)) return CFS_ECORRUPT;
+    index = lba - fs->super.data_lba;
     if (index < fs->alloc_hint)
         fs->alloc_hint = index;
     return bitmap_set(fs, index, 0);
@@ -478,7 +478,7 @@ static int file_lba(Cfs *fs, CfsInode *n, uint32_t block, uint32_t *lba,
     uint32_t idx, mid, leaf, t;
     int rc;
 
-    if (block >= CFS_MAX_BLOCKS_V4 || block >= CFS_DATA_SECTORS) {
+    if (block >= CFS_MAX_BLOCKS_V4 || block >= fs->super.data_sectors) {
         return alloc ? CFS_ENOSPC : CFS_ECORRUPT;
     }
     if (block < CFS_DIRECT_COUNT) {
@@ -776,7 +776,7 @@ static int dir_find(Cfs *fs, uint32_t dir_id, const char *name,
         if (rc != CFS_OK) {
             continue;
         }
-        if (!data_lba_valid(lba)) {
+        if (!data_lba_valid(fs, lba)) {
             return CFS_ECORRUPT;
         }
         rc = cache_read(fs, lba, fs->sector);
@@ -989,17 +989,20 @@ int cfs_format(BlockDevice *dev) {
     uint32_t lba, i, j;
     uint32_t per_sector = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
 
-    if (!dev || dev->sector_size != STOR_SECTOR_SIZE ||
-        dev->sector_count < STOR_DISK_SECTORS || !dev->writable)
+    if (!dev || dev->sector_size != STOR_SECTOR_SIZE || !dev->writable)
         return CFS_EINVAL;
+    bytes_zero(&super, (uint32_t)sizeof(super));
+    if (cfs_geom_for_count(dev->sector_count, &super) != 0)
+        return CFS_EINVAL;
+    super.clean = 1u;
+    super.generation = 1u;
 
     bytes_zero(sector, STOR_SECTOR_SIZE);
-    for (lba = CFS_SUPER_LBA;
-         lba < CFS_DATA_LBA; lba++)
+    for (lba = CFS_SUPER_LBA; lba < super.data_lba; lba++)
         if (bd_write(dev, lba, 1u, sector) != BD_OK) return CFS_EIO;
 
     sector[0] = 1u;
-    if (bd_write(dev, CFS_BITMAP_LBA, 1u, sector) != BD_OK)
+    if (bd_write(dev, super.bitmap_lba, 1u, sector) != BD_OK)
         return CFS_EIO;
 
     bytes_zero(&inode, (uint32_t)sizeof(inode));
@@ -1010,23 +1013,19 @@ int cfs_format(BlockDevice *dev) {
         if (i == 0u) {
             inode.type = CFS_INODE_DIR;
             inode.generation = 1u;
-            inode.direct[0] = CFS_DATA_LBA;
+            inode.direct[0] = super.data_lba;
             inode_init_acl(&inode);
             cfs_inode_encode(sector, &inode);
             bytes_zero(&inode, (uint32_t)sizeof(inode));
         }
-        if (bd_write(dev, CFS_INODE_LBA + i, 1u, sector) != BD_OK)
+        if (bd_write(dev, super.inode_lba + i, 1u, sector) != BD_OK)
             return CFS_EIO;
     }
 
     bytes_zero(sector, STOR_SECTOR_SIZE);
-    if (bd_write(dev, CFS_DATA_LBA, 1u, sector) != BD_OK)
+    if (bd_write(dev, super.data_lba, 1u, sector) != BD_OK)
         return CFS_EIO;
 
-    super.clean = 1u;
-    super.generation = 1u;
-    super.journal_lba = CFS_JOURNAL_LBA;
-    super.journal_sectors = CFS_JOURNAL_SECTORS;
     cfs_super_encode(sector, &super);
     if (bd_write(dev, CFS_SUPER_LBA, 1u, sector) != BD_OK)
         return CFS_EIO;
@@ -1035,7 +1034,7 @@ int cfs_format(BlockDevice *dev) {
     cfs_put32(sector + 0, JNL_MAGIC);
     cfs_put32(sector + 8, JNL_EMPTY);
     cfs_put32(sector + 16, cfs_checksum(sector, 16u));
-    if (bd_write(dev, CFS_JOURNAL_LBA, 1u, sector) != BD_OK)
+    if (bd_write(dev, super.journal_lba, 1u, sector) != BD_OK)
         return CFS_EIO;
     return io_error(bd_flush(dev));
 }
@@ -1048,7 +1047,7 @@ int cfs_mount(Cfs *fs, BlockDevice *dev) {
     uint32_t replayed = 0u;
     int rc;
     if (!fs || !dev || dev->sector_size != STOR_SECTOR_SIZE ||
-        dev->sector_count < STOR_DISK_SECTORS)
+        dev->sector_count == 0u)
         return CFS_EINVAL;
     bytes_zero(fs, (uint32_t)sizeof(*fs));
     fs->dev = dev;
@@ -1056,9 +1055,11 @@ int cfs_mount(Cfs *fs, BlockDevice *dev) {
         return CFS_EIO;
     if (cfs_super_decode(&fs->super, fs->sector) != 0)
         return CFS_EFORMAT;
+    if (dev->sector_count < fs->super.total_sectors)
+        return CFS_EINVAL;
     cache_reset(fs);
     fs->mounted = 1u;
-    if (bd_read(dev, CFS_JOURNAL_LBA, 1u, jhdr) == BD_OK &&
+    if (bd_read(dev, fs->super.journal_lba, 1u, jhdr) == BD_OK &&
         cfs_get32(jhdr + 0) == JNL_MAGIC &&
         cfs_get32(jhdr + 16) == cfs_checksum(jhdr, 16u))
         jstate = cfs_get32(jhdr + 8);
@@ -1344,13 +1345,13 @@ int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
         if (sector_off == 0u && take >= STOR_SECTOR_SIZE) {
             rc = file_lba(fs, &inode, block, &lba, 0);
             if (rc != CFS_OK) return rc;
-            if (!data_lba_valid(lba)) return CFS_ECORRUPT;
+            if (!data_lba_valid(fs, lba)) return CFS_ECORRUPT;
             run = 1u;
             while (run < CFS_READAHEAD &&
                    done + (run + 1u) * STOR_SECTOR_SIZE <= amount) {
                 uint32_t next = 0;
                 int nrc = file_lba(fs, &inode, block + run, &next, 0);
-                if (nrc != CFS_OK || !data_lba_valid(next) || next != lba + run)
+                if (nrc != CFS_OK || !data_lba_valid(fs, next) || next != lba + run)
                     break;
                 run++;
             }
@@ -1368,7 +1369,7 @@ int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
         if (take > available) take = available;
         rc = file_lba(fs, &inode, block, &lba, 0);
         if (rc != CFS_OK) return rc;
-        if (!data_lba_valid(lba)) return CFS_ECORRUPT;
+        if (!data_lba_valid(fs, lba)) return CFS_ECORRUPT;
         rc = cache_read(fs, lba, fs->sector);
         if (rc != CFS_OK) return rc;
         bytes_copy(dst + done, fs->sector + sector_off, take);
