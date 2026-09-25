@@ -35,17 +35,42 @@ It compiles `kernel/metal/string.c` (`memset`, `memcpy`, `memcmp`,
 the stack). A layout fixture checks that `Pair.b` is at offset 4 and a
 packed `Tight.b` is at offset 1.
 
-Passing this gate does not mark SH4.
+It also compiles these real files and checks one exported symbol in each:
+`acpi.c`, `apic.c`, `elf.c`, `heap.c`, `ioapic.c`, `job.c`, `pci.c`,
+`port.c`, and `tlb_proto.c`. `port.c` must contain the bytes for
+`in al,dx`, `in ax,dx`, `in eax,dx`, `out dx,al`, `out dx,ax`,
+`out dx,eax`, and `hlt`.
+
+A subset fixture checks four things that kernel C actually uses:
+
+- `continue` in a `for` jumps to the step, and the step adds before
+  jumping back to the condition. `break` jumps to the end. `break`
+  outside a loop fails.
+- `i == 1` and `bus << 16` reload the literal. The literal is not lost
+  when the other operand is loaded.
+- `~v` assembles as `not rax` (`48 f7 d0`). `sizeof(uint32_t)` is 4.
+  `_Static_assert(sizeof(uint32_t) == 4)` passes. A false assert fails.
+  An assert whose expression is not an integer constant fails.
+- `__asm__ volatile` accepts `cli`, `sti`, `hlt`, `pause`, an empty
+  barrier, and the `port.c` `inb`/`inw`/`inl`/`outb`/`outw`/`outl`
+  templates. `mov %%cr3` and `__sync_fetch_and_add` fail.
+
+`sizeof(int)` is 8 in this compiler. `uint32_t` is 4. `int` was already
+8 bytes before `sizeof` existed. Do not treat `sizeof(int)` as 4.
+
+Passing this gate does not mark SH4. Nothing here is booted.
 
 ## Still outside the gate
 
-On this tree the host compiler accepts `ioapic.c`, `klog.c`, `meminfo.c`,
-`pit.c`, `serial.c`, and `string.c`. The other `kernel/metal` files still
-fail. The usual stop is GNU inline assembly (`port.c`, `panic.c`,
-`spin.c`, `tlb_proto.c`), a missing `limine.h` (`smp.c`, `bootinfo.c`,
-`start.c`), or `_Static_assert` / `sizeof`.
+These `kernel/metal` files still fail on the host: `bootinfo.c`,
+`buildid.c`, `gdt.c`, `idt.c`, `irq.c`, `kcc_job.c`, `kthread.c`, `mm.c`,
+`panic.c`, `pmm.c`, `proc.c`, `ps2.c`, `smp.c`, `spin.c`, `start.c`,
+`syscall.c`, and `user_enter.c`.
 
-`kernel/metal/port.c` is GNU inline assembly and is not compiled. A global
-array accepts a bound and a semicolon. An initializer on a global array is
-rejected. ChrisAsm does not implement `cli`, `hlt`, or `invlpg`. ChrisLd
-has not linked `BIN/KERNEL.ELF`. There is no GCC differential run.
+The stops that remain are `limine.h` (the include path and `#if`), an
+empty `extern` array, a global brace initializer, `extern void (*name[N])(void)`,
+`__sync_*` / `__builtin_*`, and inline asm this subset does not accept
+(`mov %%cr3`, `mov %%cr2`, `mov %%rsp`, `invlpg`, `lidt`, `iretq`, and
+multi-instruction templates). A global array still accepts a bound and a
+semicolon. An initializer on a global array is rejected. ChrisLd has not
+linked `BIN/KERNEL.ELF`. There is no GCC differential run.

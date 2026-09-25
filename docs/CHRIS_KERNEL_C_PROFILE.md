@@ -59,14 +59,23 @@ not a proof for every kernel type or for GNU inline assembly.
 
 ## Control flow and expressions
 
-Required, and absent today:
+Present in KCC and covered by `host-kcc-test`:
 
-- `if`, `else`, `while`, `do`/`while`, `for`, `switch`, `case`, `default`,
-  `break`, `continue`, `return`
+- `if`, `else`, `while`, `for`, `break`, `continue`, `return`
 - `+ - * / % & | ^ ~ << >> && || ! == != < <= > >=`
-- `= += -= *= /= &= |= ^= <<= >>=`
-- casts `(T)x`, `(void *)x`, `(uintptr_t)p`
-- `sizeof(type)` and `sizeof(expression)`
+- `= += -= *= /= &= |= ^=`
+- casts `(T)x`
+- `sizeof(type)` and `sizeof(expression)`, evaluated as a constant when
+  the operand is a type. `sizeof(uint32_t)` is 4. `sizeof(int)` is 8.
+- `_Static_assert` of an integer constant expression. A non-constant
+  expression fails. A zero result fails.
+
+Still absent:
+
+- `do`/`while`, `switch`, `case`, `default`
+- `<<=` and `>>=`
+- GNU inline asm other than `cli`, `sti`, `hlt`, `pause`, an empty
+  barrier, and the port `in`/`out` templates in `port.c`
 
 Division and remainder of signed integers follow the host GCC result for
 the same C. A differential test has to lock that down before kernel code
