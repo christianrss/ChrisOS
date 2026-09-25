@@ -249,6 +249,24 @@ static int emit_pop(int reg) {
     return 0;
 }
 
+/* Control-register moves are 64-bit in long mode. GCC omits REX.W and emits
+ * REX.B only when the GPR is r8-r15. CR is the ModRM reg field. */
+static int emit_mov_cr(int to_cr, int cr, int gpr) {
+    if (gpr < 0 || gpr > 15 || (cr != 2 && cr != 3)) {
+        return -1;
+    }
+    if (to_cr && cr != 3) {
+        return -1;
+    }
+    if (gpr >= 8) {
+        emit_u8(0x41);
+    }
+    emit_u8(0x0f);
+    emit_u8((uint8_t)(to_cr ? 0x22u : 0x20u));
+    emit_u8((uint8_t)(0xc0u | ((cr & 7) << 3) | (gpr & 7)));
+    return 0;
+}
+
 static int reg_any(const char *r) {
     int i = reg_index(r);
     if (i >= 0) {
@@ -799,6 +817,14 @@ static int parse_line(const char *line, ChrisoImage *img) {
     }
     if (op[0] == 'p' && op[1] == 'u' && op[2] == 's' && op[3] == 'h') {
         skip_ws(&p);
+        if (*p >= '0' && *p <= '9') {
+            if (parse_u64(&p, &imm) != 0 || imm > 127u) {
+                return asm_fail();
+            }
+            emit_u8(0x6a);
+            emit_u8((uint8_t)imm);
+            return 0;
+        }
         if (parse_ident(&p, a, sizeof(a)) != 0) {
             return asm_fail();
         }
@@ -833,6 +859,119 @@ static int parse_line(const char *line, ChrisoImage *img) {
             return 0;
         }
         p = save;
+    }
+    if (strcmp(op, "lretq") == 0) {
+        emit_u8(0x48);
+        emit_u8(0xcb);
+        return 0;
+    }
+    if (strcmp(op, "iretq") == 0) {
+        emit_u8(0x48);
+        emit_u8(0xcf);
+        return 0;
+    }
+    if (strcmp(op, "str") == 0) {
+        skip_ws(&p);
+        if (parse_ident(&p, a, sizeof(a)) != 0 || strcmp(a, "ax") != 0) {
+            return asm_fail();
+        }
+        emit_u8(0x66);
+        emit_u8(0x0f);
+        emit_u8(0x00);
+        emit_u8(0xc8);
+        return 0;
+    }
+    if (strcmp(op, "ltr") == 0) {
+        skip_ws(&p);
+        if (parse_ident(&p, a, sizeof(a)) != 0 || strcmp(a, "ax") != 0) {
+            return asm_fail();
+        }
+        emit_u8(0x0f);
+        emit_u8(0x00);
+        emit_u8(0xd8);
+        return 0;
+    }
+    if (strcmp(op, "invlpg") == 0 || strcmp(op, "lidt") == 0 || strcmp(op, "lgdt") == 0) {
+        int rip = 0;
+        int base = 0;
+        int disp = 0;
+        int has_disp = 0;
+        int ext = strcmp(op, "invlpg") == 0 ? 7 : strcmp(op, "lgdt") == 0 ? 2 : 3;
+        char sym[64];
+        skip_ws(&p);
+        if (parse_mem(&p, &rip, &base, &disp, &has_disp, sym, (int)sizeof(sym)) != 0 ||
+            rip || has_disp) {
+            return asm_fail();
+        }
+        if (base >= 8) {
+            emit_u8(0x41);
+        }
+        emit_u8(0x0f);
+        emit_u8(0x01);
+        return emit_mem_modrm(img, ext, 0, base, 0, 0, 0) != 0 ? asm_fail() : 0;
+    }
+    if (strcmp(op, "sete") == 0) {
+        skip_ws(&p);
+        if (parse_ident(&p, a, sizeof(a)) != 0 || strcmp(a, "al") != 0) {
+            return asm_fail();
+        }
+        emit_u8(0x0f);
+        emit_u8(0x94);
+        emit_u8(0xc0);
+        return 0;
+    }
+    if (strcmp(op, "lock") == 0) {
+        int size = 8;
+        int rip = 0;
+        int base = 0;
+        int disp = 0;
+        int has_disp = 0;
+        int src;
+        int opc;
+        char sym[64];
+        skip_ws(&p);
+        if (parse_ident(&p, a, sizeof(a)) != 0) {
+            return asm_fail();
+        }
+        if (strcmp(a, "cmpxchg") == 0) {
+            opc = 0xb1;
+        } else if (strcmp(a, "xadd") == 0) {
+            opc = 0xc1;
+        } else {
+            return asm_fail();
+        }
+        skip_ws(&p);
+        if (p[0] == 'd' && p[1] == 'w' && p[2] == 'o' && p[3] == 'r' && p[4] == 'd' &&
+            (p[5] == ' ' || p[5] == '\t' || p[5] == '[')) {
+            size = 4;
+            p += 5;
+            skip_ws(&p);
+        }
+        if (parse_mem(&p, &rip, &base, &disp, &has_disp, sym, (int)sizeof(sym)) != 0 ||
+            rip || has_disp) {
+            return asm_fail();
+        }
+        skip_ws(&p);
+        if (*p != ',') {
+            return asm_fail();
+        }
+        p++;
+        skip_ws(&p);
+        if (parse_ident(&p, b, sizeof(b)) != 0) {
+            return asm_fail();
+        }
+        src = reg_any(b);
+        if (src < 0 || src > 15 || (size != 4 && size != 8)) {
+            return asm_fail();
+        }
+        emit_u8(0xf0);
+        if (size == 8 || src >= 8 || base >= 8) {
+            emit_u8((uint8_t)((size == 8 ? 0x48u : 0x40u) | (src >= 8 ? 4u : 0u) |
+                              (base >= 8 ? 1u : 0u)));
+        }
+        emit_u8(0x0f);
+        emit_u8((uint8_t)opc);
+        return emit_mem_modrm(img, src, 0, base, 0, 0, 0) != 0 ? asm_fail() : 0;
     }
     if (strcmp(op, "call") == 0 || jcc_of(op) != -1) {
         int cc = strcmp(op, "call") == 0 ? -3 : jcc_of(op);
@@ -905,6 +1044,82 @@ static int parse_line(const char *line, ChrisoImage *img) {
             }
             dst_reg = reg_any(a);
             if (dst_reg < 0) {
+                int gpr;
+                if (strcmp(op, "mov") == 0 && strcmp(a, "ax") == 0) {
+                    skip_ws(&p);
+                    if (*p != ',') {
+                        return asm_fail();
+                    }
+                    p++;
+                    skip_ws(&p);
+                    if (parse_u64(&p, &imm) != 0 || imm > 0xffffu) {
+                        return asm_fail();
+                    }
+                    emit_u8(0x66);
+                    emit_u8(0xb8);
+                    emit_u8((uint8_t)imm);
+                    emit_u8((uint8_t)(imm >> 8));
+                    return 0;
+                }
+                if (strcmp(op, "mov") == 0 &&
+                    (strcmp(a, "ds") == 0 || strcmp(a, "es") == 0 || strcmp(a, "ss") == 0 ||
+                     strcmp(a, "fs") == 0 || strcmp(a, "gs") == 0)) {
+                    int sreg = a[0] == 'e' ? 0 : a[0] == 's' ? 2 : a[0] == 'd' ? 3 : a[0] == 'f' ? 4 : 5;
+                    skip_ws(&p);
+                    if (*p != ',') {
+                        return asm_fail();
+                    }
+                    p++;
+                    skip_ws(&p);
+                    if (parse_ident(&p, b, sizeof(b)) != 0 || strcmp(b, "ax") != 0) {
+                        return asm_fail();
+                    }
+                    emit_u8(0x8e);
+                    emit_u8((uint8_t)(0xc0u | (sreg << 3)));
+                    return 0;
+                }
+                if (strcmp(op, "mov") == 0 && strcmp(a, "edi") == 0) {
+                    skip_ws(&p);
+                    if (*p != ',') {
+                        return asm_fail();
+                    }
+                    p++;
+                    skip_ws(&p);
+                    if (parse_ident(&p, b, sizeof(b)) != 0 || strcmp(b, "eax") != 0) {
+                        return asm_fail();
+                    }
+                    emit_u8(0x89);
+                    emit_u8(0xc7);
+                    return 0;
+                }
+                if (strcmp(op, "xor") == 0 && strcmp(a, "ax") == 0) {
+                    skip_ws(&p);
+                    if (*p != ',') {
+                        return asm_fail();
+                    }
+                    p++;
+                    skip_ws(&p);
+                    if (parse_ident(&p, b, sizeof(b)) != 0 || strcmp(b, "ax") != 0) {
+                        return asm_fail();
+                    }
+                    emit_u8(0x66);
+                    emit_u8(0x31);
+                    emit_u8(0xc0);
+                    return 0;
+                }
+                if (strcmp(op, "mov") == 0 && strcmp(a, "cr3") == 0) {
+                    skip_ws(&p);
+                    if (*p != ',') {
+                        return asm_fail();
+                    }
+                    p++;
+                    skip_ws(&p);
+                    if (parse_ident(&p, b, sizeof(b)) != 0) {
+                        return asm_fail();
+                    }
+                    gpr = reg_index(b);
+                    return emit_mov_cr(1, 3, gpr) != 0 ? asm_fail() : 0;
+                }
                 p = save;
                 return asm_fail();
             }
@@ -941,8 +1156,19 @@ static int parse_line(const char *line, ChrisoImage *img) {
         } else if (parse_u64(&p, &imm) == 0) {
             src_imm = 1;
         } else if (parse_ident(&p, b, sizeof(b)) == 0) {
+            int cr = strcmp(b, "cr2") == 0 ? 2 : strcmp(b, "cr3") == 0 ? 3 : -1;
             src_reg = reg_any(b);
             if (src_reg < 0) {
+                if (strcmp(op, "mov") == 0 && !dst_mem && cr >= 0) {
+                    return emit_mov_cr(0, cr, dst_reg) != 0 ? asm_fail() : 0;
+                }
+                if (strcmp(op, "movzx") == 0 && !dst_mem && strcmp(a, "eax") == 0 &&
+                    strcmp(b, "ax") == 0) {
+                    emit_u8(0x0f);
+                    emit_u8(0xb7);
+                    emit_u8(0xc0);
+                    return 0;
+                }
                 return asm_fail();
             }
         } else {
@@ -963,6 +1189,13 @@ static int parse_line(const char *line, ChrisoImage *img) {
             return emit_mem_modrm(img, dst_reg, rip, base, disp, has_disp, ssym) != 0
                        ? asm_fail()
                        : 0;
+        }
+        if (strcmp(op, "movzx") == 0 && !dst_mem && !src_mem && src_reg == 0 &&
+            strcmp(b, "al") == 0 && (strcmp(a, "eax") == 0 || strcmp(a, "rax") == 0)) {
+            emit_u8(0x0f);
+            emit_u8(0xb6);
+            emit_u8(0xc0);
+            return 0;
         }
         if (strcmp(op, "movzx") == 0) {
             if (dst_mem || !src_mem) {
