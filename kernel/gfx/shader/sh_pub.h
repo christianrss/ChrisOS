@@ -75,6 +75,8 @@ void sh_program_free(ShProgram *p);
 int sh_program_attach(ShProgram *p, ShShader *s);
 int sh_program_link(ShProgram *p);
 int sh_program_ok(const ShProgram *p);
+uint32_t sh_program_gen(const ShProgram *p);
+ShProgram *sh_guest_program(int owner, int id);
 const char *sh_program_log(const ShProgram *p);
 const char *sh_program_tgsi(const ShProgram *p, int stage);
 

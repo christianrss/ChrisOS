@@ -72,7 +72,9 @@ C_OBJECTS_REL := kernel/metal/start.o kernel/metal/port.o kernel/metal/serial.o 
 	kernel/crypto/sha256.o kernel/crypto/rng.o kernel/crypto/aes.o kernel/crypto/x25519.o \
 	kernel/gfx/ac97.o kernel/gfx/hwgate.o \
 	kernel/gfx/virtq.o kernel/gfx/gpures.o kernel/gfx/virtgpu_enc.o \
-	kernel/gfx/virgl_cmd.o kernel/gfx/vgpu.o kernel/gfx/virgl_demo.o \
+	kernel/gfx/virgl_cmd.o kernel/gfx/vgpu.o kernel/gfx/virgl_obj.o \
+	kernel/gfx/gfx3d_batch.o kernel/gfx/gfx3d.o kernel/gfx/gfx3d_virgl.o \
+	kernel/gfx/virgl_demo.o \
 	kernel/gfx/shader/sh_lex.o kernel/gfx/shader/sh_parse.o kernel/gfx/shader/sh_sem.o \
 	kernel/gfx/shader/sh_ir.o kernel/gfx/shader/sh_tgsi.o kernel/gfx/shader/sh_exec.o \
 	kernel/gfx/shader/sh_api.o \
@@ -179,6 +181,22 @@ $(OBJ_DIR)/kernel/gfx/shader/%.o: kernel/gfx/shader/%.c
 $(OBJ_DIR)/kernel/gfx/virgl_demo.o: kernel/gfx/virgl_demo.c kernel/gfx/shader/sh_src.h
 	@mkdir -p $(dir $@)
 	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/gfx3d.o: kernel/gfx/gfx3d.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/gfx3d_virgl.o: kernel/gfx/gfx3d_virgl.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/gfx3d_batch.o: kernel/gfx/gfx3d_batch.c
+	@mkdir -p $(dir $@)
+	$(CC) $(GFX_FLOAT_CFLAGS) -c $< -o $@
+
+$(OBJ_DIR)/kernel/gfx/virgl_obj.o: kernel/gfx/virgl_obj.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(OBJ_DIR)/kernel/lang/clvm_sys.o: kernel/lang/clvm_sys.c
 	@mkdir -p $(dir $@)
@@ -733,6 +751,21 @@ host-gpures-test: tools/test_gpures.c kernel/gfx/gpures.c kernel/gfx/gpures.h
 		tools/test_gpures.c kernel/gfx/gpures.c -o $(HOST_BIN)/test_gpures
 	$(HOST_BIN)/test_gpures
 
+host-gfx3d-abi-test: tools/test_gfx3d_abi.c kernel/gfx/gfx3d.c kernel/gfx/gfx3d_batch.c \
+		kernel/gfx/virgl_obj.c kernel/gfx/math3d.c kernel/gfx/virgl_cmd.c \
+		kernel/gfx/shader/sh_lex.c kernel/gfx/shader/sh_parse.c kernel/gfx/shader/sh_sem.c \
+		kernel/gfx/shader/sh_ir.c kernel/gfx/shader/sh_tgsi.c kernel/gfx/shader/sh_exec.c \
+		kernel/gfx/shader/sh_api.c
+	mkdir -p $(HOST_BIN)
+	$(HOST_CC) -std=c11 -Wall -Wextra -Werror -DSH_HOST -Ikernel/gfx -Ikernel/metal -msse2 \
+		tools/test_gfx3d_abi.c kernel/gfx/gfx3d.c kernel/gfx/gfx3d_batch.c \
+		kernel/gfx/virgl_obj.c kernel/gfx/math3d.c kernel/gfx/virgl_cmd.c \
+		kernel/gfx/shader/sh_lex.c kernel/gfx/shader/sh_parse.c kernel/gfx/shader/sh_sem.c \
+		kernel/gfx/shader/sh_ir.c kernel/gfx/shader/sh_tgsi.c kernel/gfx/shader/sh_exec.c \
+		kernel/gfx/shader/sh_api.c -lm \
+		-o $(HOST_BIN)/test_gfx3d_abi
+	$(HOST_BIN)/test_gfx3d_abi
+
 host-shader-test: tools/test_shader.c kernel/gfx/shader/sh_lex.c kernel/gfx/shader/sh_parse.c \
 		kernel/gfx/shader/sh_sem.c kernel/gfx/shader/sh_ir.c kernel/gfx/shader/sh_tgsi.c \
 		kernel/gfx/shader/sh_exec.c kernel/gfx/shader/sh_api.c
@@ -1213,6 +1246,7 @@ host-gates: host-cfs-test host-cfs-v5-test host-fsck-test host-cfs-paths-test \
 	host-kcc-test test_native_link host-gfx3d test_chrismake host-stability-gates \
 	host-input-test test_keystate test_gfx2d \
 	host-virtq-test host-gpures-test host-virgl-cmd-test host-shader-test \
+	host-gfx3d-abi-test \
 	host-pmm-heap-smp-test host-kthread-smp-test host-job-saturate-test \
 	host-tlb-proto-test host-klog-test host-buildinfo-test \
 	host-buildstamp-test host-meminfo-test host-pmm-cycle-test \

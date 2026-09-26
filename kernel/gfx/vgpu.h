@@ -24,6 +24,8 @@ int vgpu_res_create_2d(int owner, uint32_t fmt, uint32_t w, uint32_t h, int dma,
                        uint32_t backing, uint32_t *id);
 int vgpu_res_create_3d(int owner, const VgpuCreate3D *info, int dma,
                        uint32_t backing, uint32_t *id);
+int vgpu_res_create_3d_off(int owner, const VgpuCreate3D *info, int dma, uint32_t off,
+                           uint32_t backing, uint32_t *id);
 int vgpu_res_attach(int owner, uint32_t id);
 int vgpu_res_detach(int owner, uint32_t id);
 int vgpu_res_unref(int owner, uint32_t id);

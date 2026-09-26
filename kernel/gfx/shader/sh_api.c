@@ -76,6 +76,7 @@ struct ShProgram {
     float fs_words[128];
     int vs_nvec;
     int fs_nvec;
+    uint32_t gen;
 };
 
 static void prog_log(ShProgram *p, const char *msg) {
@@ -266,6 +267,7 @@ ShProgram *sh_program_create(void) {
     for (i = 0; i < 8; ++i) {
         p->var_remap[i] = -1;
     }
+    p->gen = 1;
     g_live++;
     return p;
 }
@@ -487,10 +489,15 @@ int sh_program_link(ShProgram *p) {
     memcpy(p->vs_tgsi, vst, SH_TGSI_MAX);
     memcpy(p->fs_tgsi, fst, SH_TGSI_MAX);
     p->linked = 1;
+    p->gen++;
+    if (p->gen == 0u) {
+        p->gen = 1;
+    }
     return 0;
 }
 
 int sh_program_ok(const ShProgram *p) { return p && p->linked; }
+uint32_t sh_program_gen(const ShProgram *p) { return p ? p->gen : 0u; }
 const char *sh_program_log(const ShProgram *p) { return p ? p->log : ""; }
 const char *sh_program_tgsi(const ShProgram *p, int stage) {
     if (!p || !p->linked) {
@@ -1003,6 +1010,10 @@ int sh_guest_shader_drop(int owner, int id) {
     sh_shader_free(s);
     g_sh[id - 1] = 0;
     return 0;
+}
+
+ShProgram *sh_guest_program(int owner, int id) {
+    return guest_pr(owner, id);
 }
 
 int sh_guest_prog_make(int owner) {

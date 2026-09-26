@@ -8,6 +8,7 @@
 #include "pci.h"
 #include "serial.h"
 #include "virtq.h"
+#include "gfx3d.h"
 #include "virgl_demo.h"
 
 #define VGPU_QSZ 16
@@ -421,7 +422,11 @@ int vgpu_res_attach(int owner, uint32_t id) {
     if (!r || r->owner != owner || r->dma < 0 || r->backing_size == 0u) {
         return -1;
     }
-    phys = vgpu_dma_phys(r->dma);
+    if (r->backing_off > hw_dma_bytes(r->dma) ||
+        r->backing_size > hw_dma_bytes(r->dma) - r->backing_off) {
+        return -1;
+    }
+    phys = vgpu_dma_phys(r->dma) + (uint64_t)r->backing_off;
     if (vgpu_enc_attach(buf, sizeof buf, id, phys, r->backing_size, &len) != 0) {
         return -1;
     }
@@ -527,6 +532,29 @@ int vgpu_res_create_2d(int owner, uint32_t fmt, uint32_t w, uint32_t h, int dma,
         }
     }
     *id = rid;
+    return 0;
+}
+
+int vgpu_res_create_3d_off(int owner, const VgpuCreate3D *info, int dma, uint32_t off,
+                           uint32_t backing, uint32_t *id) {
+    int rc = vgpu_res_create_3d(owner, info, -1, 0, id);
+    GpuResource *r;
+    if (rc != 0) {
+        return rc;
+    }
+    r = gpu_res_get(&g_pool, *id);
+    if (!r) {
+        return -1;
+    }
+    r->dma = dma;
+    r->backing_off = off;
+    r->backing_size = backing;
+    if (dma >= 0 && backing > 0u) {
+        if (vgpu_res_attach(owner, *id) != 0) {
+            (void)vgpu_res_unref(owner, *id);
+            return -1;
+        }
+    }
     return 0;
 }
 
@@ -670,8 +698,9 @@ int vgpu_ctx_destroy(int owner, uint32_t ctx) {
 int vgpu_ctx_attach(uint32_t ctx, uint32_t res) {
     uint8_t buf[32];
     uint32_t len = 0;
+    GpuContext *c = gpu_ctx_get(&g_pool, ctx);
     GpuResource *r = gpu_res_get(&g_pool, res);
-    if (!gpu_ctx_get(&g_pool, ctx) || !r) {
+    if (!c || !c->live || !r || c->owner != r->owner) {
         return -1;
     }
     if (vgpu_enc_simple(buf, sizeof buf, VGPU_CMD_CTX_ATTACH_RESOURCE, ctx, res,
@@ -695,7 +724,11 @@ int vgpu_ctx_attach(uint32_t ctx, uint32_t res) {
 int vgpu_ctx_detach(uint32_t ctx, uint32_t res) {
     uint8_t buf[32];
     uint32_t len = 0;
+    GpuContext *c = gpu_ctx_get(&g_pool, ctx);
     GpuResource *r = gpu_res_get(&g_pool, res);
+    if (!c || !c->live || !r || c->owner != r->owner) {
+        return -1;
+    }
     if (vgpu_enc_simple(buf, sizeof buf, VGPU_CMD_CTX_DETACH_RESOURCE, ctx, res,
                         &len) != 0 ||
         cmd_ok_wait(VGPU_CMD_CTX_DETACH_RESOURCE, buf, len, 1) != 0) {
@@ -1143,11 +1176,13 @@ int vgpu_boot(int width, int height) {
     if (bootflag_gfx_fb() || width < 1 || height < 1) {
         serial_puts("gfx backend framebuffer\n");
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
         return 0;
     }
     if (!find_gpu(&bus, &dev)) {
         serial_puts("virtio-gpu miss\n");
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
         return 0;
     }
     serial_puts("VirtIO GPU detected\n");
@@ -1252,6 +1287,7 @@ int vgpu_boot(int width, int height) {
     (void)vgpu_cursor_setup();
     if (vgpu_stress(bootflag_gfx_stress() ? 1000 : 4) != 0) {
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
         return 1;
     }
     if ((g_neg_lo & (1u << VGPU_F_VIRGL)) == 0u || bootflag_gfx3d() == 1) {
@@ -1260,15 +1296,24 @@ int vgpu_boot(int width, int height) {
             serial_puts("reason feature not negotiated\n");
         }
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(bootflag_gfx3d() == 2 ? GFX3D_VIRGL : GFX3D_SOFTWARE);
         return 1;
     }
     if (read_capsets() != 0) {
         serial_puts("VirGL failure\n");
         serial_puts("reason capset\n");
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
+        return 1;
+    }
+    if (gfx3d_boot(bootflag_gfx3d() == 2 ? GFX3D_VIRGL : GFX3D_AUTO) != 0) {
+        serial_puts("VirGL failure\n");
+        serial_puts("reason gfx3d boot\n");
+        serial_puts("3D backend -> software\n");
         return 1;
     }
     if (virgl_demo_run() != 0) {
+        gfx3d_mark_lost();
         serial_puts("VirGL failure\n");
         serial_puts("3D backend -> software\n");
         return 1;
