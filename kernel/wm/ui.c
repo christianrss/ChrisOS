@@ -7,6 +7,7 @@
 #include "icons.h"
 #include "input.h"
 #include "pit.h"
+#include "serial.h"
 
 bool ui_hit_rect(int px, int py, int x, int y, int width, int height) {
     return width > 0 && height > 0 &&
@@ -504,12 +505,23 @@ void ui_undraw_cursor(void) {
 
 void ui_draw_cursor(void) {
     InputMouse mouse = input_mouse_snapshot();
+    static int logged;
     int row;
     int col;
     int x = mouse.x;
     int y = mouse.y;
+    int hardware;
 
-    if (vgpu_cursor_active() && vgpu_cursor_move(x, y) == 0) {
+    hardware = vgpu_cursor_active() && vgpu_cursor_move(x, y) == 0;
+    if (!logged) {
+        logged = 1;
+        serial_puts(hardware ? "cursor hw " : "cursor sw ");
+        serial_write_u64((uint64_t)x);
+        serial_puts(",");
+        serial_write_u64((uint64_t)y);
+        serial_puts("\n");
+    }
+    if (hardware) {
         if (g_cur_saved) {
             ui_undraw_cursor();
         }

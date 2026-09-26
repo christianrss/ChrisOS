@@ -383,6 +383,21 @@ void usb_tablet_poll(void) {
         return;
     x = (int)rep[1] | ((int)rep[2] << 8);
     y = (int)rep[3] | ((int)rep[4] << 8);
+    {
+        static int logged;
+        if (logged < 4) {
+            serial_puts("usb tablet ");
+            serial_write_u64((uint64_t)x);
+            serial_puts(",");
+            serial_write_u64((uint64_t)y);
+            serial_puts(" n=");
+            serial_write_u64((uint64_t)n);
+            serial_puts(" btn=");
+            serial_write_u64(rep[0]);
+            serial_puts("\n");
+            logged++;
+        }
+    }
     input_pointer_absolute(x, y, 32767, 32767, rep[0]);
 }
 

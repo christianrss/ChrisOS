@@ -61,6 +61,9 @@ void desktop_init(void) {
     input_init(g_gfx.width, g_gfx.height);
     if (usb_tablet_ready()) {
         input_use_absolute(1);
+        serial_puts("pointer absolute\n");
+    } else {
+        serial_puts("pointer relative\n");
     }
     gfx_clear(CHRIS_DESKTOP_COLOR);
 }
@@ -88,11 +91,33 @@ void desktop_boot_apps(void) {
 
 void desktop_frame(uint64_t ticks) {
     InputMouse mouse;
+    static int logged;
+    static int last_x = -1;
+    static int last_y = -1;
+    static int last_btn = -1;
+    int btn;
 
     usb_tablet_poll();
     xhci_hid_poll();
     ps2_mouse_poll();
     mouse = input_mouse_snapshot();
+    btn = (mouse.left_down ? 1 : 0) | (mouse.right_down ? 2 : 0) |
+          (mouse.middle_down ? 4 : 0);
+    if (last_x < 0 || mouse.x != last_x || mouse.y != last_y || btn != last_btn) {
+        if (logged < 12 || btn != last_btn) {
+            serial_puts("mouse ");
+            serial_write_u64((uint64_t)mouse.x);
+            serial_puts(",");
+            serial_write_u64((uint64_t)mouse.y);
+            serial_puts(" btn=");
+            serial_write_u64((uint64_t)btn);
+            serial_puts("\n");
+            logged++;
+        }
+        last_x = mouse.x;
+        last_y = mouse.y;
+        last_btn = btn;
+    }
     InputEvent event;
     int focus;
     Task *focused;
