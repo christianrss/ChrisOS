@@ -11,7 +11,8 @@ int vgpu_boot(int width, int height);
 int vgpu_ready(void);
 int vgpu_virgl_on(void);
 int vgpu_cursor_active(void);
-void vgpu_cursor_move(int x, int y);
+/* 0: hardware cursor moved. -1: caller draws the software cursor. */
+int vgpu_cursor_move(int x, int y);
 void vgpu_flush_rect(int x, int y, int w, int h);
 void vgpu_on_irq(void);
 
@@ -24,6 +25,8 @@ int vgpu_res_create_2d(int owner, uint32_t fmt, uint32_t w, uint32_t h, int dma,
                        uint32_t backing, uint32_t *id);
 int vgpu_res_create_3d(int owner, const VgpuCreate3D *info, int dma,
                        uint32_t backing, uint32_t *id);
+int vgpu_res_create_3d_off(int owner, const VgpuCreate3D *info, int dma, uint32_t off,
+                           uint32_t backing, uint32_t *id);
 int vgpu_res_attach(int owner, uint32_t id);
 int vgpu_res_detach(int owner, uint32_t id);
 int vgpu_res_unref(int owner, uint32_t id);

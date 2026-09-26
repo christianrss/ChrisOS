@@ -134,6 +134,14 @@ int virgl_cmd_viewport(VirglCmd *c, uint32_t sx, uint32_t sy, uint32_t sz,
     return virgl_cmd_end(c);
 }
 
+int virgl_cmd_destroy(VirglCmd *c, uint32_t obj_type, uint32_t handle) {
+    if (virgl_cmd_begin(c, VIRGL_CCMD_DESTROY_OBJECT, obj_type, 1u) != 0) {
+        return -1;
+    }
+    virgl_cmd_u32(c, handle);
+    return virgl_cmd_end(c);
+}
+
 int virgl_cmd_bind(VirglCmd *c, uint32_t obj, uint32_t handle) {
     if (handle == 0u || obj == 0u) {
         if (c) {

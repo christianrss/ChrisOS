@@ -86,6 +86,12 @@ int main(void) {
     if (vgpu_enc_create_2d(raw, sizeof raw, 3, 1, 8, 8, &len) != 0 || len != 40u) {
         return fail("create2d");
     }
+    if (virgl_cmd_init(&cmd, d, 64, 3) != 0 || virgl_cmd_destroy(&cmd, VIRGL_OBJECT_SHADER, 9u) != 0) {
+        return fail("destroy");
+    }
+    if (d[0] != VIRGL_CMD0(VIRGL_CCMD_DESTROY_OBJECT, VIRGL_OBJECT_SHADER, 1) || d[1] != 9u) {
+        return fail("destroy words");
+    }
     printf("test_virgl_cmd: ok\n");
     return 0;
 }

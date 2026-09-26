@@ -11,6 +11,7 @@ void gpu_pool_init(GpuPool *p) {
         p->res[i].type = GPU_RES_NONE;
         p->res[i].state = GPU_ST_FREE;
         p->res[i].dma = -1;
+        p->res[i].backing_off = 0;
         p->res[i].ctx_attached = 0;
         p->res[i].width = 0;
         p->res[i].height = 0;
@@ -77,6 +78,7 @@ int gpu_res_alloc(GpuPool *p, int owner, uint32_t *id_out) {
     p->res[slot].type = GPU_RES_NONE;
     p->res[slot].state = GPU_ST_ALLOC;
     p->res[slot].dma = -1;
+    p->res[slot].backing_off = 0;
     p->res[slot].ctx_attached = 0;
     p->res[slot].backing_size = 0;
     p->res_live++;
@@ -109,6 +111,7 @@ int gpu_res_release(GpuPool *p, int owner, uint32_t id) {
     r->id = 0;
     r->type = GPU_RES_NONE;
     r->dma = -1;
+    r->backing_off = 0;
     r->ctx_attached = 0;
     if (p->res_live > 0) {
         p->res_live--;

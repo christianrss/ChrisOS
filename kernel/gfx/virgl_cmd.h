@@ -28,6 +28,7 @@ int virgl_cmd_framebuffer(VirglCmd *c, uint32_t nr, uint32_t zs, uint32_t color)
 int virgl_cmd_viewport(VirglCmd *c, uint32_t sx, uint32_t sy, uint32_t sz,
                        uint32_t tx, uint32_t ty, uint32_t tz);
 int virgl_cmd_bind(VirglCmd *c, uint32_t obj, uint32_t handle);
+int virgl_cmd_destroy(VirglCmd *c, uint32_t obj_type, uint32_t handle);
 int virgl_cmd_blend_opaque(VirglCmd *c, uint32_t handle);
 int virgl_cmd_dsa(VirglCmd *c, uint32_t handle, int depth_enable, uint32_t func);
 int virgl_cmd_raster(VirglCmd *c, uint32_t handle, uint32_t cull);

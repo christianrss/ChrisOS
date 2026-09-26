@@ -6,6 +6,7 @@
 #include "graphics.h"
 #include "input.h"
 #include "lang_pipeline.h"
+#include "ps2.h"
 #include "serial.h"
 #include "task.h"
 #include "ui.h"
@@ -90,6 +91,7 @@ void desktop_frame(uint64_t ticks) {
 
     usb_tablet_poll();
     xhci_hid_poll();
+    ps2_mouse_poll();
     mouse = input_mouse_snapshot();
     InputEvent event;
     int focus;

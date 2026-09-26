@@ -509,11 +509,10 @@ void ui_draw_cursor(void) {
     int x = mouse.x;
     int y = mouse.y;
 
-    if (vgpu_cursor_active()) {
+    if (vgpu_cursor_active() && vgpu_cursor_move(x, y) == 0) {
         if (g_cur_saved) {
             ui_undraw_cursor();
         }
-        vgpu_cursor_move(x, y);
         return;
     }
     ui_undraw_cursor();

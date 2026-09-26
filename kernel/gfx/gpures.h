@@ -3,8 +3,11 @@
 
 #include <stdint.h>
 
-#define GPU_RES_MAX 48
-#define GPU_CTX_MAX 8
+/* 32 cached chunk meshes + window color/depth + atlas + scanout/cursor + headroom.
+ * Chunk meshes share one DMA slab; this cap is VirtIO resource slots, not DMA slots.
+ * Alloc failure is reported; callers evict or skip instead of panicking. */
+#define GPU_RES_MAX 96
+#define GPU_CTX_MAX 16
 
 enum {
     GPU_RES_NONE = 0,
@@ -33,6 +36,7 @@ typedef struct GpuResource {
     uint32_t bind;
     uint32_t flags;
     int dma;
+    uint32_t backing_off;
     uint32_t backing_size;
     int ctx_attached;
 } GpuResource;

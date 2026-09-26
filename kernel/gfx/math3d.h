@@ -32,9 +32,18 @@ void mat4f_identity(Mat4f *o);
 void mat4f_mul(Mat4f *o, const Mat4f *a, const Mat4f *b);
 void mat4f_rotate_x(Mat4f *o, float deg);
 void mat4f_rotate_y(Mat4f *o, float deg);
+void mat4f_rotate_z(Mat4f *o, float deg);
+void mat4f_scale(Mat4f *o, float x, float y, float z);
 void mat4f_translate(Mat4f *o, float x, float y, float z);
+void mat4f_perspective(Mat4f *o, float fov_deg, float aspect, float znear, float zfar);
+void mat4f_ortho(Mat4f *o, float left, float right, float bottom, float top, float znear,
+                 float zfar);
 void mat4f_transform(const Mat4f *m, const Vec3f *in, Vec3f *out);
 void mat4f_transform_dir(const Mat4f *m, const Vec3f *in, Vec3f *out);
+void mat4f_transform4(const Mat4f *m, float x, float y, float z, float w, float out[4]);
+/* Row-major Mat4f -> GLSL column-major mat4 words. Same mathematical matrix. */
+void mat4f_to_glsl(const Mat4f *m, float out[16]);
+void mat4f_normal3(const Mat4f *model, float out9[9]);
 
 typedef struct Gfx3DView {
     Vec3f pos;

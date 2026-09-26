@@ -11,11 +11,18 @@ frame is counted separately from a partial rectangle
 (`g_rects`, `g_pixels`, `g_bytes`, `g_full`, `g_partial` in the driver).
 Those counters are not printed every frame.
 
-The software cursor in `kernel/wm/ui.c` is skipped while
-`vgpu_cursor_active()` is set. Mouse motion then sends `MOVE_CURSOR` on
-`cursorq` and does not dirty the framebuffer. If the cursor command
-fails, the driver prints `vgpu cursor software fallback` and the software
-cursor stays.
+The cursor resource is 64×64. QEMU allocates a 64×64 sprite and ignores
+any other size, which used to leave a transparent pointer in place of the
+desktop cursor. `SET_SCANOUT` drops that sprite, so the next command after
+a scanout change is `UPDATE_CURSOR` rather than `MOVE_CURSOR`.
+
+While that submit succeeds, `ui_draw_cursor` does not paint the software
+cursor. If the cursor queue is busy or the kick fails, the same frame
+draws the software cursor. A failed kick clears the hardware cursor and
+prints `vgpu cursor software fallback` (setup) or `vgpu cursor fallback
+software` (later motion). The PS/2 mouse is also drained each frame, and
+the GPU IRQ handler chains the previous handler so it cannot replace the
+mouse line.
 
 `gfx.backend=framebuffer` never programs a scanout. The old ChrisC
 `hw_gpu_arm` path is a no-op success when the kernel driver is already

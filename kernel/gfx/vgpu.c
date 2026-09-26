@@ -8,6 +8,7 @@
 #include "pci.h"
 #include "serial.h"
 #include "virtq.h"
+#include "gfx3d.h"
 #include "virgl_demo.h"
 
 #define VGPU_QSZ 16
@@ -41,6 +42,11 @@ static uint32_t g_fb_h;
 static uint32_t g_scan_res;
 static uint32_t g_cur_res;
 static int g_cursor_on;
+static int g_cur_x;
+static int g_cur_y;
+static uint32_t g_cur_gen;
+static uint32_t g_cur_sent;
+static irq_handler g_irq_prev;
 static int g_cwin;
 static uint32_t g_coff;
 static int g_isr_win;
@@ -189,8 +195,10 @@ void vgpu_on_irq(void) {
 }
 
 static void vgpu_irq(struct irq_frame *frame) {
-    (void)frame;
     vgpu_on_irq();
+    if (g_irq_prev && g_irq_prev != vgpu_irq) {
+        g_irq_prev(frame);
+    }
 }
 
 static uint64_t vgpu_cycles(void) {
@@ -421,7 +429,11 @@ int vgpu_res_attach(int owner, uint32_t id) {
     if (!r || r->owner != owner || r->dma < 0 || r->backing_size == 0u) {
         return -1;
     }
-    phys = vgpu_dma_phys(r->dma);
+    if (r->backing_off > hw_dma_bytes(r->dma) ||
+        r->backing_size > hw_dma_bytes(r->dma) - r->backing_off) {
+        return -1;
+    }
+    phys = vgpu_dma_phys(r->dma) + (uint64_t)r->backing_off;
     if (vgpu_enc_attach(buf, sizeof buf, id, phys, r->backing_size, &len) != 0) {
         return -1;
     }
@@ -530,6 +542,29 @@ int vgpu_res_create_2d(int owner, uint32_t fmt, uint32_t w, uint32_t h, int dma,
     return 0;
 }
 
+int vgpu_res_create_3d_off(int owner, const VgpuCreate3D *info, int dma, uint32_t off,
+                           uint32_t backing, uint32_t *id) {
+    int rc = vgpu_res_create_3d(owner, info, -1, 0, id);
+    GpuResource *r;
+    if (rc != 0) {
+        return rc;
+    }
+    r = gpu_res_get(&g_pool, *id);
+    if (!r) {
+        return -1;
+    }
+    r->dma = dma;
+    r->backing_off = off;
+    r->backing_size = backing;
+    if (dma >= 0 && backing > 0u) {
+        if (vgpu_res_attach(owner, *id) != 0) {
+            (void)vgpu_res_unref(owner, *id);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int vgpu_res_create_3d(int owner, const VgpuCreate3D *info, int dma,
                        uint32_t backing, uint32_t *id) {
     VgpuCreate3D local;
@@ -611,6 +646,9 @@ int vgpu_set_scanout(uint32_t scanout, uint32_t id, uint32_t x, uint32_t y,
     if (r) {
         r->state = GPU_ST_SCANOUT;
     }
+    /* QEMU drops the cursor sprite when the scanout resource changes.
+     * MOVE_CURSOR does not define it again. */
+    g_cur_gen++;
     return 0;
 }
 
@@ -670,8 +708,9 @@ int vgpu_ctx_destroy(int owner, uint32_t ctx) {
 int vgpu_ctx_attach(uint32_t ctx, uint32_t res) {
     uint8_t buf[32];
     uint32_t len = 0;
+    GpuContext *c = gpu_ctx_get(&g_pool, ctx);
     GpuResource *r = gpu_res_get(&g_pool, res);
-    if (!gpu_ctx_get(&g_pool, ctx) || !r) {
+    if (!c || !c->live || !r || c->owner != r->owner) {
         return -1;
     }
     if (vgpu_enc_simple(buf, sizeof buf, VGPU_CMD_CTX_ATTACH_RESOURCE, ctx, res,
@@ -695,7 +734,11 @@ int vgpu_ctx_attach(uint32_t ctx, uint32_t res) {
 int vgpu_ctx_detach(uint32_t ctx, uint32_t res) {
     uint8_t buf[32];
     uint32_t len = 0;
+    GpuContext *c = gpu_ctx_get(&g_pool, ctx);
     GpuResource *r = gpu_res_get(&g_pool, res);
+    if (!c || !c->live || !r || c->owner != r->owner) {
+        return -1;
+    }
     if (vgpu_enc_simple(buf, sizeof buf, VGPU_CMD_CTX_DETACH_RESOURCE, ctx, res,
                         &len) != 0 ||
         cmd_ok_wait(VGPU_CMD_CTX_DETACH_RESOURCE, buf, len, 1) != 0) {
@@ -813,40 +856,62 @@ void vgpu_flush_rect(int x, int y, int w, int h) {
     }
 }
 
-void vgpu_cursor_move(int x, int y) {
+/* QEMU allocates a 64x64 cursor and ignores any other resource size. */
+#define VGPU_CUR_DIM 64u
+
+static int cursor_kick(uint32_t type, uint32_t x, uint32_t y) {
     uint8_t buf[56];
     uint32_t len = 0;
-    uint8_t *slot;
-    if (!g_cursor_on || x < 0 || y < 0) {
-        return;
+    uint8_t *cmd;
+    uint32_t i;
+    uint32_t typ = 0;
+    uint64_t fence;
+    if (!g_cursor.ready || g_cur_res == 0u || g_dead || !hw_dma_ptr(g_cursor.dma)) {
+        return -1;
     }
-    if (vgpu_enc_cursor(buf, sizeof buf, VGPU_CMD_MOVE_CURSOR, g_cur_res,
-                        (uint32_t)x, (uint32_t)y, 0, 0, &len) != 0) {
-        return;
+    if (vgpu_enc_cursor(buf, sizeof buf, type, g_cur_res, x, y, 0, 0, &len) != 0) {
+        return -1;
     }
-    slot = hw_dma_ptr(g_cursor.dma);
-    if (!slot) {
-        return;
+    cmd = hw_dma_ptr(g_cmd_dma);
+    if (!cmd || g_busy) {
+        return -2;
     }
-    {
-        uint32_t i;
-        uint32_t typ = 0;
-        uint64_t fence;
-        uint8_t *saved = hw_dma_ptr(g_cmd_dma);
-        if (!saved || g_busy) {
-            return;
-        }
-        g_busy = 1;
-        for (i = 0; i < len; ++i) {
-            saved[i] = buf[i];
-        }
-        fence = g_fence_seq++;
-        if (vgpu_kick(&g_cursor, len, 64u, fence, 0, 0, &typ, 0) != 0) {
-            g_cursor_on = 0;
-            serial_puts("vgpu cursor fallback software\n");
-        }
+    g_busy = 1;
+    for (i = 0; i < len; ++i) {
+        cmd[i] = buf[i];
+    }
+    fence = g_fence_seq++;
+    if (vgpu_kick(&g_cursor, len, 64u, fence, 0, 0, &typ, 0) != 0) {
         g_busy = 0;
+        g_cursor_on = 0;
+        return -1;
     }
+    g_busy = 0;
+    if (type == VGPU_CMD_UPDATE_CURSOR) {
+        g_cur_sent = g_cur_gen;
+    }
+    return 0;
+}
+
+int vgpu_cursor_move(int x, int y) {
+    uint32_t type;
+    int rc;
+    if (!g_cursor_on || x < 0 || y < 0) {
+        return -1;
+    }
+    g_cur_x = x;
+    g_cur_y = y;
+    /* SET_SCANOUT clears the host sprite. The next command must be
+     * UPDATE_CURSOR; MOVE_CURSOR only stores a position. */
+    type = g_cur_sent != g_cur_gen ? VGPU_CMD_UPDATE_CURSOR : VGPU_CMD_MOVE_CURSOR;
+    rc = cursor_kick(type, (uint32_t)x, (uint32_t)y);
+    if (rc == 0) {
+        return 0;
+    }
+    if (rc == -1 && !g_cursor_on) {
+        serial_puts("vgpu cursor fallback software\n");
+    }
+    return -1;
 }
 
 static int vgpu_cursor_setup(void) {
@@ -854,54 +919,37 @@ static int vgpu_cursor_setup(void) {
     uint8_t *px;
     int y;
     int x;
-    uint8_t buf[56];
-    uint32_t len = 0;
     if (!g_cursor.ready) {
         return 0;
     }
-    g_cur_dma = hw_dma_alloc(1);
+    g_cur_dma = hw_dma_alloc(4);
     if (g_cur_dma < 0) {
         return 0;
     }
     px = hw_dma_ptr(g_cur_dma);
-    for (y = 0; y < 16; ++y) {
-        for (x = 0; x < 16; ++x) {
+    for (y = 0; y < (int)VGPU_CUR_DIM; ++y) {
+        for (x = 0; x < (int)VGPU_CUR_DIM; ++x) {
             uint32_t c = 0;
             if (x < 12 && y < 12 && (x < 2 || y < 2 || x == y)) {
                 c = 0xFFFFFFFFu;
             }
-            ((uint32_t *)px)[y * 32 + x] = c;
+            ((uint32_t *)px)[y * (int)VGPU_CUR_DIM + x] = c;
         }
     }
-    if (vgpu_res_create_2d(VGPU_OWNER_KERNEL, VGPU_FORMAT_B8G8R8A8, 32, 32,
-                           g_cur_dma, 32u * 32u * 4u, &id) != 0) {
+    if (vgpu_res_create_2d(VGPU_OWNER_KERNEL, VGPU_FORMAT_B8G8R8A8, VGPU_CUR_DIM,
+                           VGPU_CUR_DIM, g_cur_dma,
+                           VGPU_CUR_DIM * VGPU_CUR_DIM * 4u, &id) != 0) {
         vgpu_free_dma(g_cur_dma);
         g_cur_dma = -1;
         return 0;
     }
     g_cur_res = id;
-    if (vgpu_enc_cursor(buf, sizeof buf, VGPU_CMD_UPDATE_CURSOR, id, 0, 0, 0, 0,
-                        &len) != 0) {
+    g_cursor_on = 1;
+    if (cursor_kick(VGPU_CMD_UPDATE_CURSOR, 0, 0) != 0) {
+        g_cursor_on = 0;
+        serial_puts("vgpu cursor software fallback\n");
         return 0;
     }
-    {
-        uint32_t i;
-        uint8_t *cmd = hw_dma_ptr(g_cmd_dma);
-        uint32_t typ = 0;
-        uint64_t fence;
-        g_busy = 1;
-        for (i = 0; i < len; ++i) {
-            cmd[i] = buf[i];
-        }
-        fence = g_fence_seq++;
-        if (vgpu_kick(&g_cursor, len, 64u, fence, 0, 0, &typ, 0) != 0) {
-            g_busy = 0;
-            serial_puts("vgpu cursor software fallback\n");
-            return 0;
-        }
-        g_busy = 0;
-    }
-    g_cursor_on = 1;
     serial_puts("virtio-gpu cursorq\n");
     return 1;
 }
@@ -1143,11 +1191,13 @@ int vgpu_boot(int width, int height) {
     if (bootflag_gfx_fb() || width < 1 || height < 1) {
         serial_puts("gfx backend framebuffer\n");
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
         return 0;
     }
     if (!find_gpu(&bus, &dev)) {
         serial_puts("virtio-gpu miss\n");
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
         return 0;
     }
     serial_puts("VirtIO GPU detected\n");
@@ -1232,6 +1282,10 @@ int vgpu_boot(int width, int height) {
     hw_mmio_w8(cwin, coff + 20, 15);
     g_online = 1;
     if (g_irq_line < 16u) {
+        g_irq_prev = irq_get_handler(g_irq_line);
+        if (g_irq_prev == vgpu_irq) {
+            g_irq_prev = 0;
+        }
         irq_set_handler(g_irq_line, vgpu_irq);
         pic_set_mask(g_irq_line, false);
     }
@@ -1252,6 +1306,7 @@ int vgpu_boot(int width, int height) {
     (void)vgpu_cursor_setup();
     if (vgpu_stress(bootflag_gfx_stress() ? 1000 : 4) != 0) {
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
         return 1;
     }
     if ((g_neg_lo & (1u << VGPU_F_VIRGL)) == 0u || bootflag_gfx3d() == 1) {
@@ -1260,15 +1315,24 @@ int vgpu_boot(int width, int height) {
             serial_puts("reason feature not negotiated\n");
         }
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(bootflag_gfx3d() == 2 ? GFX3D_VIRGL : GFX3D_SOFTWARE);
         return 1;
     }
     if (read_capsets() != 0) {
         serial_puts("VirGL failure\n");
         serial_puts("reason capset\n");
         serial_puts("3D backend -> software\n");
+        (void)gfx3d_boot(GFX3D_SOFTWARE);
+        return 1;
+    }
+    if (gfx3d_boot(bootflag_gfx3d() == 2 ? GFX3D_VIRGL : GFX3D_AUTO) != 0) {
+        serial_puts("VirGL failure\n");
+        serial_puts("reason gfx3d boot\n");
+        serial_puts("3D backend -> software\n");
         return 1;
     }
     if (virgl_demo_run() != 0) {
+        gfx3d_mark_lost();
         serial_puts("VirGL failure\n");
         serial_puts("3D backend -> software\n");
         return 1;

@@ -172,11 +172,76 @@ void mat4f_rotate_y(Mat4f *o, float deg) {
     o->m[10] = c;
 }
 
+void mat4f_rotate_z(Mat4f *o, float deg) {
+    float c = gfx_cosf(deg);
+    float s = gfx_sinf(deg);
+    mat4f_identity(o);
+    o->m[0] = c;
+    o->m[1] = -s;
+    o->m[4] = s;
+    o->m[5] = c;
+}
+
+void mat4f_scale(Mat4f *o, float x, float y, float z) {
+    mat4f_identity(o);
+    o->m[0] = x;
+    o->m[5] = y;
+    o->m[10] = z;
+}
+
 void mat4f_translate(Mat4f *o, float x, float y, float z) {
     mat4f_identity(o);
     o->m[3] = x;
     o->m[7] = y;
     o->m[11] = z;
+}
+
+void mat4f_perspective(Mat4f *o, float fov_deg, float aspect, float znear, float zfar) {
+    float f;
+    float span;
+    if (aspect < 1e-6f)
+        aspect = 1.0f;
+    if (znear < 1e-4f)
+        znear = 0.1f;
+    if (zfar <= znear)
+        zfar = znear + 1.0f;
+    {
+        float s = gfx_sinf(fov_deg * 0.5f);
+        float c = gfx_cosf(fov_deg * 0.5f);
+        if (s < 1e-4f && s > -1e-4f)
+            s = 1.0f;
+        f = c / s;
+    }
+    if (f < 0.0f)
+        f = -f;
+    span = znear - zfar;
+    mat4f_identity(o);
+    o->m[0] = f / aspect;
+    o->m[5] = f;
+    o->m[10] = (zfar + znear) / span;
+    o->m[11] = (2.0f * zfar * znear) / span;
+    o->m[14] = -1.0f;
+    o->m[15] = 0.0f;
+}
+
+void mat4f_ortho(Mat4f *o, float left, float right, float bottom, float top, float znear,
+                 float zfar) {
+    float rl = right - left;
+    float tb = top - bottom;
+    float fn = zfar - znear;
+    if (rl < 1e-6f && rl > -1e-6f)
+        rl = 1.0f;
+    if (tb < 1e-6f && tb > -1e-6f)
+        tb = 1.0f;
+    if (fn < 1e-6f && fn > -1e-6f)
+        fn = 1.0f;
+    mat4f_identity(o);
+    o->m[0] = 2.0f / rl;
+    o->m[5] = 2.0f / tb;
+    o->m[10] = -2.0f / fn;
+    o->m[3] = -(right + left) / rl;
+    o->m[7] = -(top + bottom) / tb;
+    o->m[11] = -(zfar + znear) / fn;
 }
 
 void mat4f_transform(const Mat4f *m, const Vec3f *in, Vec3f *out) {
@@ -186,6 +251,36 @@ void mat4f_transform(const Mat4f *m, const Vec3f *in, Vec3f *out) {
     out->x = m->m[0] * x + m->m[1] * y + m->m[2] * z + m->m[3];
     out->y = m->m[4] * x + m->m[5] * y + m->m[6] * z + m->m[7];
     out->z = m->m[8] * x + m->m[9] * y + m->m[10] * z + m->m[11];
+}
+
+void mat4f_transform4(const Mat4f *m, float x, float y, float z, float w, float out[4]) {
+    out[0] = m->m[0] * x + m->m[1] * y + m->m[2] * z + m->m[3] * w;
+    out[1] = m->m[4] * x + m->m[5] * y + m->m[6] * z + m->m[7] * w;
+    out[2] = m->m[8] * x + m->m[9] * y + m->m[10] * z + m->m[11] * w;
+    out[3] = m->m[12] * x + m->m[13] * y + m->m[14] * z + m->m[15] * w;
+}
+
+void mat4f_to_glsl(const Mat4f *m, float out[16]) {
+    int row;
+    int col;
+    for (col = 0; col < 4; ++col) {
+        for (row = 0; row < 4; ++row)
+            out[col * 4 + row] = m->m[row * 4 + col];
+    }
+}
+
+void mat4f_normal3(const Mat4f *model, float out9[9]) {
+    float g[16];
+    mat4f_to_glsl(model, g);
+    out9[0] = g[0];
+    out9[1] = g[1];
+    out9[2] = g[2];
+    out9[3] = g[4];
+    out9[4] = g[5];
+    out9[5] = g[6];
+    out9[6] = g[8];
+    out9[7] = g[9];
+    out9[8] = g[10];
 }
 
 void mat4f_transform_dir(const Mat4f *m, const Vec3f *in, Vec3f *out) {
