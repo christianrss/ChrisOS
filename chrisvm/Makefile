@@ -16,6 +16,7 @@ SRCS := \
 	buses/io.c \
 	buses/mmio.c \
 	devices/serial/serial.c \
+	devices/fb/fb.c \
 	machine/machine.c \
 	machine/boot.c \
 	machine/config.c \
@@ -25,11 +26,17 @@ OBJS := $(addprefix $(BUILD)/, $(SRCS:.c=.o))
 
 .PHONY: all test clean
 
-all: $(BUILD)/chrisvm $(BUILD)/arith.elf
+all: $(BUILD)/chrisvm $(BUILD)/arith.elf $(BUILD)/splash.elf
 
-$(BUILD)/chrisvm: $(OBJS) frontend/main.c
+SDL_CFLAGS := $(shell sdl2-config --cflags 2>/dev/null)
+SDL_LIBS := $(shell sdl2-config --libs 2>/dev/null)
+ifneq ($(SDL_LIBS),)
+CFLAGS += $(SDL_CFLAGS) -DCHRIS_HAVE_SDL
+endif
+
+$(BUILD)/chrisvm: $(OBJS) frontend/main.c frontend/view.c
 	@mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -o $@ frontend/main.c $(OBJS)
+	$(CC) $(CFLAGS) -o $@ frontend/main.c frontend/view.c $(OBJS) $(SDL_LIBS)
 
 $(BUILD)/%.o: %.c
 	@mkdir -p $(dir $@)
@@ -40,13 +47,20 @@ $(BUILD)/arith.elf: guests/arith.asm guests/link.ld
 	nasm -f elf64 -o $(BUILD)/arith.o guests/arith.asm
 	ld -nostdlib -T guests/link.ld -o $@ $(BUILD)/arith.o
 
-$(BUILD)/test_chrisvm: $(OBJS) tests/test_chrisvm.c $(BUILD)/arith.elf
-	$(CC) $(CFLAGS) -DCHRIS_GUEST=\"$(BUILD)/arith.elf\" -o $@ tests/test_chrisvm.c $(OBJS)
+$(BUILD)/splash.elf: guests/splash.asm guests/link.ld
+	@mkdir -p $(BUILD)
+	nasm -f elf64 -o $(BUILD)/splash.o guests/splash.asm
+	ld -nostdlib -T guests/link.ld -o $@ $(BUILD)/splash.o
 
-test: $(BUILD)/test_chrisvm $(BUILD)/chrisvm $(BUILD)/arith.elf
+$(BUILD)/test_chrisvm: $(OBJS) tests/test_chrisvm.c $(BUILD)/arith.elf $(BUILD)/splash.elf
+	$(CC) $(CFLAGS) -DCHRIS_GUEST=\"$(BUILD)/arith.elf\" -DCHRIS_SPLASH=\"$(BUILD)/splash.elf\" -o $@ tests/test_chrisvm.c $(OBJS)
+
+test: $(BUILD)/test_chrisvm $(BUILD)/chrisvm $(BUILD)/arith.elf $(BUILD)/splash.elf
 	$(BUILD)/test_chrisvm
 	$(BUILD)/chrisvm --headless $(BUILD)/arith.elf > $(BUILD)/arith.out
 	grep -q '^OK$$' $(BUILD)/arith.out
+	$(BUILD)/chrisvm --headless --fb-dump=$(BUILD)/splash.png $(BUILD)/splash.elf > $(BUILD)/splash.out
+	grep -q '^splash$$' $(BUILD)/splash.out
 
 clean:
 	rm -rf $(BUILD)

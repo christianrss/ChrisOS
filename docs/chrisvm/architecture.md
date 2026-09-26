@@ -22,7 +22,7 @@ O QEMU continua no fluxo de desenvolvimento do kernel. Ele não é backend de ex
 | `ChrisCPU` | fetch, decode, operandos, execução, flags, exceção, interrupção, commit de RIP | não registra dispositivos |
 | `ChrisHV` | mesmo contrato de backend | nesta rodada `init` falha e não toca em VMX, SVM nem `/dev/kvm` |
 | barramentos | porta I/O e MMIO | não sabem qual backend está rodando |
-| frontend | CLI, serial no stdout, debugger textual | não contém semântica de CPU |
+| frontend | CLI, serial no stdout, debugger textual, janela do framebuffer | não contém semântica de CPU |
 
 `chrisvm --backend=chriscpu` seleciona o interpretador. `--backend=chrishv` cria a máquina e recusa, para o encaixe existir antes da implementação.
 
@@ -42,6 +42,6 @@ Se a execução escreve RIP, ela marca `rip_dirty` e o laço não soma o tamanho
 
 ## O que já executa
 
-Um ELF independente em `0x1000` faz `MOV`, aritmética, desvio, `CALL`/`RET`, acesso à memória, saída serial e `HLT`. Os testes cobrem flags, `#UD`, `#PF`, `#GP`, `#DE`, ELF malformado, porta sem dispositivo, shutdown, MSR desconhecido, MMIO e endereço físico sem dispositivo.
+Um ELF independente em `0x1000` faz `MOV`, aritmética, desvio, `CALL`/`RET`, acesso à memória, saída serial e `HLT`. Outro ELF no mesmo endereço preenche o framebuffer com `REP STOS` e desenha a tela de inicialização. Os testes cobrem flags, `#UD`, `#PF`, `#GP`, `#DE`, ELF malformado, porta sem dispositivo, shutdown, MSR desconhecido, MMIO, endereço físico sem dispositivo e os pixels do splash.
 
 O kernel ChrisOS ainda não entra. O carregador recusa o ELF higher-half em vez de simular `kstart`.

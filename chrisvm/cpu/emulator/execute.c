@@ -572,6 +572,85 @@ static int do_desc(ChrisCpu *cpu, const ChrisInsn *in) {
     return chris_va_write(cpu, ea, buf, 10);
 }
 
+static void string_dec_rcx(ChrisCpu *cpu, const ChrisInsn *in, uint64_t n) {
+    cpu->arch.rcx -= n;
+    if (in->asz == 4) {
+        cpu->arch.rcx &= 0xffffffffull;
+    }
+}
+
+static int write_pattern(ChrisCpu *cpu, uint64_t pa, uint64_t value, int os, uint64_t count) {
+    uint8_t buf[4096];
+    size_t bytes = (size_t)count * (size_t)os;
+    size_t i;
+    if (bytes == 0 || bytes > sizeof buf) {
+        return -1;
+    }
+    for (i = 0; i < bytes; i += (size_t)os) {
+        memcpy(buf + i, &value, (size_t)os);
+    }
+    return chris_phys_write(cpu->machine, pa, buf, bytes);
+}
+
+static int do_stos(ChrisCpu *cpu, const ChrisInsn *in) {
+    uint64_t left;
+    uint64_t value = cpu->arch.rax;
+    int os = in->os;
+    int df = (cpu->arch.rflags & (1ull << 10)) != 0;
+    if (os != 1 && os != 2 && os != 4 && os != 8) {
+        return fail_ud(cpu);
+    }
+    if (in->rep) {
+        left = in->asz == 4 ? (cpu->arch.rcx & 0xffffffffull) : cpu->arch.rcx;
+    } else {
+        left = 1;
+    }
+    while (left != 0) {
+        uint64_t chunk = 1;
+        if (!df) {
+            uint64_t pa = 0;
+            uint32_t err = 0;
+            uint64_t room;
+            int tr = chris_translate(cpu, cpu->arch.rdi, &pa, 1, &err);
+            if (tr == 0) {
+                room = 0x1000ull - (pa & 0xfffull);
+                chunk = left;
+                if (chunk * (uint64_t)os > room) {
+                    chunk = room / (uint64_t)os;
+                }
+                if (chunk == 0 || write_pattern(cpu, pa, value, os, chunk) != 0) {
+                    chunk = 1;
+                    if (chris_va_write(cpu, cpu->arch.rdi, &value, (size_t)os) != 0) {
+                        return -1;
+                    }
+                }
+            } else if (chris_va_write(cpu, cpu->arch.rdi, &value, (size_t)os) != 0) {
+                return -1;
+            }
+        } else if (chris_va_write(cpu, cpu->arch.rdi, &value, (size_t)os) != 0) {
+            return -1;
+        }
+        if (df) {
+            cpu->arch.rdi -= (uint64_t)os;
+        } else {
+            cpu->arch.rdi += chunk * (uint64_t)os;
+        }
+        if (in->asz == 4) {
+            cpu->arch.rdi &= 0xffffffffull;
+        }
+        left -= chunk;
+        if (in->rep) {
+            string_dec_rcx(cpu, in, chunk);
+        }
+        if (in->rep && cpu->irq_pending && (cpu->arch.rflags & (1ull << 9)) != 0 && !cpu->sti_delay &&
+            left != 0) {
+            cpu->rip_dirty = 1;
+            return 0;
+        }
+    }
+    return 0;
+}
+
 int chris_execute(ChrisCpu *cpu, const ChrisInsn *in) {
     if (!cpu || !in) {
         return -1;
@@ -648,6 +727,8 @@ int chris_execute(ChrisCpu *cpu, const ChrisInsn *in) {
         cpu->rip_dirty = 1;
         return 0;
     }
+    case CHRIS_OP_STOS:
+        return do_stos(cpu, in);
     case CHRIS_OP_HLT:
         cpu->halted = 1;
         cpu->exit_reason = CHRIS_EXIT_HLT;

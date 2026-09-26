@@ -11,6 +11,9 @@
 #define CHRIS_GDT_PHYS 0x70000ull
 #define CHRIS_PT_RESERVE 0x4000ull
 #define CHRIS_SHUTDOWN_PORT 0x501u
+#define CHRIS_FB_PHYS 0x02000000ull
+#define CHRIS_FB_WIDTH 640u
+#define CHRIS_FB_HEIGHT 480u
 
 typedef struct ChrisConfig {
     uint64_t ram_size;
@@ -24,6 +27,8 @@ typedef struct ChrisConfig {
     uint64_t break_rip;
     int has_break;
     int debug;
+    int headless;
+    const char *fb_dump;
 } ChrisConfig;
 
 typedef struct ChrisMachine ChrisMachine;
@@ -58,6 +63,11 @@ void chris_serial_set_hook(ChrisMachine *m, void (*hook)(void *ctx, char ch), vo
 
 void chris_set_log(ChrisMachine *m, void (*log)(void *ctx, const char *line), void *ctx);
 void chris_dump_cpu(const ChrisMachine *m);
+
+int chris_fb_get(const ChrisMachine *m, uint32_t x, uint32_t y, uint32_t *pixel);
+int chris_fb_dirty(const ChrisMachine *m);
+int chris_fb_write_image(const ChrisMachine *m, const char *path);
+int chris_view_show(const ChrisMachine *m, int milliseconds);
 
 const ChrisCpuBackend *chris_backend_by_name(const char *name);
 

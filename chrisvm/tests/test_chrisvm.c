@@ -38,11 +38,16 @@ static ChrisMachine *machine_with(const uint8_t *code, size_t n, uint64_t steps)
 static int run_code(const uint8_t *code, size_t n, ChrisMachine **out) {
     ChrisMachine *m = machine_with(code, n, 10000);
     int reason;
+    if (out) {
+        *out = m;
+    }
     if (!m) {
         return -1;
     }
     reason = chris_run(m, 10000);
-    *out = m;
+    if (out) {
+        *out = m;
+    }
     return reason;
 }
 
@@ -252,21 +257,21 @@ static int mmio_write(void *ctx, uint64_t offset, int size, uint64_t value) {
 }
 
 static void test_mmio_real(void) {
-    /* 32 MiB sits in PDPT[0], above the 16 MiB identity RAM map. */
-    static const uint8_t code[] = {0x48, 0xb8, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+    /* 96 MiB is in PDPT[0], above RAM and the framebuffer at 32 MiB. */
+    static const uint8_t code[] = {0x48, 0xb8, 0x00, 0x00, 0x00, 0x06, 0x00, 0x00, 0x00, 0x00,
                                    0x48, 0xc7, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x48, 0x8b, 0x00, 0xf4};
     uint64_t cell = 0;
     ChrisConfig cfg;
     ChrisMachine *m;
     chris_config_init(&cfg);
     m = chris_machine_create(&cfg);
-    check(chris_mmio_map(m, 0x02000000ull, 0x1000ull, mmio_read, mmio_write, &cell) == 0, "mmio map");
+    check(chris_mmio_map(m, 0x06000000ull, 0x1000ull, mmio_read, mmio_write, &cell) == 0, "mmio map");
     check(chris_write_ram(m, 0x1000, code, sizeof code) == 0, "mmio bytes");
     check(chris_boot(m, 0x1000, CHRIS_STACK_RSP) == 0, "mmio boot2");
     {
-        uint64_t pde = 0x02000000ull | 0x83ull;
+        uint64_t pde = 0x06000000ull | 0x83ull;
         uint64_t pd = cfg.ram_size - 0x2000ull;
-        uint64_t index = (0x02000000ull >> 21) & 0x1ffull;
+        uint64_t index = (0x06000000ull >> 21) & 0x1ffull;
         check(chris_write_ram(m, pd + index * 8ull, &pde, 8) == 0, "mmio pde");
     }
     check(chris_run(m, 1000) == CHRIS_EXIT_HLT, "mmio halt");
@@ -324,6 +329,53 @@ static void test_div_mul_msr(void) {
     chris_machine_destroy(m);
 }
 
+static void test_stos_and_splash(void) {
+    static const uint8_t stos[] = {
+        0x48, 0xbf, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x48, 0xc7, 0xc1, 0x04, 0x00,
+        0x00, 0x00, 0xb8, 0x78, 0x56, 0x34, 0x12, 0xf3, 0xab, 0xf4,
+    };
+    FILE *f;
+    uint8_t *buf;
+    long sz;
+    ChrisConfig cfg;
+    ChrisMachine *m = 0;
+    char err[128];
+    uint32_t px = 0;
+    check(run_code(stos, sizeof stos, &m) == CHRIS_EXIT_HLT, "stos halt");
+    check(m && chris_fb_get(m, 0, 0, &px) == 0 && px == 0x12345678u, "stos pixel");
+    check(m && chris_fb_get(m, 3, 0, &px) == 0 && px == 0x12345678u, "stos last");
+    check(m && chris_get_gpr(m, 1) == 0, "stos rcx");
+    chris_machine_destroy(m);
+    f = fopen(CHRIS_SPLASH, "rb");
+    check(f != 0, "open splash");
+    if (!f) {
+        return;
+    }
+    fseek(f, 0, SEEK_END);
+    sz = ftell(f);
+    rewind(f);
+    buf = (uint8_t *)malloc((size_t)sz);
+    check(buf && fread(buf, 1, (size_t)sz, f) == (size_t)sz, "read splash");
+    fclose(f);
+    chris_config_init(&cfg);
+    cfg.max_steps = 2000000ull;
+    m = chris_machine_create(&cfg);
+    err[0] = 0;
+    check(m && chris_load_elf(m, buf, (size_t)sz, err, sizeof err) == 0, "load splash");
+    check(m && chris_boot(m, 0, CHRIS_STACK_RSP) == 0, "boot splash");
+    check(m && chris_run(m, cfg.max_steps) == CHRIS_EXIT_HLT, "splash halt");
+    check(m && strcmp(chris_serial_text(m, 0), "splash\n") == 0, "splash serial");
+    px = 0;
+    check(m && chris_fb_get(m, 0, 0, &px) == 0 && px == 0x00101828u, "splash background");
+    px = 0;
+    check(m && chris_fb_get(m, 130, 100, &px) == 0 && px == 0x00141c2cu, "splash panel");
+    px = 0;
+    check(m && chris_fb_get(m, 180, 260, &px) == 0 && px == 0x004c8dffu, "splash progress");
+    check(m && chris_fb_dirty(m), "splash dirty");
+    chris_machine_destroy(m);
+    free(buf);
+}
+
 int main(void) {
     test_flags();
     test_cpu_add();
@@ -335,6 +387,7 @@ int main(void) {
     test_elf_and_reject();
     test_fuzz_decode();
     test_mmio_real();
+    test_stos_and_splash();
     if (g_fail) {
         fprintf(stderr, "chrisvm tests failed: %d\n", g_fail);
         return 1;

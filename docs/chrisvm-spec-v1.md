@@ -26,10 +26,11 @@ Ver `docs/chrisvm-boot-protocol.md`.
 Endereço físico:
 
 1. se o intervalo inteiro cabe na RAM, a cópia é direta;
-2. senão, cada byte passa pelo registro de MMIO;
-3. endereço sem RAM e sem MMIO é `CHRIS_EXIT_UNMAPPED`.
+2. se o intervalo inteiro cabe no framebuffer (`0x02000000`, 640×480, XRGB8888), a cópia é direta e a escrita marca a tela suja;
+3. senão, cada byte passa pelo registro de MMIO;
+4. endereço sem RAM, sem framebuffer e sem MMIO é `CHRIS_EXIT_UNMAPPED`.
 
-O PD inicial só cobre a RAM, dentro do primeiro 1 GiB (`PDPT[0]`). Um dispositivo MMIO acima da RAM precisa de uma entrada de página instalada pelo teste ou, no futuro, pela própria máquina. `0xF0000000` não está nesse PDPT: cai no quarto gigabyte.
+O PD inicial cobre a RAM e a página de 2 MiB do framebuffer, dentro do primeiro 1 GiB (`PDPT[0]`). Um dispositivo MMIO acima disso precisa de uma entrada de página instalada pelo teste. O teste de MMIO usa `0x06000000`. `0xF0000000` não está nesse PDPT: cai no quarto gigabyte.
 
 ## I/O e interrupção
 
@@ -51,7 +52,7 @@ Nesta versão o roteador ainda não existe. `inject_irq` está na interface do b
 | VirtIO block, input, GPU, net, rng, sound | não iniciado |
 | timer, APIC, IOAPIC, HPET | não iniciado |
 | SMP | não iniciado |
-| framebuffer e frontend gráfico | não iniciado; `--headless` é o modo atual |
+| framebuffer linear e janela SDL | framebuffer validado; `--headless` continua o modo dos testes |
 | ChrisHV / VMX / SVM | recusado na criação da máquina |
 
 O caminho QEMU do ChrisOS permanece o ambiente de boot do kernel. O ChrisVM não o substitui nesta rodada.
