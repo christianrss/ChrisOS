@@ -73,6 +73,13 @@ void irq_set_handler(uint8_t irq, irq_handler handler) {
     }
 }
 
+irq_handler irq_get_handler(uint8_t irq) {
+    if (irq >= 16) {
+        return 0;
+    }
+    return handlers[irq];
+}
+
 void irq_eoi(uint8_t irq) {
     if (apic_ready()) {
         apic_eoi();

@@ -184,6 +184,29 @@ bool ps2_init(void) {
     return false;
 }
 
+void ps2_mouse_poll(void) {
+    uint32_t n;
+    uint64_t flags;
+
+    /* IRQ 12 can be masked or shared with the GPU. Drain AUX bytes here so
+     * the desktop pointer still tracks. cli keeps the mouse IRQ from taking
+     * the same byte. */
+    __asm__ volatile ("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    for (n = 0; n < 16u; ++n) {
+        uint8_t st = inb(PS2_STATUS);
+        if ((st & 0x01u) == 0u) {
+            break;
+        }
+        if ((st & 0x20u) == 0u) {
+            break;
+        }
+        input_mouse_irq_byte(inb(PS2_DATA));
+    }
+    if ((flags & 0x200u) != 0u) {
+        __asm__ volatile ("sti");
+    }
+}
+
 bool keyboard_pop(struct keyboard_event *event) {
     (void)event;
     return false;

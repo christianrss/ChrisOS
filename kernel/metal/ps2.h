@@ -17,6 +17,7 @@ struct mouse_event {
 };
 
 bool ps2_init(void);
+void ps2_mouse_poll(void);
 bool keyboard_pop(struct keyboard_event *event);
 bool mouse_pop(struct mouse_event *event);
 
