@@ -856,8 +856,23 @@ void vgpu_flush_rect(int x, int y, int w, int h) {
     }
 }
 
-/* QEMU allocates a 64x64 cursor and ignores any other resource size. */
+/* QEMU allocates a 64x64 cursor and ignores any other resource size.
+ * The spec requires TRANSFER_TO_HOST_2D (fenced) before UPDATE_CURSOR.
+ * Without that copy the host sprite stays transparent, dpy_cursor_define
+ * hides the host pointer, and the desktop skips the software cursor. */
 #define VGPU_CUR_DIM 64u
+
+static int cursor_upload(void) {
+    if (g_cur_res == 0u || g_cur_dma < 0) {
+        return -1;
+    }
+    if (vgpu_res_xfer2d(g_cur_res, 0, 0, VGPU_CUR_DIM, VGPU_CUR_DIM, 0) != 0) {
+        serial_puts("vgpu cursor xfer failed\n");
+        g_cursor_on = 0;
+        return -1;
+    }
+    return 0;
+}
 
 static int cursor_kick(uint32_t type, uint32_t x, uint32_t y) {
     uint8_t buf[56];
@@ -904,6 +919,10 @@ int vgpu_cursor_move(int x, int y) {
     /* SET_SCANOUT clears the host sprite. The next command must be
      * UPDATE_CURSOR; MOVE_CURSOR only stores a position. */
     type = g_cur_sent != g_cur_gen ? VGPU_CMD_UPDATE_CURSOR : VGPU_CMD_MOVE_CURSOR;
+    if (type == VGPU_CMD_UPDATE_CURSOR && cursor_upload() != 0) {
+        serial_puts("vgpu cursor fallback software\n");
+        return -1;
+    }
     rc = cursor_kick(type, (uint32_t)x, (uint32_t)y);
     if (rc == 0) {
         return 0;
@@ -945,12 +964,16 @@ static int vgpu_cursor_setup(void) {
     }
     g_cur_res = id;
     g_cursor_on = 1;
-    if (cursor_kick(VGPU_CMD_UPDATE_CURSOR, 0, 0) != 0) {
+    if (cursor_upload() != 0 || cursor_kick(VGPU_CMD_UPDATE_CURSOR, 0, 0) != 0) {
         g_cursor_on = 0;
         serial_puts("vgpu cursor software fallback\n");
         return 0;
     }
-    serial_puts("virtio-gpu cursorq\n");
+    serial_puts("virtio-gpu cursorq ");
+    serial_write_u64(g_cur_res);
+    serial_puts(" irq=");
+    serial_write_u64(g_irq_line);
+    serial_puts("\n");
     return 1;
 }
 

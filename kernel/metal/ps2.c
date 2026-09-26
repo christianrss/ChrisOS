@@ -2,6 +2,7 @@
 #include "input.h"
 #include "irq.h"
 #include "port.h"
+#include "serial.h"
 
 #define PS2_DATA   0x60
 #define PS2_STATUS 0x64
@@ -177,6 +178,9 @@ bool ps2_init(void) {
             if (mouse_ok) {
                 irq_set_handler(12, mouse_irq);
                 pic_set_mask(12, false);
+                serial_puts("ps2 mouse on\n");
+            } else {
+                serial_puts("ps2 mouse off\n");
             }
             return true;
         }

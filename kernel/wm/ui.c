@@ -7,6 +7,7 @@
 #include "icons.h"
 #include "input.h"
 #include "pit.h"
+#include "serial.h"
 
 bool ui_hit_rect(int px, int py, int x, int y, int width, int height) {
     return width > 0 && height > 0 &&
@@ -504,16 +505,25 @@ void ui_undraw_cursor(void) {
 
 void ui_draw_cursor(void) {
     InputMouse mouse = input_mouse_snapshot();
+    static int logged;
     int row;
     int col;
     int x = mouse.x;
     int y = mouse.y;
 
-    if (vgpu_cursor_active() && vgpu_cursor_move(x, y) == 0) {
-        if (g_cur_saved) {
-            ui_undraw_cursor();
-        }
-        return;
+    /* The virtio-gpu sprite is accepted and then not shown by this QEMU
+     * display, which also suppresses the pixels in the scanout. Always paint
+     * the pointer into the framebuffer so it stays on the desktop. */
+    if (vgpu_cursor_active()) {
+        (void)vgpu_cursor_move(x, y);
+    }
+    if (!logged) {
+        logged = 1;
+        serial_puts("cursor sw ");
+        serial_write_u64((uint64_t)x);
+        serial_puts(",");
+        serial_write_u64((uint64_t)y);
+        serial_puts("\n");
     }
     ui_undraw_cursor();
     for (row = 0; row < UI_CURSOR_H; ++row) {

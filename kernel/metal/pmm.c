@@ -18,6 +18,11 @@ static uint64_t pmm_usable;
 static uint64_t pmm_used;
 static uint64_t pmm_free_count;
 static uint64_t pmm_cursor;
+#define PMM_DMA32_PAGES 16u
+#define PMM_DMA32_LIMIT (4ull * 1024ull * 1024ull * 1024ull)
+static uint64_t dma32_base;
+static uint32_t dma32_free;
+static void pmm_reserve_dma32(void);
 static Spinlock pmm_lock;
 static int pmm_depth[SMP_CPU_CAP];
 static uint64_t pmm_irq_flags[SMP_CPU_CAP];
@@ -216,6 +221,7 @@ void pmm_init(void) {
     serial_puts(" free=");
     serial_write_u64(pmm_free_count);
     serial_puts("\n");
+    pmm_reserve_dma32();
 }
 
 static uint64_t claim_run(uint64_t start, uint64_t count) {
@@ -321,6 +327,67 @@ uint64_t pmm_alloc(void) {
     }
     pmm_leave();
     return phys;
+}
+
+static void pmm_reserve_dma32(void) {
+    uint64_t phys;
+
+    dma32_base = 0;
+    dma32_free = 0;
+    phys = scan_usable_for_run(PMM_DMA32_PAGES, 0);
+    if (phys == 0 || phys + (uint64_t)PMM_DMA32_PAGES * PMM_PAGE > PMM_DMA32_LIMIT) {
+        if (phys != 0) {
+            pmm_free_contig(phys, PMM_DMA32_PAGES);
+        }
+        serial_puts("pmm dma32 miss\n");
+        return;
+    }
+    dma32_base = phys;
+    dma32_free = (1u << PMM_DMA32_PAGES) - 1u;
+    serial_puts("pmm dma32 ");
+    serial_write_hex(phys);
+    serial_puts("\n");
+}
+
+uint64_t pmm_alloc_dma32(uint64_t pages) {
+    uint32_t need;
+    uint32_t i;
+
+    if (dma32_base == 0 || pages == 0 || pages > PMM_DMA32_PAGES) {
+        return 0;
+    }
+    need = (1u << pages) - 1u;
+    pmm_enter();
+    for (i = 0; i + (uint32_t)pages <= PMM_DMA32_PAGES; ++i) {
+        uint32_t mask = need << i;
+        if ((dma32_free & mask) == mask) {
+            dma32_free &= ~mask;
+            pmm_leave();
+            return dma32_base + (uint64_t)i * PMM_PAGE;
+        }
+    }
+    pmm_leave();
+    return 0;
+}
+
+void pmm_free_dma32(uint64_t phys, uint64_t pages) {
+    uint64_t index;
+
+    if (!pmm_dma32_owns(phys) || pages == 0) {
+        return;
+    }
+    index = (phys - dma32_base) / PMM_PAGE;
+    if (index + pages > PMM_DMA32_PAGES) {
+        return;
+    }
+    pmm_enter();
+    dma32_free |= ((1u << pages) - 1u) << index;
+    pmm_leave();
+}
+
+int pmm_dma32_owns(uint64_t phys) {
+    return dma32_base != 0 && phys >= dma32_base &&
+           phys < dma32_base + (uint64_t)PMM_DMA32_PAGES * PMM_PAGE;
 }
 
 uint64_t pmm_alloc_contig(uint64_t count) {
