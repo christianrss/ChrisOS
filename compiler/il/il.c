@@ -93,6 +93,10 @@ int il_verify(const uint8_t *code, uint32_t size, const IlSig *sig) {
         case CL_OP_FEQ:
         case CL_OP_FLT:
         case CL_OP_FLE:
+        case CL_OP_ULT:
+        case CL_OP_ULE:
+        case CL_OP_UGT:
+        case CL_OP_UGE:
             if (!pop_t(st, &sp, &tmp) || !pop_t(st, &sp, &tmp2))
                 return 0;
             if (!push_t(st, &sp, maxd, bin_t(tmp, tmp2)))

@@ -84,6 +84,30 @@ isr_common:
     add rsp, 16
     iretq
 
+global nmi_entry
+extern mm_tlb_nmi_stop
+
+; Vector 2. Runs on the interrupted stack so smp_current_cpu still sees
+; the AP stack. An AP that missed the shootdown does not return. The BSP
+; must return: halting it froze the desktop when a program closed.
+nmi_entry:
+    cld
+    push rbx
+    push rbp
+    mov rbp, rsp
+    and rsp, -16
+    call mm_tlb_nmi_stop
+    test eax, eax
+    jnz .hang
+    mov rsp, rbp
+    pop rbp
+    pop rbx
+    iretq
+.hang:
+    cli
+    hlt
+    jmp .hang
+
 section .rodata
 align 8
 isr_stub_table:

@@ -45,6 +45,23 @@ void shade_set_light(float x, float y, float z, float r, float g, float b) {
     g_lv_ready = 0;
 }
 
+void shade_state_save(ShadeState *out) {
+    if (!out) {
+        return;
+    }
+    out->pos = g_light_pos;
+    out->col = g_light_col;
+}
+
+void shade_state_load(const ShadeState *in) {
+    if (!in) {
+        return;
+    }
+    g_light_pos = in->pos;
+    g_light_col = in->col;
+    g_lv_ready = 0;
+}
+
 void shade_get_light(Vec3f *pos, Vec3f *col) {
     if (pos)
         *pos = g_light_pos;

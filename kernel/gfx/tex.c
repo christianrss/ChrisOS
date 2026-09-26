@@ -3,6 +3,8 @@
 static uint32_t g_atlas[TEX_SLOTS][TEX_SIZE * TEX_SIZE];
 static int g_slot = 1;
 static int g_ready;
+static float g_ofs_u;
+static float g_ofs_v;
 
 static uint32_t rgb(int r, int g, int b) {
     if (r < 0)
@@ -51,6 +53,24 @@ void tex_init(void) {
     g_ready = 1;
 }
 
+void tex_state_save(TexState *out) {
+    if (!out) {
+        return;
+    }
+    out->slot = g_slot;
+    out->du = g_ofs_u;
+    out->dv = g_ofs_v;
+}
+
+void tex_state_load(const TexState *in) {
+    if (!in) {
+        return;
+    }
+    g_slot = in->slot;
+    g_ofs_u = in->du;
+    g_ofs_v = in->dv;
+}
+
 void tex_set_slot(int slot) {
     tex_init();
     if (slot < 0)
@@ -64,12 +84,21 @@ int tex_slot(void) {
     return g_slot;
 }
 
+void tex_ofs(float du, float dv) {
+    g_ofs_u = du;
+    g_ofs_v = dv;
+}
+
 uint32_t tex_sample(int slot, float u, float v) {
     int x;
     int y;
     tex_init();
     if (slot < 0 || slot >= TEX_SLOTS)
         slot = g_slot;
+    if (slot == 5) {
+        u += g_ofs_u;
+        v += g_ofs_v;
+    }
     while (u < 0.0f)
         u += 1.0f;
     while (u >= 1.0f)

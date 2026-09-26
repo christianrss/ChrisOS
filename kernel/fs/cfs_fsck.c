@@ -1,10 +1,27 @@
 /* LEARN:WS64-W05 */
 #include "cfs.h"
+#include "fs_lock.h"
 #include "storage_limits.h"
 
+#ifdef __freestanding__
+#include "heap.h"
+#else
+#include <stdlib.h>
+#endif
+
 static char g_reason[80];
-static uint8_t g_bitmap[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
-static uint8_t g_seen[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
+static uint8_t g_bitmap_fixed[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
+static uint8_t g_seen_fixed[CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE];
+static uint8_t *g_bitmap;
+static uint8_t *g_seen;
+static uint8_t *g_bitmap_heap;
+static uint8_t *g_seen_heap;
+static uint32_t g_data_lba;
+static uint32_t g_data_sectors;
+static uint32_t g_inode_lba;
+static uint32_t g_bitmap_lba;
+static uint32_t g_bitmap_sectors;
+static uint32_t g_journal_lba;
 static uint8_t g_sec[STOR_SECTOR_SIZE];
 static uint8_t g_dirsec[STOR_SECTOR_SIZE];
 static char g_names[CFS_INODE_COUNT][CFS_NAME_MAX + 1u];
@@ -34,9 +51,40 @@ static void bit_set(uint8_t *map, uint32_t index) {
     map[index / 8u] |= (uint8_t)(1u << (index % 8u));
 }
 
+static void *fsck_alloc(uint32_t size) {
+#ifdef __freestanding__
+    return kmalloc((uint64_t)size);
+#else
+    return malloc((size_t)size);
+#endif
+}
+
+static void fsck_free(void *p) {
+    if (!p) return;
+#ifdef __freestanding__
+    kfree(p);
+#else
+    free(p);
+#endif
+}
+
+static void fsck_maps_reset(void) {
+    fsck_free(g_bitmap_heap);
+    fsck_free(g_seen_heap);
+    g_bitmap_heap = 0;
+    g_seen_heap = 0;
+    g_bitmap = 0;
+    g_seen = 0;
+}
+
+static void fsck_maps_cleanup(int *held) {
+    (void)held;
+    fsck_maps_reset();
+}
+
 static int data_lba_valid(uint32_t lba) {
-    return lba >= CFS_DATA_LBA &&
-           lba < CFS_DATA_LBA + CFS_DATA_SECTORS;
+    return lba >= g_data_lba &&
+           lba < g_data_lba + g_data_sectors;
 }
 
 static int note_block(uint32_t lba, int *errors) {
@@ -46,7 +94,7 @@ static int note_block(uint32_t lba, int *errors) {
         (*errors)++;
         return -1;
     }
-    idx = lba - CFS_DATA_LBA;
+    idx = lba - g_data_lba;
     if (bit_get(g_seen, idx)) {
         set_reason("duplicate block");
         (*errors)++;
@@ -151,7 +199,7 @@ static int check_dirents(BlockDevice *dev, const CfsInode *inode,
                 g_names[local][ent.name_len] = 0;
                 local++;
             }
-            rc = bd_read(dev, CFS_INODE_LBA + ent.inode / per, 1u, g_sec);
+            rc = bd_read(dev, g_inode_lba + ent.inode / per, 1u, g_sec);
             if (rc != BD_OK) {
                 set_reason("inode io");
                 return CFS_EIO;
@@ -188,7 +236,7 @@ static int walk_dir(BlockDevice *dev, uint32_t id, int *errors) {
         return 0;
     }
     g_anc[id] = 1u;
-    rc = bd_read(dev, CFS_INODE_LBA + id / per, 1u, g_sec);
+    rc = bd_read(dev, g_inode_lba + id / per, 1u, g_sec);
     if (rc != BD_OK) {
         set_reason("inode io");
         return CFS_EIO;
@@ -211,19 +259,20 @@ static int walk_dir(BlockDevice *dev, uint32_t id, int *errors) {
 }
 
 int cfs_fsck(Cfs *fs) {
+    CFS_LOCK();
+    int maps_held __attribute__((cleanup(fsck_maps_cleanup))) = 1;
     CfsSuper super;
     CfsInode inode;
-    uint32_t i, b, need, id, per;
+    uint32_t i, b, need, id, per, map_bytes;
+    uint64_t max_bytes;
     int errors = 0;
     int rc;
 
+    (void)maps_held;
     g_reason[0] = 0;
+    fsck_maps_reset();
     for (i = 0; i < CFS_INODE_COUNT; i++) {
         g_anc[i] = 0u;
-    }
-    for (i = 0; i < CFS_BITMAP_SECTORS * STOR_SECTOR_SIZE; i++) {
-        g_bitmap[i] = 0u;
-        g_seen[i] = 0u;
     }
     if (!fs || !fs->mounted || !fs->dev) {
         set_reason("not mounted");
@@ -239,8 +288,37 @@ int cfs_fsck(Cfs *fs) {
         set_reason("super checksum");
         return CFS_ECORRUPT;
     }
+    g_data_lba = super.data_lba;
+    g_data_sectors = super.data_sectors;
+    g_inode_lba = super.inode_lba;
+    g_bitmap_lba = super.bitmap_lba;
+    g_bitmap_sectors = super.bitmap_sectors;
+    g_journal_lba = super.journal_lba;
+    if (g_bitmap_sectors == 0u ||
+        g_bitmap_sectors > 0xffffffffu / STOR_SECTOR_SIZE) {
+        set_reason("bitmap size");
+        return CFS_EINVAL;
+    }
+    map_bytes = g_bitmap_sectors * STOR_SECTOR_SIZE;
+    if (g_bitmap_sectors <= CFS_BITMAP_SECTORS) {
+        g_bitmap = g_bitmap_fixed;
+        g_seen = g_seen_fixed;
+    } else {
+        g_bitmap_heap = fsck_alloc(map_bytes);
+        g_seen_heap = fsck_alloc(map_bytes);
+        if (!g_bitmap_heap || !g_seen_heap) {
+            set_reason("bitmap size");
+            return CFS_ENOSPC;
+        }
+        g_bitmap = g_bitmap_heap;
+        g_seen = g_seen_heap;
+    }
+    for (i = 0; i < map_bytes; i++) {
+        g_bitmap[i] = 0u;
+        g_seen[i] = 0u;
+    }
 
-    rc = bd_read(fs->dev, CFS_JOURNAL_LBA, 1u, g_sec);
+    rc = bd_read(fs->dev, g_journal_lba, 1u, g_sec);
     if (rc != BD_OK) {
         set_reason("journal io");
         return CFS_EIO;
@@ -260,8 +338,8 @@ int cfs_fsck(Cfs *fs) {
         }
     }
 
-    for (i = 0; i < CFS_BITMAP_SECTORS; i++) {
-        rc = bd_read(fs->dev, CFS_BITMAP_LBA + i, 1u,
+    for (i = 0; i < g_bitmap_sectors; i++) {
+        rc = bd_read(fs->dev, g_bitmap_lba + i, 1u,
                      g_bitmap + i * STOR_SECTOR_SIZE);
         if (rc != BD_OK) {
             set_reason("bitmap io");
@@ -271,7 +349,7 @@ int cfs_fsck(Cfs *fs) {
 
     per = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
     for (id = 0; id < CFS_INODE_COUNT; id++) {
-        rc = bd_read(fs->dev, CFS_INODE_LBA + id / per, 1u, g_sec);
+        rc = bd_read(fs->dev, g_inode_lba + id / per, 1u, g_sec);
         if (rc != BD_OK) {
             set_reason("inode io");
             return CFS_EIO;
@@ -290,7 +368,10 @@ int cfs_fsck(Cfs *fs) {
             errors++;
             continue;
         }
-        if (inode.size > CFS_MAX_FILE_SIZE) {
+        max_bytes = (uint64_t)g_data_sectors * STOR_SECTOR_SIZE;
+        if (max_bytes > 0xffffffffull)
+            max_bytes = 0xffffffffull;
+        if ((uint64_t)inode.size > max_bytes) {
             set_reason("size vs blocks");
             errors++;
         }
@@ -320,6 +401,8 @@ int cfs_fsck(Cfs *fs) {
             (void)note_ptr_table(fs->dev, inode.indirect, &errors, 1);
         if (inode.double_indirect)
             (void)note_ptr_table(fs->dev, inode.double_indirect, &errors, 2);
+        if (inode.triple_indirect)
+            (void)note_ptr_table(fs->dev, inode.triple_indirect, &errors, 3);
         if (id == CFS_ROOT_INODE && inode.type != CFS_INODE_DIR) {
             set_reason("root type");
             errors++;
@@ -331,7 +414,7 @@ int cfs_fsck(Cfs *fs) {
         return rc;
     }
 
-    for (i = 0; i < CFS_DATA_SECTORS; i++) {
+    for (i = 0; i < g_data_sectors; i++) {
         if (bit_get(g_bitmap, i) && !bit_get(g_seen, i)) {
             set_reason("bitmap leak");
             errors++;

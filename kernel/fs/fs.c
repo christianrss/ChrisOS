@@ -180,6 +180,10 @@ static void seed_dirs(Cfs *fs) {
     if (rc != CFS_OK && rc != CFS_EEXIST) {
         seed_log_fail("GAMES", rc);
     }
+    rc = cfs_mkdir(fs, "SYS");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("SYS", rc);
+    }
     rc = cfs_mkdir(fs, "SRC");
     if (rc != CFS_OK && rc != CFS_EEXIST) {
         seed_log_fail("SRC", rc);
@@ -187,6 +191,42 @@ static void seed_dirs(Cfs *fs) {
     rc = cfs_mkdir(fs, "BIN");
     if (rc != CFS_OK && rc != CFS_EEXIST) {
         seed_log_fail("BIN", rc);
+    }
+    rc = cfs_mkdir(fs, "LIB");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("LIB", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/DESKTOP");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/DESKTOP", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/TASKBAR");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/TASKBAR", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/SHELL");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/SHELL", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/EXPLORER");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/EXPLORER", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/EDITOR");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/EDITOR", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/TASKMGR");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/TASKMGR", rc);
+    }
+    rc = cfs_mkdir(fs, "APPS/BALL");
+    if (rc != CFS_OK && rc != CFS_EEXIST) {
+        seed_log_fail("APPS/BALL", rc);
     }
 }
 
@@ -248,6 +288,34 @@ int fs_read(const char *path, void *out, int out_cap) {
         return cfs_read(fs, path, out, (uint32_t)out_cap);
     }
     return ram_read(path, (unsigned char *)out, out_cap);
+}
+
+int fs_read_at(const char *path, uint32_t offset, void *out, int out_cap) {
+    Cfs *fs;
+    int id;
+    int i;
+    int n;
+    if (out_cap < 0 || (!out && out_cap > 0))
+        return CFS_EINVAL;
+    if (g_backend == FS_BACKEND_CFS) {
+        fs = storage_cfs();
+        if (!fs)
+            return CFS_ENOTMOUNTED;
+        return cfs_read_at(fs, path, offset, out, (uint32_t)out_cap);
+    }
+    id = ram_find(path);
+    if (id < 0)
+        return CFS_ENOENT;
+    if (offset >= (uint32_t)g_ram_files[id].size)
+        return 0;
+    n = g_ram_files[id].size - (int)offset;
+    if (n > out_cap)
+        n = out_cap;
+    for (i = 0; i < n; ++i) {
+        ((unsigned char *)out)[i] =
+            g_ram_arena[g_ram_files[id].offset + (int)offset + i];
+    }
+    return n;
 }
 
 int fs_mkdir(const char *path) {
@@ -319,6 +387,23 @@ int fs_stat(const char *path, uint32_t *size, uint16_t *type) {
         *type = CFS_INODE_FILE;
     }
     return CFS_OK;
+}
+
+int fs_mtime(const char *path, uint64_t *out) {
+    Cfs *fs;
+    if (!out) {
+        return CFS_EINVAL;
+    }
+    if (g_backend == FS_BACKEND_CFS) {
+        fs = storage_cfs();
+        if (!fs) {
+            return CFS_ENOTMOUNTED;
+        }
+        return cfs_mtime(fs, path, out);
+    }
+    *out = 0;
+    (void)path;
+    return CFS_ENOENT;
 }
 
 int fs_list_at(const char *path, FsListFn fn, void *ctx) {

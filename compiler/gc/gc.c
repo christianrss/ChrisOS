@@ -21,6 +21,14 @@ typedef struct GcObj {
     uint8_t *payload;
 } GcObj;
 
+typedef struct GcType {
+    int used;
+    uint32_t type_id;
+    uint32_t size;
+    uint32_t gc_bits;
+    char name[32];
+} GcType;
+
 static GcObj g_obj[GC_MAX];
 static int g_n;
 static void **g_roots[256];
@@ -28,14 +36,78 @@ static int g_nroots;
 static uint8_t g_nursery[GC_NURSERY];
 static uint32_t g_nused;
 static int g_req;
+static GcType g_types[GC_TYPE_MAX];
+static int g_ntypes;
 
 void gc_collect(void);
+
+void gc_type_clear(void) {
+    int i;
+    for (i = 0; i < GC_TYPE_MAX; ++i)
+        g_types[i].used = 0;
+    g_ntypes = 0;
+}
+
+int gc_type_register(uint32_t type_id, uint32_t size, uint32_t gc_bits,
+                     const char *name) {
+    int i;
+    int slot = -1;
+    for (i = 0; i < GC_TYPE_MAX; ++i) {
+        if (g_types[i].used && g_types[i].type_id == type_id) {
+            g_types[i].size = size;
+            g_types[i].gc_bits = gc_bits;
+            if (name) {
+                int k = 0;
+                while (name[k] && k < 31) {
+                    g_types[i].name[k] = name[k];
+                    k++;
+                }
+                g_types[i].name[k] = 0;
+            }
+            return 1;
+        }
+        if (!g_types[i].used && slot < 0)
+            slot = i;
+    }
+    if (slot < 0)
+        return 0;
+    g_types[slot].used = 1;
+    g_types[slot].type_id = type_id;
+    g_types[slot].size = size;
+    g_types[slot].gc_bits = gc_bits;
+    g_types[slot].name[0] = 0;
+    if (name) {
+        int k = 0;
+        while (name[k] && k < 31) {
+            g_types[slot].name[k] = name[k];
+            k++;
+        }
+        g_types[slot].name[k] = 0;
+    }
+    g_ntypes++;
+    return 1;
+}
+
+int gc_type_lookup(uint32_t type_id, uint32_t *size_out, uint32_t *gc_bits_out) {
+    int i;
+    for (i = 0; i < GC_TYPE_MAX; ++i) {
+        if (g_types[i].used && g_types[i].type_id == type_id) {
+            if (size_out)
+                *size_out = g_types[i].size;
+            if (gc_bits_out)
+                *gc_bits_out = g_types[i].gc_bits;
+            return 1;
+        }
+    }
+    return 0;
+}
 
 void gc_init(void) {
     g_n = 0;
     g_nroots = 0;
     g_nused = 0;
     g_req = 0;
+    gc_type_clear();
 }
 
 void gc_request(void) {
@@ -54,8 +126,12 @@ void gc_poll(void) {
 void *gc_alloc(uint32_t type_id, uint32_t size) {
     uint8_t *p;
     int i;
+    uint32_t tsz = 0;
+    uint32_t bits = 0;
     if (size == 0)
         size = 8;
+    if (gc_type_lookup(type_id, &tsz, &bits) && tsz > size)
+        size = tsz;
     if (g_n == GC_MAX)
         gc_collect();
     if (g_n == GC_MAX)
@@ -94,17 +170,40 @@ static int is_ptr(uint8_t *p) {
 }
 
 static void mark_obj(int i) {
-    uint32_t off;
+    uint32_t bits = 0;
+    uint32_t tsz = 0;
+    uint32_t bit;
     if (i < 0 || g_obj[i].marked)
         return;
     g_obj[i].marked = 1;
-    for (off = 0; off + sizeof(void *) <= g_obj[i].size; off += sizeof(void *)) {
-        void *cand;
-        int k;
-        cand = *(void **)(g_obj[i].payload + off);
-        k = is_ptr((uint8_t *)cand);
-        if (k >= 0)
-            mark_obj(k);
+    if (gc_type_lookup(g_obj[i].type_id, &tsz, &bits) && bits != 0) {
+        for (bit = 0; bit < 32; ++bit) {
+            uint32_t off;
+            void *cand;
+            int k;
+            if (((bits >> bit) & 1u) == 0)
+                continue;
+            off = bit * (uint32_t)sizeof(void *);
+            if (off + sizeof(void *) > g_obj[i].size)
+                continue;
+            cand = *(void **)(g_obj[i].payload + off);
+            k = is_ptr((uint8_t *)cand);
+            if (k >= 0)
+                mark_obj(k);
+        }
+        return;
+    }
+    {
+        uint32_t off;
+        for (off = 0; off + sizeof(void *) <= g_obj[i].size;
+             off += (uint32_t)sizeof(void *)) {
+            void *cand;
+            int k;
+            cand = *(void **)(g_obj[i].payload + off);
+            k = is_ptr((uint8_t *)cand);
+            if (k >= 0)
+                mark_obj(k);
+        }
     }
 }
 

@@ -1,11 +1,17 @@
 #include "syscall.h"
 
+#include "bootinfo.h"
 #include "gdt.h"
 #include "graphics.h"
 #include "idt.h"
 #include "serial.h"
 #include "fs.h"
 #include "input.h"
+#include "mm.h"
+#include "pmm.h"
+#include "proc.h"
+#include "smp.h"
+#include "buildid.h"
 
 static int g_user_exited;
 static int g_user_exit_code;
@@ -18,6 +24,7 @@ static uint64_t g_user_map_hi = 0x500000ull;
 
 typedef struct UFile {
     int used;
+    int owner;
     char path[UPATH_MAX];
 } UFile;
 
@@ -40,34 +47,103 @@ int user_exit_code(void) {
     return g_user_exit_code;
 }
 
-static int copy_to_user(uint64_t uaddr, const void *ksrc, uint32_t n) {
-    uint32_t i;
-    uint8_t *dst;
-    if (n == 0)
+static int user_span_ok(uint64_t uaddr, uint32_t n) {
+    if (n == 0) {
+        return 1;
+    }
+    if (uaddr >= 0x0000800000000000ull) {
         return 0;
-    if (uaddr < g_user_map_lo || uaddr + (uint64_t)n > g_user_map_hi)
-        return -1;
-    dst = (uint8_t *)(uintptr_t)uaddr;
-    for (i = 0; i < n; ++i)
-        dst[i] = ((const uint8_t *)ksrc)[i];
-    return 0;
+    }
+    if ((uint64_t)n > 0x0000800000000000ull - uaddr) {
+        return 0;
+    }
+    if (uaddr < g_user_map_lo || uaddr >= g_user_map_hi) {
+        return 0;
+    }
+    if ((uint64_t)n > g_user_map_hi - uaddr) {
+        return 0;
+    }
+    return 1;
 }
 
-static int copy_from_user(uint64_t uaddr, void *kdst, uint32_t n) {
-    uint32_t i;
-    const uint8_t *src;
+/* Copy through the HHDM of pages that are present in this process.
+ * A missing page returns an error instead of faulting in ring 0. */
+static int user_copy(uint64_t uaddr, uint8_t *kbuf, uint32_t n, int to_user) {
+    uint64_t cr3;
+    uint32_t done = 0;
 
+    if (!user_span_ok(uaddr, n)) {
+        return -1;
+    }
     if (n == 0) {
         return 0;
     }
-    if (uaddr < g_user_map_lo || uaddr + (uint64_t)n > g_user_map_hi) {
+    cr3 = proc_cr3(proc_current());
+    if (cr3 == 0) {
         return -1;
     }
-    src = (const uint8_t *)(uintptr_t)uaddr;
-    for (i = 0; i < n; ++i) {
-        ((uint8_t *)kdst)[i] = src[i];
+    while (done < n) {
+        uint64_t addr = uaddr + done;
+        uint64_t phys = 0;
+        uint64_t flags = 0;
+        uint32_t page_off;
+        uint32_t chunk;
+        uint8_t *via;
+        if (mm_translate(cr3, addr, &phys, &flags) != 0) {
+            return -1;
+        }
+        if ((flags & MM_PRESENT) == 0 || (flags & MM_USER) == 0) {
+            return -1;
+        }
+        if (to_user && (flags & MM_WRITE) == 0) {
+            return -1;
+        }
+        page_off = (uint32_t)(addr & (PMM_PAGE - 1ull));
+        chunk = (uint32_t)PMM_PAGE - page_off;
+        if (chunk > n - done) {
+            chunk = n - done;
+        }
+        via = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(phys);
+        if (to_user) {
+            uint32_t i;
+            for (i = 0; i < chunk; ++i) {
+                via[i] = kbuf[done + i];
+            }
+        } else {
+            uint32_t i;
+            for (i = 0; i < chunk; ++i) {
+                kbuf[done + i] = via[i];
+            }
+        }
+        done += chunk;
     }
     return 0;
+}
+
+static int copy_to_user(uint64_t uaddr, const void *ksrc, uint32_t n) {
+    return user_copy(uaddr, (uint8_t *)(uintptr_t)ksrc, n, 1);
+}
+
+static int copy_from_user(uint64_t uaddr, void *kdst, uint32_t n) {
+    return user_copy(uaddr, (uint8_t *)kdst, n, 0);
+}
+
+static int ufile_owned(int fd) {
+    int pid = proc_current();
+    if (fd < 2 || fd >= UFILE_MAX || !g_ufile[fd].used) {
+        return 0;
+    }
+    return g_ufile[fd].owner == pid;
+}
+
+void syscall_close_owner(int pid) {
+    int fd;
+    for (fd = 2; fd < UFILE_MAX; ++fd) {
+        if (g_ufile[fd].used && g_ufile[fd].owner == pid) {
+            g_ufile[fd].used = 0;
+            g_ufile[fd].owner = 0;
+        }
+    }
 }
 
 static void syscall_return_to_kernel(struct irq_frame *frame) {
@@ -80,6 +156,11 @@ static void syscall_return_to_kernel(struct irq_frame *frame) {
 void syscall_dispatch(struct irq_frame *frame) {
     uint64_t nr = frame->rax;
 
+    if (smp_current_cpu() != 0u) {
+        frame->rax = (uint64_t)-1;
+        frame->rip += 2;
+        return;
+    }
     g_user_exited = 0;
 
     if (nr == SYS_EXIT) {
@@ -89,7 +170,9 @@ void syscall_dispatch(struct irq_frame *frame) {
     }
 
     if (nr == SYS_WRITE) {
-        uint8_t buf[80];
+        /* +1 so the NUL terminator at buf[n] is in bounds for the maximum
+         * accepted length (n == 80); previously buf[80] overflowed the stack. */
+        uint8_t buf[81];
         uint32_t n = (uint32_t)frame->rdx;
 
         if (frame->rdi != 1 || n > 80u) {
@@ -102,7 +185,11 @@ void syscall_dispatch(struct irq_frame *frame) {
             frame->rip += 2;
             return;
         }
-        buf[n] = 0;
+        if (syscall_write_term(buf, (int)sizeof(buf), n) != 0) {
+            frame->rax = (uint64_t)-1;
+            frame->rip += 2;
+            return;
+        }
         serial_puts((const char *)buf);
         frame->rax = n;
         frame->rip += 2;
@@ -132,6 +219,7 @@ void syscall_dispatch(struct irq_frame *frame) {
             if (!g_ufile[fd].used) {
                 int k;
                 g_ufile[fd].used = 1;
+                g_ufile[fd].owner = proc_current();
                 for (k = 0; k < UPATH_MAX; ++k)
                     g_ufile[fd].path[k] = path[k];
                 frame->rax = (uint64_t)fd;
@@ -149,7 +237,7 @@ void syscall_dispatch(struct irq_frame *frame) {
         uint32_t n = (uint32_t)frame->rdx;
         char kbuf[512];
         int got;
-        if (fd < 2 || fd >= UFILE_MAX || !g_ufile[fd].used || n > 512u) {
+        if (!ufile_owned(fd) || n > 512u) {
             frame->rax = (uint64_t)-1;
             frame->rip += 2;
             return;
@@ -186,7 +274,7 @@ void syscall_dispatch(struct irq_frame *frame) {
             frame->rip += 2;
             return;
         }
-        if (fd < 2 || fd >= UFILE_MAX || !g_ufile[fd].used) {
+        if (!ufile_owned(fd)) {
             frame->rax = (uint64_t)-1;
             frame->rip += 2;
             return;
@@ -198,8 +286,10 @@ void syscall_dispatch(struct irq_frame *frame) {
 
     if (nr == SYS_FCLOSE) {
         int fd = (int)frame->rdi;
-        if (fd >= 2 && fd < UFILE_MAX)
+        if (ufile_owned(fd)) {
             g_ufile[fd].used = 0;
+            g_ufile[fd].owner = 0;
+        }
         frame->rax = 0;
         frame->rip += 2;
         return;
@@ -216,13 +306,22 @@ void syscall_dispatch(struct irq_frame *frame) {
 }
 
 void panic_user_fault(struct irq_frame *frame, uint64_t cr2) {
+    int pid = proc_current();
+    proc_record_fault(pid, 0, cr2, frame->rip);
+    if (pid > 0) {
+        proc_destroy(pid);
+    }
     serial_puts("\nuser fault rip=");
     serial_write_hex(frame->rip);
     serial_puts(" cr2=");
     serial_write_hex(cr2);
     serial_puts(" err=");
     serial_write_hex(frame->error);
-    serial_puts(" (returned to kernel)\n");
+    serial_puts(" cpu=");
+    serial_write_u64(smp_current_cpu());
+    serial_puts(" build=");
+    serial_puts(build_id());
+    serial_puts(" (process ended)\n");
     g_user_exit_code = -11;
     syscall_return_to_kernel(frame);
 }

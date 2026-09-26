@@ -5,7 +5,7 @@
 
 #define GFX2D_PALETTE_SIZE 16
 #define GFX2D_ATLAS_TILES 16
-#define GFX2D_MAX_AREA 64000
+#define GFX2D_MAX_AREA (4096 * 4096)
 
 extern const uint32_t gfx2d_palette[GFX2D_PALETTE_SIZE];
 
@@ -20,5 +20,7 @@ void gfx2d_sprite(uint32_t *pixels, int w, int h, const uint8_t *src,
                   int x, int y, int sw, int sh, int key);
 void gfx2d_tilemap(uint32_t *pixels, int w, int h, const uint8_t *data,
                    int mapw, int maph, int tw, int th, int ox, int oy);
+void gfx2d_layer(uint32_t *dst, int dw, int dh, const uint32_t *src, int sw,
+                 int sh, int camx, int camy);
 
 #endif

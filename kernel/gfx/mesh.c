@@ -6,6 +6,9 @@
 #include "tile.h"
 #include "tri.h"
 #include "zbuf.h"
+#ifdef __freestanding__
+#include "serial.h"
+#endif
 
 #define MESH_MAX_V 2048
 #define MESH_MAX_T 4096
@@ -81,6 +84,7 @@ int mesh_draw(ClvmVm *vm, int32_t addr, int32_t vertices, int32_t triangles,
         return -1;
     math3d_set_screen(w, h);
     zbuf_set_size(w, h);
+    zbuf_clear();
     math3d_view(&view);
     mat4f_rotate_y(&rot, (float)angle_deg);
     mat4f_mul(&mvp, &view, &rot);
@@ -181,6 +185,17 @@ int mesh_draw_f(ClvmVm *vm, int32_t addr, int32_t vertices, int32_t triangles,
     }
     if (color >= 16)
         texid = (int)(color - 16);
+    if (n > 0) {
+        static int s_mesh_once;
+        if (!s_mesh_once) {
+            s_mesh_once = 1;
+#ifdef __freestanding__
+            serial_puts("mesh: drew tris=");
+            serial_write_u64((uint64_t)(uint32_t)n);
+            serial_puts("\n");
+#endif
+        }
+    }
     for (i = 0; i < n; ++i) {
         int a = g_t0[i];
         int b = g_t1[i];

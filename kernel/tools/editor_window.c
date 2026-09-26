@@ -191,30 +191,7 @@ static int map_input_event(const InputEvent *event) {
 }
 
 static void editor_auto_scroll(Editor *e, int visible_rows, int visible_cols) {
-    if (visible_rows < 1) {
-        visible_rows = 1;
-    }
-    if (visible_cols < 1) {
-        visible_cols = 1;
-    }
-    if (e->row < e->scroll_row) {
-        e->scroll_row = e->row;
-    }
-    if (e->row >= e->scroll_row + visible_rows) {
-        e->scroll_row = e->row - visible_rows + 1;
-    }
-    if (e->scroll_row < 0) {
-        e->scroll_row = 0;
-    }
-    if (e->col < e->scroll_col) {
-        e->scroll_col = e->col;
-    }
-    if (e->col >= e->scroll_col + visible_cols) {
-        e->scroll_col = e->col - visible_cols + 1;
-    }
-    if (e->scroll_col < 0) {
-        e->scroll_col = 0;
-    }
+    ed_auto_scroll(e, visible_rows, visible_cols);
 }
 
 static void editor_draw_status(const Task *task, const Editor *e) {
@@ -254,72 +231,31 @@ static void editor_draw_status(const Task *task, const Editor *e) {
     }
 }
 
-static void dbg_hex(char *dst, int cap, const char *lab, uint32_t v) {
-    int n = 0;
-    char hex[8];
-    int h = 0;
-    if (cap < 2) {
-        return;
-    }
-    while (lab[n] && n + 1 < cap) {
-        dst[n] = lab[n];
-        n++;
-    }
-    if (v == 0) {
-        if (n + 1 < cap)
-            dst[n++] = '0';
-        dst[n] = 0;
-        return;
-    }
-    while (v && h < 8) {
-        hex[h++] = "0123456789abcdef"[v & 15];
-        v >>= 4;
-    }
-    while (h && n + 1 < cap)
-        dst[n++] = hex[--h];
-    dst[n] = 0;
-}
-
 static void editor_draw_debug(const Task *task) {
     int x;
     int y;
-    int w = 108;
-    int i;
-    if (!task || !lang_debug_paused()) {
+    int w;
+    int h = 64;
+    char line[96];
+    if (!task || !lang_debug_on())
         return;
-    }
-    x = task->frame.x + task->frame.width - w - 2;
-    y = task->frame.y + TASK_TITLE_HEIGHT + EDITOR_CHROME_H + 2;
-    gfx_fill_rect(x, y, w, 86, 0x00202830u);
-    {
-        char line[24];
-        dbg_hex(line, 24, "pc ", lang_debug_pc());
-        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                              x + 2, y + 2, 0x00E0E0E0u, x, y, w, 86);
-        {
-            unsigned ln = (unsigned)lang_debug_line();
-            dbg_hex(line, 24, "ln ", ln);
-            gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                                  x + 2, y + 16, 0x00E0E0E0u, x, y, w, 86);
-        }
-        for (i = 0; i < 2; ++i) {
-            char lab[4];
-            lab[0] = 's';
-            lab[1] = (char)('0' + i);
-            lab[2] = ' ';
-            lab[3] = 0;
-            dbg_hex(line, 24, lab, (uint32_t)lang_debug_stack(i));
-            gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
-                                  line, x + 2, y + 30 + i * 14, 0x00E0E0E0u,
-                                  x, y, w, 86);
-        }
-        dbg_hex(line, 24, "m0 ", (uint32_t)lang_debug_mem(0));
-        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                              x + 2, y + 58, 0x00E0E0E0u, x, y, w, 86);
-        dbg_hex(line, 24, "m8 ", (uint32_t)lang_debug_mem(8));
-        gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
-                              x + 2, y + 72, 0x00E0E0E0u, x, y, w, 86);
-    }
+    x = task->frame.x;
+    w = task->frame.width;
+    y = task->frame.y + TASK_TITLE_HEIGHT + task->frame.body_height
+        - EDITOR_STATUS_H - h;
+    gfx_fill_rect(x, y, w, h, 0x00182028u);
+    (void)lang_debug_text(0, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 2, 0x00FFE080u, x, y, w, h);
+    (void)lang_debug_text(1, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 16, 0x00C0E0C0u, x, y, w, h);
+    (void)lang_debug_text(2, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 30, 0x00E0E0E0u, x, y, w, h);
+    (void)lang_debug_text(5, line, (int)sizeof(line));
+    gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height, line,
+                          x + 4, y + 44, 0x00A0C8E0u, x, y, w, h);
 }
 
 static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
@@ -328,8 +264,10 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
     int text_x = x + EDITOR_PAD_X;
     int text_y = body_y + EDITOR_CHROME_H + EDITOR_PAD_Y;
     int text_w = task->frame.width - EDITOR_PAD_X * 2;
+    int dbg_h = lang_debug_on() ? 64 : 0;
     int text_h = task->frame.body_height - EDITOR_STATUS_H - EDITOR_CHROME_H
-                 - EDITOR_PAD_Y * 2;
+                 - EDITOR_PAD_Y * 2 - dbg_h;
+    uint16_t dline = 0;
     int glyph_h = font_arial_height;
     int advance = gfx_text_advance(font_arial_width);
     int visible_rows;
@@ -346,6 +284,8 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
     }
     visible_rows = text_h / glyph_h;
     visible_cols = text_w / advance;
+    if (lang_debug_paused())
+        dline = lang_debug_line();
     editor_auto_scroll(e, visible_rows, visible_cols);
     task->state.editor.scroll_row = e->scroll_row;
     task->state.editor.scroll_col = e->scroll_col;
@@ -364,9 +304,18 @@ static void editor_draw_text(Task *task, Editor *e, uint64_t ticks) {
         while (src[i] && i < skip) {
             i++;
         }
+        if (dline && (int)dline == line + 1) {
+            gfx_fill_rect(text_x, text_y + r * glyph_h, text_w, glyph_h,
+                          0x00304058u);
+        }
+        if (lang_bp_has(line + 1)) {
+            gfx_fill_rect(x + 1, text_y + r * glyph_h, 3, glyph_h, 0x00C04040u);
+        }
         gfx_draw_text_clipped(font_row, font_arial_width, font_arial_height,
                               src + i,
-                              text_x, text_y + r * glyph_h, CHRIS_TEXT_COLOR,
+                              text_x, text_y + r * glyph_h,
+                              (dline && (int)dline == line + 1) ? 0x00FFE080u
+                                                                : CHRIS_TEXT_COLOR,
                               text_x, text_y, text_w, text_h);
     }
 
@@ -391,8 +340,10 @@ static int g_mode;
 static char g_namebuf[ED_NAME];
 static int g_pending; /* 1=new after confirm, 2=open after confirm */
 static char g_picks[PICK_MAX][ED_NAME];
+static uint16_t g_pick_type[PICK_MAX];
 static int g_npick;
 static int g_psel;
+static char g_pick_dir[FS_PATH];
 
 static void name_from_editor(void) {
     int i = 0;
@@ -403,6 +354,44 @@ static void name_from_editor(void) {
     g_namebuf[i] = 0;
 }
 
+static int pick_join(const char *dir, const char *name, char *out, int cap) {
+    int i = 0;
+    int j = 0;
+    if (!out || cap < 2) {
+        return 0;
+    }
+    if (dir && dir[0]) {
+        while (dir[i] && i < cap - 1) {
+            out[i] = dir[i];
+            i++;
+        }
+        if (i < cap - 1 && name && name[0]) {
+            out[i++] = '/';
+        }
+    }
+    while (name && name[j] && i < cap - 1) {
+        out[i++] = name[j++];
+    }
+    out[i] = 0;
+    return 1;
+}
+
+static void pick_parent(void) {
+    int n = 0;
+    int slash = -1;
+    while (g_pick_dir[n]) {
+        if (g_pick_dir[n] == '/') {
+            slash = n;
+        }
+        n++;
+    }
+    if (slash < 0) {
+        g_pick_dir[0] = 0;
+        return;
+    }
+    g_pick_dir[slash] = 0;
+}
+
 static int pick_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
     int *n = ctx;
     int i = 0;
@@ -410,29 +399,46 @@ static int pick_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
     if (*n >= PICK_MAX) {
         return 0;
     }
-    if (type == CFS_INODE_DIR) {
-        g_picks[*n][0] = '/';
-        while (name[i] && i < ED_NAME - 2) {
-            g_picks[*n][i + 1] = name[i];
-            i++;
-        }
-        g_picks[*n][i + 1] = 0;
-    } else {
-        while (name[i] && i < ED_NAME - 1) {
-            g_picks[*n][i] = name[i];
-            i++;
-        }
-        g_picks[*n][i] = 0;
+    while (name[i] && i < ED_NAME - 1) {
+        g_picks[*n][i] = name[i];
+        i++;
     }
+    g_picks[*n][i] = 0;
+    g_pick_type[*n] = type;
     (*n)++;
     return 0;
 }
 
-static void start_picker(void) {
+static void reload_picker(void) {
     g_npick = 0;
     g_psel = 0;
-    (void)fs_list_at("", pick_cb, &g_npick);
+    (void)fs_list_at(g_pick_dir, pick_cb, &g_npick);
+}
+
+static void start_picker(void) {
+    g_pick_dir[0] = 0;
+    reload_picker();
     g_mode = ED_MODE_PICK;
+}
+
+static void pick_activate(Editor *e, int index) {
+    char path[FS_PATH];
+    if (index < 0 || index >= g_npick) {
+        return;
+    }
+    if (!pick_join(g_pick_dir, g_picks[index], path, FS_PATH)) {
+        ed_set_status(e, "path too long");
+        return;
+    }
+    if (g_pick_type[index] == CFS_INODE_DIR) {
+        pick_join(g_pick_dir, g_picks[index], g_pick_dir, FS_PATH);
+        reload_picker();
+        ed_set_status(e, g_pick_dir[0] ? g_pick_dir : "/");
+        return;
+    }
+    ed_set_name(e, path);
+    (void)ed_open(e);
+    g_mode = ED_MODE_EDIT;
 }
 
 static void do_new(void) {
@@ -541,31 +547,52 @@ static void editor_run(Task *task, uint64_t ticks) {
         return;
     }
     if (g_mode == ED_MODE_PICK) {
-        ui_label(bx, by, 200, 16, "Open file (root)", CHRIS_TEXT_COLOR);
+        char label[80];
+        int row_h = font_arial_height > 0 ? font_arial_height : 16;
+        int nlab = 0;
+        const char *shown = g_pick_dir[0] ? g_pick_dir : "/";
+        label[nlab++] = 'O';
+        label[nlab++] = 'p';
+        label[nlab++] = 'e';
+        label[nlab++] = 'n';
+        label[nlab++] = ' ';
+        while (shown[0] && nlab < 78) {
+            label[nlab++] = *shown++;
+        }
+        label[nlab] = 0;
+        ui_label(bx, by, task->frame.width - 8, row_h, label, CHRIS_TEXT_COLOR);
+        if (ui_button(task, bx, by + row_h + 2, 36, row_h, CHRIS_TASKBAR_COLOR,
+                      "Up")) {
+            pick_parent();
+            reload_picker();
+        }
         for (i = 0; i < g_npick; i++) {
-            int ry = by + 20 + i * 16;
-            if (i == g_psel) {
-                gfx_fill_rect(bx, ry, task->frame.width - 16, 16, 0x00C0C0C0u);
+            int ry = by + row_h + 4 + row_h + i * row_h;
+            char line[ED_NAME + 8];
+            int k = 0;
+            int s = 0;
+            if (g_pick_type[i] == CFS_INODE_DIR) {
+                line[k++] = '[';
+                line[k++] = 'D';
+                line[k++] = ']';
+                line[k++] = ' ';
             }
-            ui_label(bx + 2, ry, task->frame.width - 20, 16, g_picks[i],
+            while (g_picks[i][s] && k < ED_NAME + 6) {
+                line[k++] = g_picks[i][s++];
+            }
+            line[k] = 0;
+            if (i == g_psel) {
+                gfx_fill_rect(bx, ry, task->frame.width - 16, row_h, 0x00D8D0C4u);
+            }
+            ui_label(bx + 2, ry, task->frame.width - 20, row_h, line,
                      CHRIS_TEXT_COLOR);
-            if (task_is_focused(task) &&
-                ui_hit_rect(input_mouse_snapshot().x, input_mouse_snapshot().y,
-                            bx, ry, task->frame.width - 16, 16) &&
-                input_left_pressed()) {
+            if (ui_row_click(task, bx, ry, task->frame.width - 16, row_h)) {
                 g_psel = i;
-                input_consume_left_press();
-                if (g_picks[i][0] == '/') {
-                    ed_set_status(e, "pick a file");
-                } else {
-                    ed_set_name(e, g_picks[i]);
-                    (void)ed_open(e);
-                    g_mode = ED_MODE_EDIT;
-                }
+                pick_activate(e, i);
             }
         }
-        if (ui_button(task, bx, by + 20 + g_npick * 16, 50, 16,
-                      CHRIS_EDITOR_COLOR, "Esc")) {
+        if (ui_button(task, bx, by + row_h + 4 + row_h + g_npick * row_h, 50,
+                      row_h, CHRIS_EDITOR_COLOR, "Esc")) {
             g_mode = ED_MODE_EDIT;
         }
         editor_draw_status(task, e);
@@ -632,20 +659,27 @@ static void editor_run(Task *task, uint64_t ticks) {
                 event.key == INPUT_KEY_F9) {
                 lang_debug_enable(1);
                 (void)lang_compile_run(e);
+                lang_debug_enable(0);
                 continue;
             }
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F10) {
-                if (lang_debug_paused())
-                    lang_debug_step();
-                else
+                if (lang_debug_paused()) {
+                    if (input_key_down(0x2A) || input_key_down(0x36))
+                        lang_debug_step_over();
+                    else
+                        lang_debug_step();
+                } else {
                     lang_debug_continue();
+                }
                 continue;
             }
             if (event.type == INPUT_EVENT_KEY &&
                 event.key == INPUT_KEY_F8) {
-                lang_debug_enable(0);
-                lang_debug_continue();
+                if (input_key_down(0x2A) || input_key_down(0x36))
+                    lang_debug_detach();
+                else
+                    lang_debug_continue();
                 continue;
             }
             key = map_input_event(&event);

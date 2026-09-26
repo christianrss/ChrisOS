@@ -4,6 +4,8 @@
 #include "bootinfo.h"
 #include "panic.h"
 #include "serial.h"
+#include "smp.h"
+#include "spin.h"
 
 #define PMM_PAGE_COUNT (PMM_MAX_PHYS / PMM_PAGE)
 #define PMM_BITMAP_BYTES (PMM_PAGE_COUNT / 8ull)
@@ -16,6 +18,45 @@ static uint64_t pmm_usable;
 static uint64_t pmm_used;
 static uint64_t pmm_free_count;
 static uint64_t pmm_cursor;
+static Spinlock pmm_lock;
+static int pmm_depth[SMP_CPU_CAP];
+static uint64_t pmm_irq_flags[SMP_CPU_CAP];
+
+/* Same-CPU recursion: heap_init's free-run callback claims pages while the
+ * scan already holds this lock. PMM never takes the heap lock.
+ * Interrupts are off so an IRQ on this CPU cannot observe depth > 0 and
+ * re-enter the bitmap. */
+static void pmm_enter(void) {
+    uint32_t cpu = smp_current_cpu();
+
+    if (cpu >= SMP_CPU_CAP) {
+        cpu = 0u;
+    }
+    if (pmm_depth[cpu] > 0) {
+        pmm_depth[cpu] += 1;
+        return;
+    }
+    pmm_irq_flags[cpu] = irq_save();
+    spin_lock(&pmm_lock);
+    pmm_depth[cpu] = 1;
+}
+
+static void pmm_leave(void) {
+    uint32_t cpu = smp_current_cpu();
+    uint64_t flags;
+
+    if (cpu >= SMP_CPU_CAP) {
+        cpu = 0u;
+    }
+    if (pmm_depth[cpu] > 1) {
+        pmm_depth[cpu] -= 1;
+        return;
+    }
+    pmm_depth[cpu] = 0;
+    flags = pmm_irq_flags[cpu];
+    spin_unlock(&pmm_lock);
+    irq_restore(flags);
+}
 
 static int page_in_range(uint64_t phys) {
     if ((phys & (PMM_PAGE - 1ull)) != 0) {
@@ -108,6 +149,8 @@ static void mark_usable_free(uint64_t base, uint64_t length) {
 
 void pmm_init(void) {
     uint64_t index;
+
+    spin_init(&pmm_lock);
     uint64_t base;
     uint64_t length;
     uint64_t type;
@@ -191,6 +234,10 @@ static uint64_t claim_run(uint64_t start, uint64_t count) {
     return start;
 }
 
+void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
+                          void *user);
+uint64_t pmm_claim_at(uint64_t phys, uint64_t pages);
+
 static uint64_t scan_usable_for_run(uint64_t count, uint64_t from_phys) {
     uint64_t index;
     uint64_t n;
@@ -221,6 +268,19 @@ static uint64_t scan_usable_for_run(uint64_t count, uint64_t from_phys) {
         run = 0;
         run_start = addr;
         while (addr < end) {
+            uint64_t page;
+            uint64_t byte;
+
+            /* Skip whole used bitmap bytes (8 pages) without per-page checks. */
+            page = addr / PMM_PAGE;
+            byte = page / 8ull;
+            if ((page & 7ull) == 0ull && byte < PMM_BITMAP_BYTES &&
+                pmm_bitmap[byte] == 0xFFu) {
+                run = 0;
+                addr += 8ull * PMM_PAGE;
+                run_start = addr;
+                continue;
+            }
             if (!page_in_range(addr) || bitmap_is_used(addr)) {
                 run = 0;
                 run_start = addr + PMM_PAGE;
@@ -236,23 +296,53 @@ static uint64_t scan_usable_for_run(uint64_t count, uint64_t from_phys) {
     return 0;
 }
 
+struct contig_find {
+    uint64_t need;
+    uint64_t found;
+};
+
+static int contig_find_cb(uint64_t phys, uint64_t pages, void *user) {
+    struct contig_find *f = (struct contig_find *)user;
+
+    if (f == 0 || pages < f->need) {
+        return 1;
+    }
+    f->found = phys;
+    return 0;
+}
+
 uint64_t pmm_alloc(void) {
     uint64_t phys;
 
+    pmm_enter();
     phys = scan_usable_for_run(1u, pmm_cursor);
-    if (phys != 0) {
-        return phys;
+    if (phys == 0) {
+        phys = scan_usable_for_run(1u, 0);
     }
-    return scan_usable_for_run(1u, 0);
+    pmm_leave();
+    return phys;
 }
 
 uint64_t pmm_alloc_contig(uint64_t count) {
+    struct contig_find find;
     uint64_t phys;
 
     if (count == 0) {
         return 0;
     }
-    phys = scan_usable_for_run(count, 0);
+    pmm_enter();
+    /* First free run that fits — byte-skipped walk in foreach. */
+    find.need = count;
+    find.found = 0;
+    pmm_foreach_free_run(contig_find_cb, &find);
+    phys = 0;
+    if (find.found != 0) {
+        phys = pmm_claim_at(find.found, count);
+    }
+    if (phys == 0) {
+        phys = scan_usable_for_run(count, 0);
+    }
+    pmm_leave();
     return phys;
 }
 
@@ -266,6 +356,7 @@ void pmm_free_contig(uint64_t phys, uint64_t count) {
     if (phys == 0 || count == 0) {
         return;
     }
+    pmm_enter();
     for (run = 0; run < count; ++run) {
         uint64_t page_phys = phys + run * PMM_PAGE;
         if (!page_in_range(page_phys)) {
@@ -282,6 +373,7 @@ void pmm_free_contig(uint64_t phys, uint64_t count) {
     if (phys < pmm_cursor) {
         pmm_cursor = phys;
     }
+    pmm_leave();
 }
 
 void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
@@ -299,6 +391,7 @@ void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
     if (cb == 0) {
         return;
     }
+    pmm_enter();
     n = bootinfo_memmap_count();
     for (index = 0; index < n; ++index) {
         if (bootinfo_memmap_entry(index, &base, &length, &type) != 0) {
@@ -315,8 +408,25 @@ void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
         run = 0;
         run_start = addr;
         while (addr < end) {
+            uint64_t page;
+            uint64_t byte;
+
+            page = addr / PMM_PAGE;
+            byte = page / 8ull;
+            if ((page & 7ull) == 0ull && byte < PMM_BITMAP_BYTES &&
+                pmm_bitmap[byte] == 0xFFu) {
+                if (run != 0 && cb(run_start, run, user) == 0) {
+                    pmm_leave();
+                    return;
+                }
+                run = 0;
+                addr += 8ull * PMM_PAGE;
+                run_start = addr;
+                continue;
+            }
             if (!page_in_range(addr) || bitmap_is_used(addr)) {
                 if (run != 0 && cb(run_start, run, user) == 0) {
+                    pmm_leave();
                     return;
                 }
                 run = 0;
@@ -330,25 +440,32 @@ void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),
             addr += PMM_PAGE;
         }
         if (run != 0 && cb(run_start, run, user) == 0) {
+            pmm_leave();
             return;
         }
     }
+    pmm_leave();
 }
 
 uint64_t pmm_claim_at(uint64_t phys, uint64_t pages) {
     uint64_t i;
     uint64_t p;
+    uint64_t got;
 
     if (pages == 0 || phys == 0) {
         return 0;
     }
+    pmm_enter();
     for (i = 0; i < pages; ++i) {
         p = phys + i * PMM_PAGE;
         if (!page_in_range(p) || bitmap_is_used(p)) {
+            pmm_leave();
             return 0;
         }
     }
-    return claim_run(phys, pages);
+    got = claim_run(phys, pages);
+    pmm_leave();
+    return got;
 }
 
 uint64_t pmm_usable_pages(void) {
@@ -356,11 +473,21 @@ uint64_t pmm_usable_pages(void) {
 }
 
 uint64_t pmm_used_pages(void) {
-    return pmm_used;
+    uint64_t used;
+
+    pmm_enter();
+    used = pmm_used;
+    pmm_leave();
+    return used;
 }
 
 uint64_t pmm_free_pages(void) {
-    return pmm_free_count;
+    uint64_t free_count;
+
+    pmm_enter();
+    free_count = pmm_free_count;
+    pmm_leave();
+    return free_count;
 }
 
 void pmm_selftest(void) {

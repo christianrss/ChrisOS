@@ -107,6 +107,8 @@ void draw_frame() {
     }
     setpal(pal);
     fb_blit(screen, screen_w, screen_h);
+    text(8, 8, "ChrisOS Doom demo", 0x00FFFFFF);
+    text(8, 24, "Esc quit  WASD move", 0x00E0E0E0);
 }
 
 void doomgeneric_Create() {

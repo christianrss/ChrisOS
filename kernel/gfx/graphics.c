@@ -1,9 +1,24 @@
 #include "graphics.h"
 #include "gfx_fast.h"
 #include "heap.h"
+#ifdef __freestanding__
+#include "hwgate.h"
+#endif
 
 static uint32_t *g_backbuffer;
 GfxFramebuffer g_gfx;
+
+typedef struct {
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+} GfxDirtyRect;
+
+#define GFX_DIRTY_MAX 32
+
+static GfxDirtyRect g_dirty[GFX_DIRTY_MAX];
+static int g_dirty_count;
 
 static bool point_in_clip(int x, int y, int clip_x, int clip_y,
                           int clip_w, int clip_h) {
@@ -35,6 +50,8 @@ bool gfx_init(uint32_t *address, int width, int height, int pitch_bytes) {
     g_gfx.width = width;
     g_gfx.height = height;
     g_gfx.pitch_pixels = pitch_bytes / (int)sizeof(uint32_t);
+    g_dirty_count = 0;
+    gfx_mark_dirty(0, 0, width, height);
     return true;
 }
 
@@ -44,11 +61,16 @@ uint32_t gfx_rgb(uint8_t red, uint8_t green, uint8_t blue) {
            (uint32_t)blue;
 }
 
-void gfx_put_pixel(int x, int y, uint32_t color) {
+static void put_pixel_raw(int x, int y, uint32_t color) {
     if (!g_gfx.back || x < 0 || y < 0 || x >= g_gfx.width || y >= g_gfx.height) {
         return;
     }
     g_gfx.back[y * g_gfx.width + x] = color;
+}
+
+void gfx_put_pixel(int x, int y, uint32_t color) {
+    put_pixel_raw(x, y, color);
+    gfx_mark_dirty(x, y, 1, 1);
 }
 
 void gfx_clear(uint32_t color) {
@@ -64,6 +86,7 @@ void gfx_clear(uint32_t color) {
             row[x] = color;
         }
     }
+    gfx_mark_dirty(0, 0, g_gfx.width, g_gfx.height);
 }
 
 void gfx_fill_rect(int x, int y, int width, int height, uint32_t color) {
@@ -85,6 +108,149 @@ void gfx_fill_rect(int x, int y, int width, int height, uint32_t color) {
 
     for (py = y0; py < y1; ++py)
         gfx_fast_fill_u32(g_gfx.back + py * g_gfx.width + x0, x1 - x0, color);
+    gfx_mark_dirty(x0, y0, x1 - x0, y1 - y0);
+}
+
+void gfx_blit_scaled(const uint32_t *src, int sw, int sh,
+                     int dx, int dy, int dw, int dh) {
+    int x;
+    int y;
+    int sx;
+    int sy;
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+
+    if (!src || !g_gfx.back || sw < 1 || sh < 1 || dw < 1 || dh < 1) {
+        return;
+    }
+    x0 = dx < 0 ? 0 : dx;
+    y0 = dy < 0 ? 0 : dy;
+    x1 = dx + dw;
+    y1 = dy + dh;
+    if (x1 > g_gfx.width) {
+        x1 = g_gfx.width;
+    }
+    if (y1 > g_gfx.height) {
+        y1 = g_gfx.height;
+    }
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+    gfx_mark_dirty(x0, y0, x1 - x0, y1 - y0);
+    if (dw == sw && dh == sh) {
+        int copy_w = x1 - x0;
+        int src_x = x0 - dx;
+        if (src_x < 0) {
+            src_x = 0;
+        }
+        if (src_x + copy_w > sw) {
+            copy_w = sw - src_x;
+        }
+        if (copy_w < 1) {
+            return;
+        }
+        for (y = y0; y < y1; y++) {
+            int src_y = y - dy;
+            if (src_y < 0 || src_y >= sh) {
+                continue;
+            }
+            gfx_fast_copy_u32(g_gfx.back + y * g_gfx.width + x0,
+                              src + src_y * sw + src_x, copy_w);
+        }
+        return;
+    }
+    for (y = y0; y < y1; y++) {
+        sy = ((y - dy) * sh) / dh;
+        if (sy < 0) {
+            sy = 0;
+        }
+        if (sy >= sh) {
+            sy = sh - 1;
+        }
+        for (x = x0; x < x1; x++) {
+            sx = ((x - dx) * sw) / dw;
+            if (sx < 0) {
+                sx = 0;
+            }
+            if (sx >= sw) {
+                sx = sw - 1;
+            }
+            g_gfx.back[y * g_gfx.width + x] = src[sy * sw + sx];
+        }
+    }
+}
+
+void gfx_blit_rgba(const uint32_t *src, int sw, int sh,
+                   int dx, int dy, int dw, int dh) {
+    int x;
+    int y;
+    int x0;
+    int y0;
+    int x1;
+    int y1;
+
+    if (!src || !g_gfx.back || sw < 1 || sh < 1 || dw < 1 || dh < 1) {
+        return;
+    }
+    x0 = dx < 0 ? 0 : dx;
+    y0 = dy < 0 ? 0 : dy;
+    x1 = dx + dw;
+    y1 = dy + dh;
+    if (x1 > g_gfx.width) {
+        x1 = g_gfx.width;
+    }
+    if (y1 > g_gfx.height) {
+        y1 = g_gfx.height;
+    }
+    if (x0 >= x1 || y0 >= y1) {
+        return;
+    }
+    gfx_mark_dirty(x0, y0, x1 - x0, y1 - y0);
+    for (y = y0; y < y1; ++y) {
+        int sy = ((y - dy) * sh) / dh;
+        if (sy < 0) {
+            sy = 0;
+        }
+        if (sy >= sh) {
+            sy = sh - 1;
+        }
+        for (x = x0; x < x1; ++x) {
+            uint32_t pix;
+            uint32_t a;
+            int sx = ((x - dx) * sw) / dw;
+            if (sx < 0) {
+                sx = 0;
+            }
+            if (sx >= sw) {
+                sx = sw - 1;
+            }
+            pix = src[sy * sw + sx];
+            a = pix >> 24;
+            if (a == 0) {
+                continue;
+            }
+            if (a == 255u) {
+                g_gfx.back[y * g_gfx.width + x] = pix & 0x00FFFFFFu;
+                continue;
+            }
+            {
+                uint32_t dst = g_gfx.back[y * g_gfx.width + x];
+                uint32_t inv = 255u - a;
+                uint32_t sr = (pix >> 16) & 0xFFu;
+                uint32_t sg = (pix >> 8) & 0xFFu;
+                uint32_t sb = pix & 0xFFu;
+                uint32_t dr = (dst >> 16) & 0xFFu;
+                uint32_t dg = (dst >> 8) & 0xFFu;
+                uint32_t db = dst & 0xFFu;
+                uint32_t r = (sr * a + dr * inv) / 255u;
+                uint32_t g = (sg * a + dg * inv) / 255u;
+                uint32_t b = (sb * a + db * inv) / 255u;
+                g_gfx.back[y * g_gfx.width + x] = (r << 16) | (g << 8) | b;
+            }
+        }
+    }
 }
 
 void gfx_fill_circle(int cx, int cy, int radius, uint32_t color) {
@@ -99,15 +265,15 @@ void gfx_fill_circle(int cx, int cy, int radius, uint32_t color) {
     for (y = -radius; y <= radius; ++y) {
         for (x = -radius; x <= radius; ++x) {
             if (x * x + y * y <= rr) {
-                gfx_put_pixel(cx + x, cy + y, color);
+                put_pixel_raw(cx + x, cy + y, color);
             }
         }
     }
+    gfx_mark_dirty(cx - radius, cy - radius, radius * 2 + 1, radius * 2 + 1);
 }
 
 int gfx_text_advance(int glyph_width) {
-    int advance = glyph_width - glyph_width / 5;
-    return advance > 0 ? advance : 1;
+    return glyph_width > 0 ? glyph_width : 1;
 }
 
 static void draw_glyph_clipped(GfxFontRowFn font, int glyph_width,
@@ -131,7 +297,7 @@ static void draw_glyph_clipped(GfxFontRowFn font, int glyph_width,
             int py = y + row;
             if ((bits & mask) != 0 &&
                 point_in_clip(px, py, clip_x, clip_y, clip_w, clip_h)) {
-                gfx_put_pixel(px, py, color);
+                put_pixel_raw(px, py, color);
             }
         }
     }
@@ -141,6 +307,7 @@ void gfx_draw_glyph(GfxFontRowFn font, int glyph_width, int glyph_height,
                     unsigned int character, int x, int y, uint32_t color) {
     draw_glyph_clipped(font, glyph_width, glyph_height, character,
                        x, y, color, 0, 0, g_gfx.width, g_gfx.height);
+    gfx_mark_dirty(x, y, glyph_width, glyph_height);
 }
 
 void gfx_draw_text_clipped(GfxFontRowFn font, int glyph_width,
@@ -156,9 +323,14 @@ void gfx_draw_text_clipped(GfxFontRowFn font, int glyph_width,
         return;
     }
 
+    {
+        int start_y = y;
+        int max_x = x;
     while (*text != '\0') {
         unsigned char ch = (unsigned char)*text++;
         if (ch == '\n') {
+            if (pen_x > max_x)
+                max_x = pen_x;
             pen_x = x;
             pen_y += glyph_height;
             continue;
@@ -167,6 +339,10 @@ void gfx_draw_text_clipped(GfxFontRowFn font, int glyph_width,
                            pen_x, pen_y, color,
                            clip_x, clip_y, clip_w, clip_h);
         pen_x += advance;
+    }
+        if (pen_x > max_x)
+            max_x = pen_x;
+        gfx_mark_dirty(x, start_y, max_x - x, pen_y - start_y + glyph_height);
     }
 }
 
@@ -188,7 +364,7 @@ static void draw_mouse_shape(int x, int y, uint32_t color) {
     for (row = 0; row < 11; ++row) {
         for (col = 0; col < 11; ++col) {
             if ((rows[row] & (uint16_t)(1u << (10 - col))) != 0) {
-                gfx_put_pixel(x + col, y + row, color);
+                put_pixel_raw(x + col, y + row, color);
             }
         }
     }
@@ -197,15 +373,17 @@ static void draw_mouse_shape(int x, int y, uint32_t color) {
 void gfx_draw_mouse(int x, int y) {
     draw_mouse_shape(x + 1, y + 1, 0x00000000u);
     draw_mouse_shape(x, y, CHRIS_MOUSE_COLOR);
+    gfx_mark_dirty(x, y, 12, 12);
 }
 
-static int g_dirty_x0;
-static int g_dirty_y0;
-static int g_dirty_x1;
-static int g_dirty_y1;
-static int g_dirty_valid;
+static bool rects_touch(const GfxDirtyRect *a, const GfxDirtyRect *b) {
+    return a->x0 <= b->x1 && a->x1 >= b->x0 &&
+           a->y0 <= b->y1 && a->y1 >= b->y0;
+}
 
 void gfx_mark_dirty(int x, int y, int w, int h) {
+    GfxDirtyRect rect;
+    int i;
     int x1;
     int y1;
 
@@ -221,61 +399,78 @@ void gfx_mark_dirty(int x, int y, int w, int h) {
         x1 = g_gfx.width;
     if (y1 > g_gfx.height)
         y1 = g_gfx.height;
-    if (!g_dirty_valid) {
-        g_dirty_x0 = x;
-        g_dirty_y0 = y;
-        g_dirty_x1 = x1;
-        g_dirty_y1 = y1;
-        g_dirty_valid = 1;
+    if (x >= x1 || y >= y1)
+        return;
+    rect.x0 = x;
+    rect.y0 = y;
+    rect.x1 = x1;
+    rect.y1 = y1;
+    i = 0;
+    while (i < g_dirty_count) {
+        if (rects_touch(&rect, &g_dirty[i])) {
+            if (g_dirty[i].x0 < rect.x0)
+                rect.x0 = g_dirty[i].x0;
+            if (g_dirty[i].y0 < rect.y0)
+                rect.y0 = g_dirty[i].y0;
+            if (g_dirty[i].x1 > rect.x1)
+                rect.x1 = g_dirty[i].x1;
+            if (g_dirty[i].y1 > rect.y1)
+                rect.y1 = g_dirty[i].y1;
+            g_dirty[i] = g_dirty[g_dirty_count - 1];
+            --g_dirty_count;
+            i = 0;
+            continue;
+        }
+        ++i;
+    }
+    if (g_dirty_count >= GFX_DIRTY_MAX) {
+        g_dirty_count = 1;
+        g_dirty[0].x0 = 0;
+        g_dirty[0].y0 = 0;
+        g_dirty[0].x1 = g_gfx.width;
+        g_dirty[0].y1 = g_gfx.height;
         return;
     }
-    if (x < g_dirty_x0)
-        g_dirty_x0 = x;
-    if (y < g_dirty_y0)
-        g_dirty_y0 = y;
-    if (x1 > g_dirty_x1)
-        g_dirty_x1 = x1;
-    if (y1 > g_dirty_y1)
-        g_dirty_y1 = y1;
+    g_dirty[g_dirty_count++] = rect;
 }
 
 void gfx_present(void) {
+    int r;
     int y;
-    int x0;
-    int y0;
-    int x1;
-    int y1;
-    int n;
 
     if (!g_gfx.front || !g_gfx.back) {
         return;
     }
-    if (g_dirty_valid) {
-        x0 = g_dirty_x0;
-        y0 = g_dirty_y0;
-        x1 = g_dirty_x1;
-        y1 = g_dirty_y1;
-        g_dirty_valid = 0;
-    } else {
-        x0 = 0;
-        y0 = 0;
-        x1 = g_gfx.width;
-        y1 = g_gfx.height;
+    for (r = 0; r < g_dirty_count; ++r) {
+        int x0 = g_dirty[r].x0;
+        int y0 = g_dirty[r].y0;
+        int x1 = g_dirty[r].x1;
+        int y1 = g_dirty[r].y1;
+        int n = x1 - x0;
+        for (y = y0; y < y1; ++y) {
+            uint32_t *dst = g_gfx.front + y * g_gfx.pitch_pixels + x0;
+            const uint32_t *src = g_gfx.back + y * g_gfx.width + x0;
+            gfx_fast_copy_u32(dst, src, n);
+        }
     }
-    if (x0 < 0)
-        x0 = 0;
-    if (y0 < 0)
-        y0 = 0;
-    if (x1 > g_gfx.width)
-        x1 = g_gfx.width;
-    if (y1 > g_gfx.height)
-        y1 = g_gfx.height;
-    if (x0 >= x1 || y0 >= y1)
-        return;
-    n = x1 - x0;
-    for (y = y0; y < y1; ++y) {
-        uint32_t *dst = g_gfx.front + y * g_gfx.pitch_pixels + x0;
-        const uint32_t *src = g_gfx.back + y * g_gfx.width + x0;
-        gfx_fast_copy_u32(dst, src, n);
+#ifdef __freestanding__
+    if (g_dirty_count > 0) {
+        int x0 = g_dirty[0].x0;
+        int y0 = g_dirty[0].y0;
+        int x1 = g_dirty[0].x1;
+        int y1 = g_dirty[0].y1;
+        for (r = 1; r < g_dirty_count; ++r) {
+            if (g_dirty[r].x0 < x0)
+                x0 = g_dirty[r].x0;
+            if (g_dirty[r].y0 < y0)
+                y0 = g_dirty[r].y0;
+            if (g_dirty[r].x1 > x1)
+                x1 = g_dirty[r].x1;
+            if (g_dirty[r].y1 > y1)
+                y1 = g_dirty[r].y1;
+        }
+        hw_gpu_flush_rect(x0, y0, x1 - x0, y1 - y0);
     }
+#endif
+    g_dirty_count = 0;
 }

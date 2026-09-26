@@ -26,6 +26,13 @@
 #include "smp.h"
 #include "sse_init.h"
 #include "boot_splash.h"
+#include "proc.h"
+#include "ac97.h"
+#include "hwgate.h"
+#include "acpi.h"
+#include "install.h"
+#include "buildid.h"
+#include "klog.h"
 
 void kstart(void) {
     const struct bootinfo *boot;
@@ -37,8 +44,15 @@ void kstart(void) {
         }
     }
     serial_puts("ChrisOS selfhost=1\n");
+    build_info_log();
 
     bootinfo_init();
+    if (bootflag_safe()) {
+        serial_puts("safe mode\n");
+    }
+    if (bootflag_nojit()) {
+        lang_force_interp();
+    }
     gdt_init();
     idt_init();
     syscall_init();
@@ -57,6 +71,7 @@ void kstart(void) {
     heap_init();
     sse_bsp_init();
     heap_selftest();
+    proc_init();
 
     boot = bootinfo_get();
     if (boot->fb_bpp != 32 ||
@@ -66,6 +81,7 @@ void kstart(void) {
                   (int)boot->fb_pitch)) {
         panic("gfx_init recusou o framebuffer");
     }
+    (void)virtio_gpu_boot();
     gfx_clear(0x00101828u);
     gfx_present();
 
@@ -76,19 +92,39 @@ void kstart(void) {
     smp_job_selftest();
 
     __asm__ volatile ("cli");
+    acpi_probe();
     storage_init();
     fs_init();
+    (void)install_selftest();
+    (void)install_auto();
+    if (fs_backend() == FS_BACKEND_CFS) {
+        static char bootlog[4096];
+        uint32_t n = klog_copy(bootlog, sizeof bootlog);
+        if (n > 0u && fs_write("SYS/BOOT.LOG", bootlog, (int)n) >= 0) {
+            serial_puts("boot log SYS/BOOT.LOG\n");
+        } else {
+            serial_puts("boot log write failed\n");
+        }
+    }
     lang_init(clvm_sys_dispatch, 0);
     speaker_off();
-    if (!net_init()) {
-        serial_puts("ChrisOS: net unavailable\n");
+    if (!bootflag_noac97()) {
+        (void)ac97_init();
     }
 
+    /* Compile with interrupts off. The timer preempts the guest compiler. */
+    gfx_clear(CHRIS_DESKTOP_COLOR);
+    gfx_present();
+    lang_make_cc();
+
     __asm__ volatile ("sti");
-    boot_splash_load();
+    smp_release_ap_irqs();
     desktop_init();
-    boot_splash_run(120);
-    boot_splash_stop();
+    desktop_boot_apps();
+    gfx_present();
+    if (!bootflag_nonet() && !net_init()) {
+        serial_puts("ChrisOS: net unavailable\n");
+    }
     serial_puts("ChrisOS: desktop 60Hz\n");
     desktop_run();
 }

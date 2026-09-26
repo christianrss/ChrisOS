@@ -113,6 +113,16 @@ static void test_reboot_persist(void) {
     expect_int("read hello", cfs_read(&fs, "HELLO.TXT", got, 16u), 10);
     expect_int("hello0", (int)got[0], (int)'p');
     expect_int("hello9", (int)got[9], (int)'t');
+    memset(got, 0, sizeof(got));
+    expect_int("read hello at", cfs_read_at(&fs, "HELLO.TXT", 3u, got, 4u), 4);
+    expect_int("hello at 0", (int)got[0], (int)'s');
+    expect_int("hello at 3", (int)got[3], (int)'t');
+    if (cfs_cache_hits(&fs) == 0u || cfs_cache_misses(&fs) == 0u) {
+        fprintf(stderr, "FAIL cache counters hits=%llu misses=%llu\n",
+                (unsigned long long)cfs_cache_hits(&fs),
+                (unsigned long long)cfs_cache_misses(&fs));
+        g_fails++;
+    }
 }
 
 static void make_name(char *out, int n) {

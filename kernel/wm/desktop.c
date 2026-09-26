@@ -1,124 +1,124 @@
 /* LEARN:WS64-W09 */
 #include "desktop.h"
 
-#include "editor_window.h"
-#include "explorer.h"
-#include "shell.h"
+#include "cls/cls.h"
+#include "fs.h"
 #include "graphics.h"
 #include "input.h"
+#include "lang_pipeline.h"
+#include "serial.h"
 #include "task.h"
-#include "taskmgr.h"
 #include "ui.h"
+#include "usb_msc.h"
+#include "xhci.h"
 
-static int g_window_cascade = 1;
-
-static TaskRect cascaded_frame(int width, int body_height) {
-    TaskRect frame;
-    int offset = g_window_cascade * 40;
-
-    frame.x = offset;
-    frame.y = UI_TASKBAR_HEIGHT + offset;
-    frame.width = width;
-    frame.body_height = body_height;
-    ++g_window_cascade;
-    if (g_window_cascade > 8) {
-        g_window_cascade = 1;
+static void boot_diag(const char *what, const char *path) {
+    const char *err = lang_last_error();
+    serial_puts("boot: ");
+    serial_puts(what);
+    serial_puts(" ");
+    serial_puts(path ? path : "?");
+    serial_puts("\n");
+    if (err && err[0]) {
+        serial_puts("boot: ");
+        serial_puts(err);
+        serial_puts("\n");
     }
-    return frame;
 }
 
-static void ball_run(Task *task, uint64_t ticks) {
-    BallState *ball = &task->state.ball;
+static int boot_one(const char *clv, const char *lst) {
+    char probe[1];
 
-    if (ui_window(task, 0x00000000u, "Ball")) {
-        return;
-    }
-
-    if (ball->last_tick != ticks) {
-        ball->last_tick = ticks;
-        ball->center_x += ball->velocity_x;
-        ball->center_y += ball->velocity_y;
-
-        if (ball->center_x + 10 > task->frame.width ||
-            ball->center_x - 10 < 0) {
-            ball->velocity_x = -ball->velocity_x;
+    if (clv && fs_read(clv, probe, 1) >= 0) {
+        if (lang_run_path(clv)) {
+            serial_puts("boot: run ");
+            serial_puts(clv);
+            serial_puts("\n");
+            return 1;
         }
-        if (ball->center_y + 10 >
-                task->frame.body_height + TASK_TITLE_HEIGHT - 1 ||
-            ball->center_y - 10 < TASK_TITLE_HEIGHT) {
-            ball->velocity_y = -ball->velocity_y;
-        }
+        boot_diag("clv unusable, recompile", clv);
     }
-
-    gfx_fill_circle(task->frame.x + ball->center_x,
-                    task->frame.y + ball->center_y,
-                    10, CHRIS_TASKBAR_COLOR);
-}
-
-static void open_shell(void) {
-    shell_window_open();
-}
-
-static void open_ball(void) {
-    (void)task_spawn(TASK_BALL, cascaded_frame(300, 280), ball_run);
-}
-
-static void open_demos(void) {
-    Task *sh;
-    open_shell();
-    open_ball();
-    sh = task_find(TASK_SHELL);
-    if (sh) {
-        task_raise(sh->id);
+    serial_puts("boot: compile ");
+    serial_puts(lst ? lst : "?");
+    serial_puts("\n");
+    if (!lang_compile_list(lst)) {
+        boot_diag("compile failed", lst);
+        return 0;
     }
-}
-
-static void draw_icons(void) {
-    int x0 = UI_ICON_GAP;
-    int y0 = UI_TASKBAR_HEIGHT + UI_ICON_GAP;
-    int stride = UI_ICON_SIZE + UI_ICON_GAP + 24;
-
-    if (ui_icon(x0, y0, CHRIS_EDITOR_COLOR, "Editor")) {
-        editor_window_open();
+    if (!lang_run_path(clv)) {
+        boot_diag("run failed", clv);
+        return 0;
     }
-    if (ui_icon(x0 + stride, y0, 0x00008080u, "Files")) {
-        explorer_window_open();
-    }
-    if (ui_icon(x0 + stride * 2, y0, CHRIS_BALL_COLOR, "Demos")) {
-        open_demos();
-    }
+    serial_puts("boot: run ");
+    serial_puts(clv);
+    serial_puts("\n");
+    return 1;
 }
 
 void desktop_init(void) {
     task_system_init();
     input_init(g_gfx.width, g_gfx.height);
+    if (usb_tablet_ready()) {
+        input_use_absolute(1);
+    }
+    gfx_clear(CHRIS_DESKTOP_COLOR);
+}
+
+void desktop_boot_apps(void) {
+    char err[80];
+    char flag[4];
+    int n;
+    err[0] = 0;
+    (void)cls_runtime_load("LIB/WIN.CLS", err, (int)sizeof(err));
+    boot_one("APPS/DESKTOP/DESKTOP.CLV", "APPS/DESKTOP/DESKTOP.LST");
+    boot_one("APPS/TASKBAR/TASKBAR.CLV", "APPS/TASKBAR/TASKBAR.LST");
+    /* Optional headless smoke: SYS/SMOKE.DOOM content starts with '1'. */
+    n = fs_read("SYS/SMOKE.DOOM", flag, 1);
+    if (n == 1 && flag[0] == '1') {
+        serial_puts("boot: SYS/SMOKE.DOOM -> ENGINE.CLV\n");
+        boot_one("GAMES/DOOM/ENGINE.CLV", "GAMES/DOOM/ENGINE.LST");
+    }
+    n = fs_read("SYS/SMOKE.WORLD", flag, 1);
+    if (n == 1 && flag[0] == '1') {
+        serial_puts("boot: SYS/SMOKE.WORLD -> WORLD.CLV\n");
+        boot_one("GAMES/WORLD.CLV", "GAMES/WORLD.LST");
+    }
 }
 
 void desktop_frame(uint64_t ticks) {
-    InputMouse mouse = input_mouse_snapshot();
-    TaskbarAction action = ui_take_taskbar_action();
+    InputMouse mouse;
 
-    if (action == TASKBAR_SHELL) {
-        open_shell();
-    } else if (action == TASKBAR_BALL) {
-        open_ball();
-    } else if (action == TASKBAR_EDITOR) {
-        editor_window_open();
-    } else if (action == TASKBAR_FILES) {
-        explorer_window_open();
-    } else if (action == TASKBAR_TASKS) {
-        taskmgr_window_open();
-    } else if (input_left_pressed() && mouse.y >= UI_TASKBAR_HEIGHT) {
+    usb_tablet_poll();
+    xhci_hid_poll();
+    mouse = input_mouse_snapshot();
+    InputEvent event;
+    int focus;
+    Task *focused;
+    int slot;
+
+    if (input_left_pressed()) {
         (void)task_focus_at(mouse.x, mouse.y);
     }
 
-    gfx_clear(CHRIS_DESKTOP_COLOR);
-    draw_icons();
-    task_run_all(ticks);
-    ui_draw_taskbar();
-    ui_draw_cursor();
-
-    if (input_left_pressed()) {
-        input_consume_left_press();
+    focus = task_focused_id();
+    focused = task_get(focus);
+    slot = -1;
+    if (focused && focused->type == TASK_APP &&
+        !focused->window.dragging && !focused->window.resizing) {
+        slot = focused->state.app.lang_slot;
     }
+    while (input_next_event(&event)) {
+        if (slot < 0) {
+            continue;
+        }
+        if (event.type == INPUT_EVENT_KEY) {
+            lang_slot_push_key(slot, (int)event.key);
+        } else if (event.type == INPUT_EVENT_TEXT) {
+            lang_slot_push_text(slot, (unsigned char)event.character);
+        }
+    }
+
+    ui_undraw_cursor();
+    task_run_all(ticks);
+    ui_draw_cursor();
 }

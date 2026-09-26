@@ -1,13 +1,38 @@
 #include "clvm_vm.h"
+#ifdef __freestanding__
+#include "proc.h"
+#endif
 
 #ifdef __freestanding__
 #include "heap.h"
+#include "serial.h"
 #define CLVM_MEM_ALLOC(n) kmalloc(n)
 #define CLVM_MEM_FREE(p) kfree(p)
+#elif defined(CHRIS_RISCV)
+static uint8_t g_rvpool[2u * 1024u * 1024u];
+static size_t g_rvat;
+static void *rv_alloc(size_t n) {
+    size_t i;
+    uint8_t *p;
+    n = (n + 15u) & ~(size_t)15u;
+    if (g_rvat + n > sizeof(g_rvpool))
+        return 0;
+    p = g_rvpool + g_rvat;
+    g_rvat += n;
+    for (i = 0; i < n; ++i)
+        p[i] = 0;
+    return p;
+}
+#define CLVM_MEM_ALLOC(n) rv_alloc(n)
+#define CLVM_MEM_FREE(p) ((void)(p))
+#define serial_puts(s) ((void)0)
+#define serial_write_u64(v) ((void)(v))
 #else
 #include <stdlib.h>
 #define CLVM_MEM_ALLOC(n) calloc(1, (size_t)(n))
 #define CLVM_MEM_FREE(p) free(p)
+#define serial_puts(s) ((void)0)
+#define serial_write_u64(v) ((void)(v))
 #endif
 
 typedef union {
@@ -141,7 +166,14 @@ void clvm_vm_set_memory(ClvmVm *vm, uint8_t *mem, uint64_t size) {
     vm->mem_owned = 0;
     vm->memory = mem;
     vm->mem_size = size;
-    vm->heap_off = (size > 131072ull) ? 65536ull : size / 2ull;
+    /* Doom-sized static data (globals+strings) sits well above 64K.
+     * Bump-pointer malloc must start past that or it clobbers the pool. */
+    if (size >= (16ull * 1024ull * 1024ull))
+        vm->heap_off = 1024ull * 1024ull;
+    else if (size > 131072ull)
+        vm->heap_off = 65536ull;
+    else
+        vm->heap_off = size / 2ull;
 }
 
 void clvm_vm_init(ClvmVm *vm, const ClvmImage *image,
@@ -166,7 +198,18 @@ void clvm_vm_init(ClvmVm *vm, const ClvmImage *image,
     vm->print_n = 0;
     vm->safepoint = 0;
     vm->on_safepoint = 0;
-    vm->heap_off = (vm->mem_size > 131072ull) ? 65536ull : vm->mem_size / 2ull;
+    vm->join_wait = -1;
+    {
+        int ti;
+        for (ti = 0; ti < 16; ++ti)
+            vm->tls[ti] = 0;
+    }
+    if (vm->mem_size >= (16ull * 1024ull * 1024ull))
+        vm->heap_off = 1024ull * 1024ull;
+    else if (vm->mem_size > 131072ull)
+        vm->heap_off = 65536ull;
+    else
+        vm->heap_off = vm->mem_size / 2ull;
     bytes_zero((uint8_t *)vm->il_loc, sizeof(vm->il_loc));
     bytes_zero((uint8_t *)vm->il_arg, sizeof(vm->il_arg));
 }
@@ -213,11 +256,26 @@ int clvm_guest_malloc(ClvmVm *vm, uint64_t n, uint64_t *out) {
         return 0;
     need = (n + 8ull + 7ull) & ~7ull;
     p = vm->heap_off;
-    if (p + need > vm->mem_size)
+    if (p + need > vm->mem_size) {
+        serial_puts("guest_malloc fail n=");
+        serial_write_u64(n);
+        serial_puts(" off=");
+        serial_write_u64(p);
+        serial_puts(" msz=");
+        serial_write_u64(vm->mem_size);
+        serial_puts("\n");
         return 0;
+    }
     write_u64(vm->memory + p, need);
     vm->heap_off = p + need;
     *out = p + 8ull;
+    if (n >= (1ull << 20)) {
+        serial_puts("guest_malloc ok n=");
+        serial_write_u64(n);
+        serial_puts(" p=");
+        serial_write_u64(*out);
+        serial_puts("\n");
+    }
     return 1;
 }
 
@@ -316,6 +374,10 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
             return fail(vm, CLVM_FAULT_PC, op_pc);
         op = arg[0];
         ++vm->executed;
+#ifdef __freestanding__
+        if ((vm->executed & 8191ull) == 0 && proc_slice_due())
+            return CLVM_STEP_YIELD;
+#endif
 
         switch (op) {
         case CL_OP_NOP:
@@ -325,6 +387,10 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
             if (vm->on_safepoint)
                 vm->on_safepoint(vm);
             vm->safepoint = 0;
+#ifdef __freestanding__
+            if (proc_slice_due())
+                return CLVM_STEP_YIELD;
+#endif
             break;
         case CL_OP_PUSH:
             if (!fetch(vm, 4, &arg))
@@ -345,6 +411,7 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
         case CL_OP_AND: case CL_OP_OR: case CL_OP_XOR:
         case CL_OP_SHL: case CL_OP_SHR: case CL_OP_SAR:
         case CL_OP_UDIV: case CL_OP_UMOD: case CL_OP_ULT:
+        case CL_OP_ULE: case CL_OP_UGT: case CL_OP_UGE:
             if (!clvm_vm_pop64(vm, &b) || !clvm_vm_pop64(vm, &a))
                 return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
             if ((op == CL_OP_DIV || op == CL_OP_MOD ||
@@ -364,6 +431,12 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
                 a = (int64_t)((uint64_t)a % (uint64_t)b);
             else if (op == CL_OP_ULT)
                 a = ((uint64_t)a < (uint64_t)b);
+            else if (op == CL_OP_ULE)
+                a = ((uint64_t)a <= (uint64_t)b);
+            else if (op == CL_OP_UGT)
+                a = ((uint64_t)a > (uint64_t)b);
+            else if (op == CL_OP_UGE)
+                a = ((uint64_t)a >= (uint64_t)b);
             else if (op == CL_OP_EQ) a = a == b;
             else if (op == CL_OP_NE) a = a != b;
             else if (op == CL_OP_LT) a = a < b;
@@ -398,8 +471,8 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
                 return fail(vm, CLVM_FAULT_STACK_OVERFLOW, op_pc);
             break;
         case CL_OP_DROP:
-            if (!clvm_vm_pop64(vm, &a))
-                return fail(vm, CLVM_FAULT_STACK_UNDERFLOW, op_pc);
+            if (vm->sp > 0)
+                vm->sp--;
             break;
         case CL_OP_PRINT:
             if (!clvm_vm_pop64(vm, &a))
@@ -524,6 +597,8 @@ ClvmStepResult clvm_step(ClvmVm *vm, uint32_t budget) {
                 return fail(vm, CLVM_FAULT_BAD_SYS, op_pc);
             vm->safepoint = 1;
             if (vm->state == CLVM_WAITING) return CLVM_STEP_YIELD;
+            if (vm->state == CLVM_HALTED) return CLVM_STEP_HALT;
+            if (vm->state == CLVM_FAULTED) return CLVM_STEP_FAULT;
             break;
         case CL_OP_FLOAD:
             if (!clvm_vm_pop64(vm, &a))

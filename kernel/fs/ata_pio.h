@@ -11,6 +11,8 @@ typedef struct AtaPio {
     uint8_t drive;
     uint32_t sectors;
     uint32_t poll_limit;
+    uint16_t bm;
+    uint8_t dma;
 } AtaPio;
 
 void ata_pio_configure(AtaPio *a, uint32_t sectors);

@@ -11,16 +11,27 @@
 #include "graphics.h"
 #include "math3d.h"
 #include "tex.h"
+#include "gfx_fast.h"
 #include "clvm_sys.h"
 #include "app_window.h"
 #include "storage.h"
 #include "task.h"
 #include "ui.h"
 #include "cla/cla.h"
+#include "cls/cls.h"
 #include "heap.h"
 #include "gc/gc.h"
+#include "proc.h"
+#include "mm.h"
+#include "debug/cdbg.h"
+#include "debug/dbg_session.h"
+
+static int path_is_driver(const char *name);
+#include "bootinfo.h"
 #include "jit/jit.h"
 #include "jit/jit_compile.h"
+#include "serial.h"
+#include "pit.h"
 
 #define LANG_SOURCE_MAX 4194304
 #define LANG_CODE_MAX (4u * 1024u * 1024u)
@@ -28,8 +39,10 @@
 #define LANG_NAME_MAX 96
 #define LANG_PIXELS (CLVM_SYS_GAME_W * CLVM_SYS_GAME_H)
 #define LANG_LST_MAX 128
+#define LANG_EVQ 8
 typedef struct LangSlot {
     int used;
+    uint32_t caps;
     uint8_t *file;
     size_t file_cap;
     size_t file_size;
@@ -52,9 +65,31 @@ typedef struct LangSlot {
     int nbreak;
     uint32_t map_pc[CHRIS_MAP_MAX];
     uint16_t map_line[CHRIS_MAP_MAX];
+    uint16_t map_file[CHRIS_MAP_MAX];
     int map_n;
     int step_line;
+    int step_mode;
+    int step_depth;
     uint16_t last_line;
+    int ev_key_q[LANG_EVQ];
+    int ev_text_q[LANG_EVQ];
+    int ev_key_n;
+    int ev_key_r;
+    int ev_text_n;
+    int ev_text_r;
+    int dying;
+    uint32_t *front_pixels;
+    int front_w;
+    int front_h;
+    int proc_id;
+    int user_ram;
+    uint8_t checkpoint[256];
+    int checkpoint_n;
+    uint32_t checkpoint_off;
+    char fn_name[16][24];
+    uint32_t fn_pc[16];
+    int fn_n;
+    uint32_t watch;
 } LangSlot;
 
 static LangSlot slots[LANG_VM_SLOTS];
@@ -62,7 +97,21 @@ static char source_buffer[LANG_SOURCE_MAX];
 static uint8_t code_buffer[LANG_CODE_MAX];
 static uint8_t file_buffer[LANG_FILE_MAX];
 static ChrisResult g_chris_result;
+static char g_last_clv[LANG_NAME_MAX];
+static char g_last_err[160];
+static char g_app_arg[FS_PATH];
 static int g_want_debug;
+static int g_nojit;
+#define LANG_PEND_BP 32
+static int g_pend_line[LANG_PEND_BP];
+static int g_pend_n;
+static uint32_t g_pend_watch;
+static int g_pend_watch_set;
+static void lang_arm_line(LangSlot *s, int line, int on);
+
+void lang_force_interp(void) {
+    g_nojit = 1;
+}
 static ClvmSysFn system_fn;
 static void *system_user;
 
@@ -90,8 +139,98 @@ static void scopy(char *dst, int cap, const char *src) {
     dst[i] = 0;
 }
 
+static int samestr(const char *a, const char *b) {
+    int i = 0;
+    if (!a || !b) {
+        return 0;
+    }
+    while (a[i] && b[i] && a[i] == b[i]) {
+        i++;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+
+static int lang_kill_by_name(const char *name) {
+    int i;
+    int killed = 0;
+    if (!name || !name[0]) {
+        return 0;
+    }
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (!slots[i].used) {
+            continue;
+        }
+        if (!samestr(slots[i].name, name)) {
+            continue;
+        }
+        serial_puts("run: replacing ");
+        serial_puts(name);
+        serial_puts("\n");
+        lang_kill(i);
+        killed = 1;
+    }
+    return killed;
+}
+
+static int lang_raise_existing(const char *name) {
+    int i;
+    if (!name || !name[0]) {
+        return 0;
+    }
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (!slots[i].used) {
+            continue;
+        }
+        if (!samestr(slots[i].name, name)) {
+            continue;
+        }
+        if (slots[i].task_id >= 0) {
+            task_raise(slots[i].task_id);
+        }
+        serial_puts("run: already running, raise ");
+        serial_puts(name);
+        serial_puts("\n");
+        return 1;
+    }
+    return 0;
+}
+
+static int last_dot_at(const char *s);
+
 static void status(Editor *e, const char *s) {
-    ed_set_status(e, s);
+    if (e) {
+        ed_set_status(e, s);
+    }
+}
+
+static void slot_ev_reset(int i) {
+    if (i < 0 || i >= LANG_VM_SLOTS) {
+        return;
+    }
+    slots[i].ev_key_n = 0;
+    slots[i].ev_key_r = 0;
+    slots[i].ev_text_n = 0;
+    slots[i].ev_text_r = 0;
+}
+
+static int replace_ext(const char *in, const char *ext, char out[LANG_NAME_MAX]) {
+    int dot;
+    int i;
+    if (!in || !ext || !out) {
+        return 0;
+    }
+    scopy(out, LANG_NAME_MAX, in);
+    dot = last_dot_at(out);
+    if (dot < 0) {
+        return 0;
+    }
+    i = 0;
+    while (ext[i] && dot + 1 + i < LANG_NAME_MAX - 1) {
+        out[dot + 1 + i] = ext[i];
+        i++;
+    }
+    out[dot + 1 + i] = 0;
+    return 1;
 }
 
 static void append(char *out, int cap, int *n, const char *s) {
@@ -118,6 +257,13 @@ static void append_u(char *out, int cap, int *n, unsigned v) {
     out[*n] = 0;
 }
 
+static char lowc(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return (char)(c + ('a' - 'A'));
+    }
+    return c;
+}
+
 static int suffix(const char *s, const char *ext) {
     int a = slen(s);
     int b = slen(ext);
@@ -126,7 +272,7 @@ static int suffix(const char *s, const char *ext) {
         return 0;
     }
     for (i = 0; i < b; ++i) {
-        if (s[a - b + i] != ext[i]) {
+        if (lowc(s[a - b + i]) != lowc(ext[i])) {
             return 0;
         }
     }
@@ -146,7 +292,74 @@ static int slot_ensure_file(int i) {
 }
 
 static int starts_src(const char *s) {
-    return s[0] == 'S' && s[1] == 'R' && s[2] == 'C' && s[3] == '/';
+    return s && (s[0] == 'S' || s[0] == 's') &&
+           (s[1] == 'R' || s[1] == 'r') &&
+           (s[2] == 'C' || s[2] == 'c') && s[3] == '/';
+}
+
+static int last_dot_at(const char *s) {
+    int i;
+    int d = -1;
+    if (!s) {
+        return -1;
+    }
+    for (i = 0; s[i]; ++i) {
+        if (s[i] == '.') {
+            d = i;
+        }
+    }
+    return d;
+}
+
+static void clv_to_map(const char *clv, char mapn[LANG_NAME_MAX]) {
+    int k = 0;
+    int dot;
+    if (!clv || !mapn) {
+        if (mapn) {
+            mapn[0] = 0;
+        }
+        return;
+    }
+    while (clv[k] && k + 1 < LANG_NAME_MAX) {
+        mapn[k] = clv[k];
+        ++k;
+    }
+    mapn[k] = 0;
+    dot = last_dot_at(mapn);
+    if (dot >= 0 && dot + 4 < LANG_NAME_MAX) {
+        int upper_ext = mapn[dot + 1] >= 'A' && mapn[dot + 1] <= 'Z';
+        mapn[dot] = '.';
+        mapn[dot + 1] = (char)(upper_ext ? 'M' : 'm');
+        mapn[dot + 2] = (char)(upper_ext ? 'A' : 'a');
+        mapn[dot + 3] = (char)(upper_ext ? 'P' : 'p');
+        mapn[dot + 4] = 0;
+    }
+}
+
+static void clv_to_cdbg(const char *clv, char outn[LANG_NAME_MAX]) {
+    int k = 0;
+    int dot;
+    if (!clv || !outn) {
+        if (outn) {
+            outn[0] = 0;
+        }
+        return;
+    }
+    while (clv[k] && k + 1 < LANG_NAME_MAX) {
+        outn[k] = clv[k];
+        ++k;
+    }
+    outn[k] = 0;
+    dot = last_dot_at(outn);
+    if (dot >= 0 && dot + 5 < LANG_NAME_MAX) {
+        int upper_ext = outn[dot + 1] >= 'A' && outn[dot + 1] <= 'Z';
+        outn[dot] = '.';
+        outn[dot + 1] = (char)(upper_ext ? 'C' : 'c');
+        outn[dot + 2] = (char)(upper_ext ? 'D' : 'd');
+        outn[dot + 3] = (char)(upper_ext ? 'B' : 'b');
+        outn[dot + 4] = (char)(upper_ext ? 'G' : 'g');
+        outn[dot + 5] = 0;
+    }
 }
 
 static int basename_start(const char *s) {
@@ -162,45 +375,139 @@ static int basename_start(const char *s) {
 }
 
 static int output_name(const char *in, char out[LANG_NAME_MAX]) {
-    int n = slen(in);
-    int base;
+    int n;
+    int dot;
     int i;
     int dst = 0;
-    if (n < 4) {
+    int upper_ext;
+    const char *stem;
+    if (!in || !out) {
         return 0;
     }
+    n = slen(in);
+    if (n < 2) {
+        return 0;
+    }
+    stem = in;
     if (starts_src(in)) {
-        out[dst++] = 'B';
-        out[dst++] = 'I';
-        out[dst++] = 'N';
-        out[dst++] = '/';
-        base = basename_start(in);
-        n = slen(in + base);
-        in = in + base;
-        if (n < 4) {
-            return 0;
+        if (in[0] >= 'a') {
+            out[dst++] = 'b';
+            out[dst++] = 'i';
+            out[dst++] = 'n';
+            out[dst++] = '/';
+        } else {
+            out[dst++] = 'B';
+            out[dst++] = 'I';
+            out[dst++] = 'N';
+            out[dst++] = '/';
         }
-        for (i = 0; i < n - 3 && dst < LANG_NAME_MAX - 4; ++i) {
-            out[dst++] = in[i];
-        }
+        stem = in + basename_start(in);
+    }
+    dot = last_dot_at(stem);
+    if (dot <= 0) {
+        return 0;
+    }
+    upper_ext = stem[dot + 1] >= 'A' && stem[dot + 1] <= 'Z';
+    if (dst + dot + 4 >= LANG_NAME_MAX) {
+        return 0;
+    }
+    for (i = 0; i < dot; ++i) {
+        out[dst++] = stem[i];
+    }
+    out[dst++] = '.';
+    if (upper_ext) {
         out[dst++] = 'C';
         out[dst++] = 'L';
         out[dst++] = 'V';
-        out[dst] = 0;
-        return 1;
+    } else {
+        out[dst++] = 'c';
+        out[dst++] = 'l';
+        out[dst++] = 'v';
     }
-    base = n - 3;
-    if (base + 3 >= LANG_NAME_MAX) {
+    out[dst] = 0;
+    return 1;
+}
+
+static void clear_last_lang(void) {
+    g_last_clv[0] = 0;
+    g_last_err[0] = 0;
+}
+
+static void set_err_diag(const ChrisDiag *d) {
+    int n = 0;
+    g_last_err[0] = 0;
+    if (!d) {
+        return;
+    }
+    if (d->file[0]) {
+        append(g_last_err, (int)sizeof(g_last_err), &n, d->file);
+        append(g_last_err, (int)sizeof(g_last_err), &n, ":");
+    }
+    append_u(g_last_err, (int)sizeof(g_last_err), &n, (unsigned)d->line);
+    append(g_last_err, (int)sizeof(g_last_err), &n, ":");
+    append_u(g_last_err, (int)sizeof(g_last_err), &n, (unsigned)d->column);
+    append(g_last_err, (int)sizeof(g_last_err), &n, " ");
+    append(g_last_err, (int)sizeof(g_last_err), &n, d->message);
+}
+
+const char *lang_last_clv(void) {
+    return g_last_clv;
+}
+
+const char *lang_last_error(void) {
+    return g_last_err;
+}
+
+static int emit_game_clv(const char *outn) {
+    size_t code_size;
+    uint32_t entry;
+    size_t file_size;
+    int n;
+    if (!outn || !outn[0]) {
         return 0;
     }
-    for (i = 0; i < base; ++i) {
-        out[i] = in[i];
+    scopy(g_last_clv, LANG_NAME_MAX, outn);
+    code_size = g_chris_result.code_size;
+    entry = g_chris_result.entry;
+    lang_write_map(outn, &g_chris_result);
+    {
+        uint32_t mem_hint = 0;
+        /* Doom-sized images need a large guest heap (zone + lumps). */
+        if (code_size > 200000u) {
+            mem_hint = 32u * 1024u * 1024u;
+        }
+        if (code_size > 65535u || entry > 65535u || mem_hint != 0)
+            file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
+                                           CLVM_FLAG_GAME, entry, mem_hint,
+                                           code_buffer, code_size);
+        else
+            file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
+                                        CLVM_FLAG_GAME, (uint16_t)entry,
+                                        code_buffer, code_size);
     }
-    out[base++] = 'C';
-    out[base++] = 'L';
-    out[base++] = 'V';
-    out[base] = 0;
+    if (!file_size) {
+        n = 0;
+        append(g_last_err, (int)sizeof(g_last_err), &n, "clv image fail");
+        return 0;
+    }
+    if (fs_write(outn, file_buffer, (int)file_size) < 0) {
+        n = 0;
+        append(g_last_err, (int)sizeof(g_last_err), &n, "clv write fail");
+        return 0;
+    }
     return 1;
+}
+
+static uint32_t g_cc_hb_tick;
+
+static void lang_cc_pump(void) {
+    uint32_t now;
+    gc_poll();
+    now = (uint32_t)ticks;
+    if (now - g_cc_hb_tick >= 60u) {
+        g_cc_hb_tick = now;
+        serial_puts("cc: working...\n");
+    }
 }
 
 static int chrisc_fs_read(void *user, const char *path, char *out, int cap) {
@@ -215,6 +522,35 @@ static int chrisc_fs_read(void *user, const char *path, char *out, int cap) {
     }
     out[n] = 0;
     return n;
+}
+
+static void chrisc_serial_progress(void *user, int index, int total,
+                                   const char *path) {
+    (void)user;
+    if (index < 0) {
+        int done = -index;
+        if (done > total) {
+            serial_puts("cc: emit\n");
+        } else {
+            serial_puts("cc: ok [");
+            serial_write_u64((uint64_t)(uint32_t)done);
+            serial_puts("/");
+            serial_write_u64((uint64_t)(uint32_t)total);
+            serial_puts("] ");
+            serial_puts(path ? path : "?");
+            serial_puts("\n");
+        }
+        lang_cc_pump();
+        return;
+    }
+    serial_puts("cc: [");
+    serial_write_u64((uint64_t)(uint32_t)(index + 1));
+    serial_puts("/");
+    serial_write_u64((uint64_t)(uint32_t)total);
+    serial_puts("] ");
+    serial_puts(path ? path : "?");
+    serial_puts("\n");
+    lang_cc_pump();
 }
 
 static void diag_status(Editor *e, int line, int col, const char *message) {
@@ -246,6 +582,8 @@ void lang_init(ClvmSysFn sys, void *user) {
     int i;
     system_fn = sys;
     system_user = user;
+    g_app_arg[0] = 0;
+    cls_runtime_init();
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         slots[i].used = 0;
         slots[i].task_id = -1;
@@ -255,6 +593,9 @@ void lang_init(ClvmSysFn sys, void *user) {
         slots[i].use_jit = 0;
         slots[i].jit_fn = NULL;
         slots[i].jit.phys = 0;
+        slots[i].jit.pages = 0;
+        slots[i].jit.w = NULL;
+        slots[i].jit.x = NULL;
         slots[i].heap_ram = 0;
         slots[i].heap_ram_sz = 0;
         slots[i].debug_on = 0;
@@ -263,7 +604,13 @@ void lang_init(ClvmSysFn sys, void *user) {
         slots[i].nbreak = 0;
         slots[i].map_n = 0;
         slots[i].step_line = 0;
+        slots[i].step_mode = DBG_STEP_NONE;
+        slots[i].step_depth = 0;
         slots[i].last_line = 0;
+        slots[i].dying = 0;
+        slots[i].front_pixels = 0;
+        slots[i].front_w = 0;
+        slots[i].front_h = 0;
         slots[i].gfx.pixels = slots[i].pixels;
         slots[i].gfx.zbuf = 0;
         slots[i].gfx.w = CLVM_SYS_GAME_W;
@@ -273,9 +620,15 @@ void lang_init(ClvmSysFn sys, void *user) {
 }
 
 #define CLVM_HEAP_RESERVE (64ull * 1024ull * 1024ull)
-#define CLVM_SLOT_RAM_DEFAULT (256ull * 1024ull * 1024ull)
+#define CLVM_SLOT_RAM_DEFAULT ((uint64_t)CLVM_MEMORY_SIZE)
 
 static void lang_free_slot_ram(int i) {
+    if (slots[i].user_ram) {
+        slots[i].heap_ram = 0;
+        slots[i].heap_ram_sz = 0;
+        slots[i].user_ram = 0;
+        return;
+    }
     if (slots[i].heap_ram) {
         kfree(slots[i].heap_ram);
         slots[i].heap_ram = 0;
@@ -283,11 +636,87 @@ static void lang_free_slot_ram(int i) {
     }
 }
 
+static void lang_map_surface(int i) {
+    const struct bootinfo *boot;
+    uint64_t virt;
+    uint64_t phys;
+    int bytes;
+    int pages;
+    int p;
+    if (slots[i].proc_id <= 0 || slots[i].gfx.pixels == 0)
+        return;
+    boot = bootinfo_get();
+    if (!boot || boot->hhdm_offset == 0)
+        return;
+    virt = (uint64_t)(uintptr_t)slots[i].gfx.pixels & ~4095ull;
+    if (virt < boot->hhdm_offset)
+        return;
+    phys = virt - boot->hhdm_offset;
+    bytes = slots[i].gfx.w * slots[i].gfx.h * 4;
+    if (bytes < 1)
+        return;
+    pages = (bytes + 4095) / 4096;
+    if (pages > 64)
+        pages = 64;
+    for (p = 0; p < pages; ++p) {
+        proc_map_user(slots[i].proc_id,
+                      PROC_FB_VIRT + (uint64_t)p * 4096ull,
+                      phys + (uint64_t)p * 4096ull, MM_PRESENT | MM_WRITE);
+    }
+}
+
+static void mem_zero_fast(uint8_t *p, uint64_t n) {
+    uint64_t i;
+    uint32_t *w;
+    uint64_t nw;
+    if (!p || n == 0)
+        return;
+    while (n && ((uintptr_t)p & 3u)) {
+        *p++ = 0;
+        n--;
+    }
+    w = (uint32_t *)(void *)p;
+    nw = n / 4u;
+    for (i = 0; i < nw; ++i)
+        w[i] = 0;
+    p += nw * 4u;
+    n -= nw * 4u;
+    while (n--)
+        *p++ = 0;
+}
+
 static void lang_attach_slot_ram(int i, const ClvmImage *image) {
     uint64_t cap;
     uint64_t want;
     uint8_t *p;
+    int prev;
     uint64_t n;
+    if (slots[i].proc_id > 0) {
+        if (slots[i].user_ram && slots[i].heap_ram) {
+            clvm_vm_set_memory(&slots[i].vm, slots[i].heap_ram,
+                               slots[i].heap_ram_sz);
+            return;
+        }
+        lang_free_slot_ram(i);
+        want = image && image->mem_hint ? (uint64_t)image->mem_hint
+                                         : CLVM_SLOT_RAM_DEFAULT;
+        if (want < CLVM_MEMORY_SIZE)
+            want = CLVM_MEMORY_SIZE;
+        want = proc_set_vm(slots[i].proc_id, want);
+        if (want == 0)
+            return;
+        p = proc_vm_ptr(slots[i].proc_id);
+        slots[i].heap_ram = p;
+        slots[i].heap_ram_sz = want;
+        slots[i].user_ram = 1;
+        prev = proc_current();
+        proc_switch(slots[i].proc_id);
+        mem_zero_fast(p, 4096ull);
+        proc_switch(prev);
+        clvm_vm_set_memory(&slots[i].vm, p, want);
+        cls_map_proc(slots[i].proc_id);
+        return;
+    }
 
     lang_free_slot_ram(i);
     cap = heap_free_bytes();
@@ -303,8 +732,7 @@ static void lang_attach_slot_ram(int i, const ClvmImage *image) {
     p = (uint8_t *)kmalloc(want);
     if (!p)
         return;
-    for (n = 0; n < want; ++n)
-        p[n] = 0;
+    mem_zero_fast(p, want);
     if (slots[i].vm.memory) {
         uint64_t copy = slots[i].vm.mem_size;
         if (copy > want)
@@ -339,20 +767,12 @@ static void lang_load_map(int slot, const char *clv) {
     char buf[8192];
     int n;
     int i;
-    int k;
     slots[slot].map_n = 0;
+    slots[slot].fn_n = 0;
     slots[slot].step_line = 0;
     if (!clv)
         return;
-    k = 0;
-    while (clv[k] && k + 1 < LANG_NAME_MAX)
-        mapn[k] = clv[k], ++k;
-    mapn[k] = 0;
-    if (k > 4) {
-        mapn[k - 3] = 'M';
-        mapn[k - 2] = 'A';
-        mapn[k - 1] = 'P';
-    }
+    clv_to_map(clv, mapn);
     n = fs_read(mapn, buf, (int)sizeof(buf) - 1);
     if (n < 0)
         return;
@@ -361,31 +781,54 @@ static void lang_load_map(int slot, const char *clv) {
     while (i < n && slots[slot].map_n < CHRIS_MAP_MAX) {
         unsigned pc = 0;
         unsigned line = 0;
+        unsigned file = 0;
+        uint32_t parsed_pc = 0;
+        uint16_t parsed_line = 0;
+        uint16_t parsed_file = 0;
         while (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\r')
             i++;
-        if (buf[i] == '0' && (buf[i + 1] == 'x' || buf[i + 1] == 'X'))
+        if (buf[i] == 'F' && buf[i + 1] == ' ') {
+            int k = 0;
+            int fi;
             i += 2;
-        while ((buf[i] >= '0' && buf[i] <= '9') ||
-               (buf[i] >= 'a' && buf[i] <= 'f') ||
-               (buf[i] >= 'A' && buf[i] <= 'F')) {
-            unsigned v = (unsigned)buf[i];
-            if (v >= '0' && v <= '9')
-                v -= '0';
-            else if (v >= 'a')
-                v = v - 'a' + 10;
-            else
-                v = v - 'A' + 10;
-            pc = (pc << 4) | v;
-            i++;
+            fi = slots[slot].fn_n;
+            if (fi < 16) {
+                while (buf[i] && buf[i] != ' ' && k < 23) {
+                    slots[slot].fn_name[fi][k++] = buf[i++];
+                }
+                slots[slot].fn_name[fi][k] = 0;
+                while (buf[i] == ' ')
+                    i++;
+                {
+                    unsigned pc = 0;
+                    while (buf[i] >= '0' && buf[i] <= '9') {
+                        pc = pc * 10u + (unsigned)(buf[i] - '0');
+                        i++;
+                    }
+                    slots[slot].fn_pc[fi] = pc;
+                    slots[slot].fn_n++;
+                }
+            }
+            while (buf[i] && buf[i] != '\n')
+                i++;
+            if (buf[i] == '\n')
+                i++;
+            continue;
         }
-        while (buf[i] == ' ')
-            i++;
-        while (buf[i] >= '0' && buf[i] <= '9') {
-            line = line * 10u + (unsigned)(buf[i] - '0');
-            i++;
+        if (!cdbg_parse_map_line(buf + i, &parsed_pc, &parsed_line,
+                                 &parsed_file)) {
+            while (buf[i] && buf[i] != '\n')
+                i++;
+            if (buf[i] == '\n')
+                i++;
+            continue;
         }
+        pc = parsed_pc;
+        line = parsed_line;
+        file = parsed_file;
         slots[slot].map_pc[slots[slot].map_n] = pc;
         slots[slot].map_line[slots[slot].map_n] = (uint16_t)line;
+        slots[slot].map_file[slots[slot].map_n] = (uint16_t)file;
         slots[slot].map_n++;
         while (buf[i] && buf[i] != '\n')
             i++;
@@ -400,6 +843,12 @@ static void lang_slot_release_gfx(int i) {
         id = slots[i].gfx_slot_id;
     if (id >= 0)
         gfx_slot_free(id);
+    if (slots[i].front_pixels) {
+        kfree(slots[i].front_pixels);
+        slots[i].front_pixels = 0;
+        slots[i].front_w = 0;
+        slots[i].front_h = 0;
+    }
     slots[i].gfx_slot_id = -1;
     slots[i].gfx.pixels = slots[i].pixels;
     slots[i].gfx.zbuf = 0;
@@ -415,11 +864,14 @@ static int lang_setup_viewport(int i, const ClvmImage *image, const char *name) 
     uint32_t *pix;
     uint32_t *zb;
     int slot;
-    (void)name;
+    int game3d;
+    (void)image;
     lang_slot_release_gfx(i);
     w = CLVM_SYS_GAME_W;
     h = CLVM_SYS_GAME_H;
-    if ((image->flags & CLVM_FLAG_GAME) != 0) {
+    game3d = name && name[0] == 'G' && name[1] == 'A' && name[2] == 'M' &&
+             name[3] == 'E' && name[4] == 'S' && name[5] == '/';
+    if (game3d) {
         slot = gfx_slot_alloc(w, h, &pix, &zb);
         if (slot >= 0) {
             slots[i].gfx_slot_id = slot;
@@ -527,6 +979,7 @@ int lang_compile(Editor *e) {
             status(e, buf);
             return 0;
         }
+        scopy(g_last_clv, LANG_NAME_MAX, name);
     }
     {
         ClaImage img;
@@ -582,24 +1035,42 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     int n;
     ClvmImage image;
     ClvmLoadError load;
+    /* Desktop/taskbar icons: reuse the live instance (stops spawn storms). */
+    if (lang_raise_existing(name)) {
+        status(e, "already running");
+        return 1;
+    }
     for (i = 0; i < LANG_VM_SLOTS && slots[i].used; ++i) {
     }
     if (i == LANG_VM_SLOTS) {
         status(e, "run: all VM slots busy");
+        serial_puts("run: all VM slots busy\n");
         return 0;
     }
     if (!slot_ensure_file(i)) {
         status(e, "run: no memory");
+        serial_puts("run: no memory for slot file\n");
         return 0;
     }
+    serial_puts("run: load ");
+    serial_puts(name ? name : "?");
+    serial_puts("\n");
     n = fs_read(name, slots[i].file, (int)slots[i].file_cap);
     if (n < 0) {
-        status(e, "run: .CLV not found");
+        int k = 0;
+        e->status[0] = 0;
+        append(e->status, 80, &k, "run: not found ");
+        append(e->status, 80, &k, name ? name : "");
+        serial_puts("run: not found\n");
         return 0;
     }
+    serial_puts("run: bytes=");
+    serial_write_u64((uint64_t)(uint32_t)n);
+    serial_puts("\n");
     if (storage_ready() && storage_cfs()) {
         if (cfs_perm(storage_cfs(), name, CFS_PERM_EXEC) != CFS_OK) {
             status(e, "no exec");
+            serial_puts("run: no exec\n");
             return 0;
         }
     }
@@ -607,41 +1078,224 @@ static int lang_run_internal(Editor *e, const char *name, int use_jit) {
     load = clvm_parse(slots[i].file, slots[i].file_size, &image);
     if (load != CL_LOAD_OK) {
         status(e, clvm_load_error(load));
+        serial_puts("run: clvm_parse failed\n");
         return 0;
     }
+    serial_puts("run: mem_hint=");
+    serial_write_u64((uint64_t)image.mem_hint);
+    serial_puts("\n");
     if (!lang_setup_viewport(i, &image, name)) {
         status(e, "run: gfx slot failed");
+        serial_puts("run: gfx slot failed\n");
         return 0;
     }
     gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
     slots[i].vm.on_safepoint = lang_safepoint;
+    slots[i].proc_id = proc_create(name);
+    if (slots[i].proc_id < 0)
+        slots[i].proc_id = 0;
+    lang_map_surface(i);
     lang_attach_slot_ram(i, &image);
+    if (!slots[i].heap_ram) {
+        if (slots[i].proc_id > 0)
+            proc_destroy(slots[i].proc_id);
+        slots[i].proc_id = 0;
+        status(e, "run: heap ram failed");
+        serial_puts("run: heap ram failed\n");
+        return 0;
+    }
+    serial_puts("run: heap_ram=");
+    serial_write_u64(slots[i].heap_ram_sz);
+    serial_puts("\n");
     lang_load_map(i, name);
     slots[i].use_jit = 0;
     slots[i].jit_fn = NULL;
     if (slots[i].jit.phys != 0) {
         jit_free(&slots[i].jit);
     }
+    /*
+     * UI CLVs (Editor/Shell) need JIT; Doom-sized games already did.
+     * Debugger keeps the interpreter.
+     */
+    if (!g_want_debug && !g_nojit) {
+        use_jit = 1;
+    }
     if (use_jit && !g_want_debug) {
+        serial_puts("run: jit compile...\n");
         if (jit_compile_image(&image, &slots[i].jit, &slots[i].jit_fn) != 0) {
             status(e, "jit compile failed");
-            return 0;
+            serial_puts("run: jit compile failed, using interpreter\n");
+            slots[i].use_jit = 0;
+            slots[i].jit_fn = NULL;
+        } else {
+            slots[i].use_jit = 1;
+            serial_puts("run: jit ready\n");
         }
-        slots[i].use_jit = 1;
     }
     scopy(slots[i].name, LANG_NAME_MAX, name);
+    slots[i].caps = path_is_driver(name) ? CAP_DRIVER : 0;
     slots[i].task_id = -1;
     slots[i].used = 1;
     slots[i].debug_on = g_want_debug;
     slots[i].paused = g_want_debug;
     slots[i].step_one = 0;
     slots[i].nbreak = 0;
+    if (g_want_debug) {
+        int pb;
+        for (pb = 0; pb < g_pend_n; ++pb)
+            lang_arm_line(&slots[i], g_pend_line[pb], 1);
+        if (g_pend_watch_set)
+            slots[i].watch = g_pend_watch;
+    }
     slots[i].step_line = 0;
+    slots[i].step_mode = DBG_STEP_NONE;
+    slots[i].step_depth = 0;
     slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
+    slot_ev_reset(i);
+    slots[i].dying = 0;
     app_window_open(i, name);
-    status(e, use_jit ? "running jit" : "running");
+    status(e, slots[i].use_jit ? "running jit" : "running");
+    serial_puts(slots[i].use_jit ? "run: started jit\n" : "run: started interp\n");
     return 1;
+}
+
+int lang_compile_path(const char *src) {
+    char outn[LANG_NAME_MAX];
+    if (!src || !src[0]) {
+        return 0;
+    }
+    if (suffix(src, ".LST")) {
+        return lang_compile_list(src);
+    }
+    if (!output_name(src, outn)) {
+        return 0;
+    }
+    return lang_compile_file(src, outn);
+}
+
+int lang_run_path(const char *name) {
+    return lang_run_path_arg(name, 0);
+}
+
+int lang_run_path_replace(const char *name) {
+    (void)lang_kill_by_name(name);
+    return lang_run_path_arg(name, 0);
+}
+
+int lang_checkpoint_save(int slot, const uint8_t *bytes, int n, uint32_t off) {
+    int i;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used || !bytes)
+        return -1;
+    if (n < 0)
+        n = 0;
+    if (n > (int)sizeof(slots[slot].checkpoint))
+        n = (int)sizeof(slots[slot].checkpoint);
+    for (i = 0; i < n; ++i)
+        slots[slot].checkpoint[i] = bytes[i];
+    slots[slot].checkpoint_n = n;
+    slots[slot].checkpoint_off = off;
+    return n;
+}
+
+int lang_hot_reload(const char *name) {
+    int i;
+    int n;
+    int k;
+    ClvmImage image;
+    ClvmLoadError load;
+    uint8_t *born;
+    if (!name || !name[0])
+        return 0;
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && samestr(slots[i].name, name))
+            break;
+    }
+    if (i == LANG_VM_SLOTS)
+        return 0;
+    if (!slot_ensure_file(i))
+        return 0;
+    n = fs_read(name, file_buffer, (int)sizeof(file_buffer));
+    if (n < 0)
+        return 0;
+    load = clvm_parse(file_buffer, (size_t)n, &image);
+    if (load != CL_LOAD_OK)
+        return 0;
+    for (k = 0; k < n; ++k)
+        slots[i].file[k] = file_buffer[k];
+    slots[i].file_size = (size_t)n;
+    image.code = slots[i].file + (image.code - file_buffer);
+    clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
+    born = slots[i].vm.mem_owned ? slots[i].vm.memory : 0;
+    slots[i].vm.on_safepoint = lang_safepoint;
+    lang_attach_slot_ram(i, &image);
+    if (born && born != slots[i].heap_ram && !slots[i].user_ram)
+        kfree(born);
+    if (slots[i].checkpoint_n > 0 && slots[i].vm.memory &&
+        (uint64_t)slots[i].checkpoint_off + (uint64_t)slots[i].checkpoint_n <=
+            slots[i].vm.mem_size) {
+        int prev = proc_current();
+        if (slots[i].user_ram)
+            proc_switch(slots[i].proc_id);
+        for (k = 0; k < slots[i].checkpoint_n; ++k)
+            slots[i].vm.memory[slots[i].checkpoint_off + (uint32_t)k] =
+                slots[i].checkpoint[k];
+        proc_switch(prev);
+    }
+    lang_load_map(i, name);
+    serial_puts("run: hot reload ");
+    serial_puts(name);
+    serial_puts("\n");
+    return 1;
+}
+
+void lang_set_app_arg(const char *arg) {
+    int i = 0;
+    if (!arg) {
+        g_app_arg[0] = 0;
+        return;
+    }
+    while (arg[i] && i + 1 < (int)sizeof(g_app_arg)) {
+        g_app_arg[i] = arg[i];
+        i++;
+    }
+    g_app_arg[i] = 0;
+}
+
+int lang_copy_app_arg(char *out, int cap) {
+    int i = 0;
+    if (!out || cap < 1) {
+        return 0;
+    }
+    while (g_app_arg[i] && i + 1 < cap) {
+        out[i] = g_app_arg[i];
+        i++;
+    }
+    out[i] = 0;
+    return i > 0;
+}
+
+int lang_run_path_arg(const char *name, const char *arg) {
+    static Editor dummy;
+    char probe[1];
+    char alt[LANG_NAME_MAX];
+
+    dummy.name[0] = 0;
+    dummy.status[0] = 0;
+    lang_set_app_arg(arg);
+    if (!name || !name[0]) {
+        return 0;
+    }
+    if (fs_read(name, probe, 1) < 0) {
+        if (replace_ext(name, "LST", alt) && lang_compile_list(alt)) {
+            return lang_run_internal(&dummy, name, 0);
+        }
+        if (replace_ext(name, "CC", alt) && lang_compile_file(alt, name)) {
+            return lang_run_internal(&dummy, name, 0);
+        }
+        return 0;
+    }
+    return lang_run_internal(&dummy, name, 0);
 }
 
 int lang_run(Editor *e, const char *name) {
@@ -668,6 +1322,174 @@ int lang_compile_run_jit(Editor *e) {
     return lang_run_jit(e, name);
 }
 
+static int lang_disk_cc(const char *src, const char *dst) {
+    static uint8_t img[262144];
+    static ClvmVm vm;
+    char saved[FS_PATH];
+    char arg[FS_PATH];
+    uint8_t seed[16];
+    int n;
+    int pid;
+    int prev;
+    int steps;
+    int i;
+    int k;
+    uint32_t sz = 0;
+    uint16_t ty = 0;
+    uint64_t bytes;
+    ClvmImage image;
+    ClvmStepResult r;
+    uint8_t *zp;
+
+    n = fs_read("APPS/CC/CC.CLV", img, (int)sizeof(img));
+    if (n < 16) {
+        serial_puts("cc: no image\n");
+        return 0;
+    }
+    if (clvm_parse(img, (size_t)n, &image) != CL_LOAD_OK) {
+        serial_puts("cc: bad image\n");
+        return 0;
+    }
+    if (fs_stat(dst, &sz, &ty) != 0) {
+        for (i = 0; i < 16; ++i)
+            seed[i] = 0;
+        if (fs_write(dst, seed, 16) < 0)
+            return 0;
+    }
+    k = 0;
+    while (src[k] && k + 2 < (int)sizeof(arg)) {
+        arg[k] = src[k];
+        k++;
+    }
+    arg[k++] = ' ';
+    i = 0;
+    while (dst[i] && k + 1 < (int)sizeof(arg)) {
+        arg[k++] = dst[i++];
+    }
+    arg[k] = 0;
+    i = 0;
+    while (g_app_arg[i] && i + 1 < (int)sizeof(saved)) {
+        saved[i] = g_app_arg[i];
+        i++;
+    }
+    saved[i] = 0;
+    lang_set_app_arg(arg);
+    pid = proc_create("cc");
+    if (pid <= 0) {
+        serial_puts("cc: no proc\n");
+        lang_set_app_arg(saved);
+        return 0;
+    }
+    bytes = proc_set_vm(pid, 16ull * 1024ull * 1024ull);
+    if (bytes == 0) {
+        serial_puts("cc: no vm\n");
+        proc_destroy(pid);
+        lang_set_app_arg(saved);
+        return 0;
+    }
+    {
+        uint64_t off;
+        uint64_t cover = 128ull * 4096ull;
+        if (cover > bytes)
+            cover = bytes;
+        for (off = 0; off < cover; off += 4096ull) {
+            if (proc_commit(pid, PROC_VM_VIRT + off) != 0) {
+                serial_puts("cc: commit\n");
+                proc_destroy(pid);
+                lang_set_app_arg(saved);
+                return 0;
+            }
+        }
+    }
+    prev = proc_current();
+    proc_switch(pid);
+    zp = (uint8_t *)&vm;
+    for (i = 0; i < (int)sizeof(vm); ++i)
+        zp[i] = 0;
+    {
+        static uint32_t cc_pix[4];
+        static ClvmGfxCtx cc_gfx;
+        cc_gfx.pixels = cc_pix;
+        cc_gfx.zbuf = 0;
+        cc_gfx.w = 2;
+        cc_gfx.h = 2;
+        cc_gfx.slot_id = -1;
+        clvm_vm_init(&vm, &image, clvm_sys_dispatch, &cc_gfx);
+    }
+    clvm_vm_set_memory(&vm, proc_vm_ptr(pid), bytes);
+    r = CLVM_STEP_SLICE;
+    for (steps = 0; steps < 20000 && r == CLVM_STEP_SLICE; ++steps) {
+        r = clvm_step(&vm, 200000u);
+        if ((steps & 15) == 0)
+            lang_cc_pump();
+    }
+    proc_switch(prev);
+    proc_destroy(pid);
+    lang_set_app_arg(saved);
+    if (r != CLVM_STEP_HALT) {
+        serial_puts("cc: run ");
+        serial_write_u64((uint64_t)r);
+        serial_puts(" fault ");
+        serial_puts(clvm_fault_text(vm.fault));
+        serial_puts(" pc ");
+        serial_write_u64(vm.pc);
+        serial_puts(" steps ");
+        serial_write_u64((uint64_t)steps);
+        serial_puts("\n");
+        return 0;
+    }
+    n = fs_read(dst, file_buffer, (int)sizeof(file_buffer));
+    if (n < 16 || clvm_parse(file_buffer, (size_t)n, &image) != CL_LOAD_OK) {
+        serial_puts("cc: bad out ");
+        serial_write_u64((uint64_t)(n < 0 ? 0 : n));
+        serial_puts("\n");
+        return 0;
+    }
+    serial_puts("cc: disk compiler ");
+    serial_puts(dst);
+    serial_puts("\n");
+    return 1;
+}
+
+void lang_make_cc(void) {
+    uint32_t sz = 0;
+    uint16_t ty = 0;
+    if (fs_stat("APPS/CC/DOCC", &sz, &ty) != 0)
+        return;
+    if (lang_disk_cc("APPS/CC/STRUCT.CC", "APPS/CC/STRUCT.CLV"))
+        serial_puts("guest struct ok\n");
+    else
+        serial_puts("guest struct fail\n");
+    if (lang_disk_cc("SYS/DRV/VIRTIOGPU.CC", "SYS/DRV/VGPU.CLV"))
+        serial_puts("guest driver ok\n");
+    else
+        serial_puts("guest driver fail\n");
+    if (lang_disk_cc("APPS/CC/CC.CC", "APPS/CC/CC2.CLV"))
+        serial_puts("make cc guest ok\n");
+    else
+        serial_puts("make cc guest fail\n");
+}
+
+static int lang_join_cc(const char **paths, int npaths, const char *dst) {
+    int off = 0;
+    int i;
+    for (i = 0; i < npaths; ++i) {
+        int n;
+        if (off + 2 >= (int)sizeof(source_buffer))
+            return 0;
+        n = fs_read(paths[i], source_buffer + off,
+                    (int)sizeof(source_buffer) - off - 1);
+        if (n < 0)
+            return 0;
+        off += n;
+        source_buffer[off++] = '\n';
+        source_buffer[off] = 0;
+    }
+    if (fs_write("APPS/CC/JOIN.CC", source_buffer, off) < 0)
+        return 0;
+    return lang_disk_cc("APPS/CC/JOIN.CC", dst);
+}
+
 int lang_compile_file(const char *src_path, const char *clv_path) {
     size_t file_size = 0;
     size_t code_size = 0;
@@ -680,6 +1502,8 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
     if (!suffix(src_path, ".CVA") && !suffix(src_path, ".CC")) {
         return 0;
     }
+    if (suffix(src_path, ".CC") && lang_disk_cc(src_path, clv_path))
+        return 1;
     n = fs_read(src_path, source_buffer, (int)sizeof(source_buffer) - 1);
     if (n < 0) {
         return 0;
@@ -717,30 +1541,26 @@ int lang_compile_file(const char *src_path, const char *clv_path) {
 
 int lang_compile_many(const char **paths, int npaths) {
     char outn[LANG_NAME_MAX];
-    size_t code_size;
-    uint32_t entry;
-    size_t file_size;
+    int ok;
+    clear_last_lang();
     if (!paths || npaths < 1)
         return 0;
     if (!output_name(paths[0], outn))
         return 0;
-    if (!chrisc_compile_files(paths, npaths, chrisc_fs_read, 0, code_buffer,
-                              sizeof(code_buffer), &g_chris_result))
+    g_cc_hb_tick = (uint32_t)ticks;
+    chrisc_set_yield(lang_cc_pump);
+    ok = chrisc_compile_files_ex(paths, npaths, chrisc_fs_read, 0, code_buffer,
+                                 sizeof(code_buffer), &g_chris_result,
+                                 chrisc_serial_progress, 0);
+    chrisc_set_yield(0);
+    if (!ok) {
+        set_err_diag(&g_chris_result.diag);
+        serial_puts("cc: ");
+        serial_puts(g_last_err[0] ? g_last_err : "compile failed");
+        serial_puts("\n");
         return 0;
-    code_size = g_chris_result.code_size;
-    entry = g_chris_result.entry;
-    lang_write_map(outn, &g_chris_result);
-    if (code_size > 65535u || entry > 65535u)
-        file_size = clvm_write_image_v2(file_buffer, sizeof(file_buffer),
-                                       CLVM_FLAG_GAME, entry, 0,
-                                       code_buffer, code_size);
-    else
-        file_size = clvm_write_image(file_buffer, sizeof(file_buffer),
-                                    CLVM_FLAG_GAME, (uint16_t)entry,
-                                    code_buffer, code_size);
-    if (!file_size)
-        return 0;
-    return fs_write(outn, file_buffer, (int)file_size) >= 0;
+    }
+    return emit_game_clv(outn);
 }
 
 int lang_compile_list(const char *lst_path) {
@@ -753,8 +1573,13 @@ int lang_compile_list(const char *lst_path) {
     if (!lst_path)
         return 0;
     n = fs_read(lst_path, lst, (int)sizeof(lst) - 1);
-    if (n < 0)
+    if (n < 0) {
+        int k = 0;
+        clear_last_lang();
+        append(g_last_err, (int)sizeof(g_last_err), &k, "lst not found ");
+        append(g_last_err, (int)sizeof(g_last_err), &k, lst_path);
         return 0;
+    }
     lst[n] = 0;
     p = 0;
     while (p < n && npaths < LANG_LST_MAX) {
@@ -785,7 +1610,43 @@ int lang_compile_list(const char *lst_path) {
     }
     if (npaths < 1)
         return 0;
-    return lang_compile_many(pp, npaths);
+    {
+        int only_cc = 1;
+        int pi;
+        char outn[LANG_NAME_MAX];
+        for (pi = 0; pi < npaths; ++pi) {
+            if (!suffix(paths[pi], ".CC"))
+                only_cc = 0;
+        }
+        if (only_cc && output_name(lst_path, outn) &&
+            lang_join_cc(pp, npaths, outn))
+            return 1;
+    }
+    clear_last_lang();
+    g_cc_hb_tick = (uint32_t)ticks;
+    chrisc_set_yield(lang_cc_pump);
+    {
+        int ok = chrisc_compile_files_ex(pp, npaths, chrisc_fs_read, 0, code_buffer,
+                                         sizeof(code_buffer), &g_chris_result,
+                                         chrisc_serial_progress, 0);
+        chrisc_set_yield(0);
+        if (!ok) {
+            set_err_diag(&g_chris_result.diag);
+            serial_puts("cc: ");
+            serial_puts(g_last_err[0] ? g_last_err : "compile failed");
+            serial_puts("\n");
+            return 0;
+        }
+    }
+    {
+        char outn[LANG_NAME_MAX];
+        if (!output_name(lst_path, outn)) {
+            int k = 0;
+            append(g_last_err, (int)sizeof(g_last_err), &k, "bad lst name");
+            return 0;
+        }
+        return emit_game_clv(outn);
+    }
 }
 
 int lang_splash_start(const char *name) {
@@ -823,6 +1684,10 @@ int lang_splash_start(const char *name) {
     gfx2d_clear(slots[i].gfx.pixels, slots[i].gfx.w, slots[i].gfx.h, 0);
     clvm_vm_init(&slots[i].vm, &image, system_fn, &slots[i].gfx);
     slots[i].vm.on_safepoint = lang_safepoint;
+    slots[i].proc_id = proc_create(name);
+    if (slots[i].proc_id < 0)
+        slots[i].proc_id = 0;
+    lang_map_surface(i);
     lang_attach_slot_ram(i, &image);
     lang_load_map(i, name);
     slots[i].use_jit = 0;
@@ -831,6 +1696,7 @@ int lang_splash_start(const char *name) {
         jit_free(&slots[i].jit);
     }
     scopy(slots[i].name, LANG_NAME_MAX, name);
+    slots[i].caps = path_is_driver(name) ? CAP_DRIVER : 0;
     slots[i].task_id = -1;
     slots[i].used = 1;
     return 1;
@@ -864,14 +1730,29 @@ void lang_splash_stop(void) {
 }
 
 void lang_tick(uint32_t now) {
+    int n;
     int i;
+    static int rr;
 
     bench_frame_tick();
-    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+    clvm_threads_tick();
+    for (n = 0; n < LANG_VM_SLOTS; ++n) {
+        i = (rr + n) % LANG_VM_SLOTS;
         if (slots[i].used) {
             ClvmStepResult r;
             int b;
+            int game;
+            int slices;
+            int max_slices;
+            int entered;
+            uint32_t budget;
+            if (slots[i].dying) {
+                lang_kill(i);
+                continue;
+            }
             if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
+                continue;
+            if (slots[i].proc_id > 0 && !proc_runnable(slots[i].proc_id))
                 continue;
             clvm_vm_wake(&slots[i].vm, now);
             if (slots[i].debug_on) {
@@ -880,27 +1761,41 @@ void lang_tick(uint32_t now) {
                         slots[i].paused = 1;
                         slots[i].step_one = 0;
                         slots[i].step_line = 0;
+                        slots[i].step_mode = DBG_STEP_NONE;
                         break;
                     }
                 }
                 if (slots[i].paused && !slots[i].step_one && !slots[i].step_line)
                     continue;
             }
-            if (slots[i].use_jit && slots[i].jit_fn != NULL && !slots[i].debug_on) {
-                jit_set_sys_context(&slots[i].vm, &slots[i].gfx);
-                r = slots[i].jit_fn(&slots[i].vm, LANG_VM_BUDGET, now);
-            } else if (slots[i].debug_on && slots[i].step_line) {
+            entered = 0;
+            if (slots[i].proc_id > 0 && proc_alive(slots[i].proc_id)) {
+                proc_switch(slots[i].proc_id);
+                entered = 1;
+            }
+            game = slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull);
+            if (slots[i].debug_on && slots[i].step_line) {
                 int k;
+                int mode = slots[i].step_mode;
+                int limit;
                 uint16_t start = slots[i].last_line;
+                int depth0 = slots[i].step_depth;
+                if (mode == DBG_STEP_NONE)
+                    mode = DBG_STEP_IN;
+                limit = mode == DBG_STEP_IN ? 512 : 8192;
                 r = CLVM_STEP_SLICE;
-                for (k = 0; k < 512; ++k) {
+                for (k = 0; k < limit; ++k) {
                     r = clvm_step(&slots[i].vm, 1);
                     if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
                         break;
-                    if (lang_line_at(&slots[i], slots[i].vm.pc) != start)
+                    if (dbg_step_should_pause(
+                            mode, (int)start, depth0,
+                            (int)lang_line_at(&slots[i], slots[i].vm.pc),
+                            (int)slots[i].vm.csp))
                         break;
                 }
                 slots[i].step_line = 0;
+                slots[i].step_mode = DBG_STEP_NONE;
                 slots[i].paused = 1;
                 slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
             } else if (slots[i].debug_on && slots[i].step_one) {
@@ -908,12 +1803,89 @@ void lang_tick(uint32_t now) {
                 slots[i].step_one = 0;
                 slots[i].paused = 1;
             } else {
-                r = clvm_step(&slots[i].vm, LANG_VM_BUDGET);
+                if (game) {
+                    budget = LANG_VM_BUDGET_GAME;
+                    max_slices = 1;
+                } else {
+                    budget = LANG_VM_BUDGET_UI;
+                    max_slices = 8;
+                }
+                r = CLVM_STEP_SLICE;
+                for (slices = 0; slices < max_slices; slices++) {
+                    if (slots[i].use_jit && slots[i].jit_fn != NULL &&
+                        !slots[i].debug_on) {
+                        jit_set_sys_context(&slots[i].vm, &slots[i].gfx);
+                        r = slots[i].jit_fn(&slots[i].vm, budget, now);
+                    } else {
+                        r = clvm_step(&slots[i].vm, budget);
+                    }
+                    if (r != CLVM_STEP_SLICE) {
+                        break;
+                    }
+                    if (proc_slice_due()) {
+                        proc_slice_ack();
+                        break;
+                    }
+                    if (game) {
+                        break;
+                    }
+                    if ((uint32_t)ticks - now >= 8u) {
+                        break;
+                    }
+                    clvm_vm_wake(&slots[i].vm, now);
+                }
             }
-            if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT)
-                slots[i].used = 0;
+            if (entered)
+                proc_switch(PROC_KERNEL);
+    if (r == CLVM_STEP_HALT || r == CLVM_STEP_FAULT || slots[i].dying) {
+                if (r == CLVM_STEP_FAULT) {
+                    proc_record_fault(slots[i].proc_id, 0, 0,
+                                      (uint64_t)slots[i].vm.pc);
+                    serial_puts("run: FAULT slot=");
+                    serial_write_u64((uint64_t)(uint32_t)i);
+                    serial_puts(" pc=");
+                    serial_write_u64((uint64_t)slots[i].vm.pc);
+                    serial_puts(" line=");
+                    serial_write_u64((uint64_t)lang_line_at(&slots[i],
+                                                            slots[i].vm.pc));
+                    serial_puts(" sp=");
+                    serial_write_u64((uint64_t)slots[i].vm.sp);
+                    serial_puts(" fault=");
+                    serial_write_u64((uint64_t)(uint32_t)slots[i].vm.fault);
+                    serial_puts(" fpc=");
+                    serial_write_u64((uint64_t)slots[i].vm.fault_pc);
+                    serial_puts(" csp=");
+                    serial_write_u64((uint64_t)slots[i].vm.csp);
+                    if (slots[i].vm.csp > 0u) {
+                        uint16_t ci;
+                        serial_puts(" ret=");
+                        serial_write_u64(
+                            (uint64_t)slots[i].vm.calls[slots[i].vm.csp - 1u]);
+                        serial_puts(" calls=");
+                        for (ci = 0; ci < slots[i].vm.csp && ci < 12u; ci++) {
+                            if (ci)
+                                serial_puts(",");
+                            serial_write_u64((uint64_t)slots[i].vm.calls[ci]);
+                        }
+                    }
+                    if (slots[i].vm.sp > 0u) {
+                        serial_puts(" top=");
+                        serial_write_u64(
+                            (uint64_t)slots[i].vm.stack[slots[i].vm.sp - 1u]);
+                    }
+                    serial_puts("\n");
+                    /* Doom-sized: never drop to interpreter (too slow / state
+                     * already partial). Kill on unexpected fault. */
+                    if (slots[i].use_jit &&
+                        slots[i].heap_ram_sz >= (16ull * 1024ull * 1024ull)) {
+                        serial_puts("run: doom fault — kill\n");
+                    }
+                }
+                lang_kill(i);
+            }
         }
     }
+    rr = (rr + 1) % LANG_VM_SLOTS;
 }
 
 int lang_active_count(void) {
@@ -931,11 +1903,24 @@ int lang_kill(int slot) {
     if (slot < 0 || slot >= LANG_VM_SLOTS) {
         return 0;
     }
+    if (!slots[slot].used && !slots[slot].dying) {
+        return 0;
+    }
+    serial_puts("close: kill slot=");
+    serial_write_u64((uint64_t)(uint32_t)slot);
+    serial_puts(" name=");
+    serial_puts(slots[slot].name);
+    serial_puts("\n");
     if (slots[slot].jit.phys != 0) {
         jit_free(&slots[slot].jit);
+    } else {
+        serial_puts("close: no jit\n");
     }
+    serial_puts("close: free ram\n");
     lang_free_slot_ram(slot);
+    serial_puts("close: release gfx\n");
     lang_slot_release_gfx(slot);
+    serial_puts("close: sys close\n");
     clvm_sys_close_slot(slots[slot].gfx.slot_id >= 0 ? slots[slot].gfx.slot_id
                                                     : slot);
     if (slots[slot].file) {
@@ -943,7 +1928,14 @@ int lang_kill(int slot) {
         slots[slot].file = 0;
         slots[slot].file_cap = 0;
     }
+    if (slots[slot].proc_id > 0) {
+        serial_puts("close: proc destroy\n");
+        proc_destroy(slots[slot].proc_id);
+        slots[slot].proc_id = 0;
+    }
     slots[slot].used = 0;
+    serial_puts("close: kill done\n");
+    slots[slot].dying = 0;
     slots[slot].task_id = -1;
     slots[slot].name[0] = 0;
     slots[slot].use_jit = 0;
@@ -965,11 +1957,64 @@ const char *lang_slot_name(int slot) {
     return slots[slot].name;
 }
 
+uint32_t lang_slot_caps(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used)
+        return 0;
+    return slots[slot].caps;
+}
+
+static int path_is_driver(const char *name) {
+    int i;
+    if (!name)
+        return 0;
+    for (i = 0; name[i]; ++i) {
+        if (name[i] == 'S' && name[i + 1] == 'Y' && name[i + 2] == 'S' &&
+            name[i + 3] == '/' && name[i + 4] == 'D' && name[i + 5] == 'R' &&
+            name[i + 6] == 'V')
+            return 1;
+    }
+    return 0;
+}
+
 uint32_t *lang_slot_pixels(int slot) {
     if (slot < 0 || slot >= LANG_VM_SLOTS) {
         return 0;
     }
+    if (slots[slot].front_pixels && slots[slot].front_w == slots[slot].gfx.w &&
+        slots[slot].front_h == slots[slot].gfx.h) {
+        return slots[slot].front_pixels;
+    }
     return slots[slot].gfx.pixels;
+}
+
+void lang_slot_publish(int slot) {
+    int n;
+    uint32_t *src;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return;
+    }
+    src = slots[slot].gfx.pixels;
+    if (!src || slots[slot].gfx.w < 1 || slots[slot].gfx.h < 1) {
+        return;
+    }
+    n = slots[slot].gfx.w * slots[slot].gfx.h;
+    if (!slots[slot].front_pixels || slots[slot].front_w != slots[slot].gfx.w ||
+        slots[slot].front_h != slots[slot].gfx.h) {
+        if (slots[slot].front_pixels) {
+            kfree(slots[slot].front_pixels);
+            slots[slot].front_pixels = 0;
+        }
+        slots[slot].front_pixels =
+            (uint32_t *)kmalloc((uint64_t)n * sizeof(uint32_t));
+        if (!slots[slot].front_pixels) {
+            slots[slot].front_w = 0;
+            slots[slot].front_h = 0;
+            return;
+        }
+        slots[slot].front_w = slots[slot].gfx.w;
+        slots[slot].front_h = slots[slot].gfx.h;
+    }
+    gfx_fast_copy_u32(slots[slot].front_pixels, src, n);
 }
 
 int lang_slot_w(int slot) {
@@ -1017,23 +2062,91 @@ int lang_find_slot_by_task(int task_id) {
     return -1;
 }
 
+int lang_find_slot_by_gfx(const void *gfx_ctx) {
+    int i;
+    if (!gfx_ctx) {
+        return -1;
+    }
+    for (i = 0; i < LANG_VM_SLOTS; ++i) {
+        if (slots[i].used && (const void *)&slots[i].gfx == gfx_ctx) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+void lang_slot_push_key(int slot, int key) {
+    int i;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return;
+    }
+    if (slots[slot].ev_key_n >= LANG_EVQ) {
+        return;
+    }
+    i = (slots[slot].ev_key_r + slots[slot].ev_key_n) % LANG_EVQ;
+    slots[slot].ev_key_q[i] = key;
+    slots[slot].ev_key_n++;
+}
+
+void lang_slot_push_text(int slot, int ch) {
+    int i;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return;
+    }
+    if (slots[slot].ev_text_n >= LANG_EVQ) {
+        return;
+    }
+    i = (slots[slot].ev_text_r + slots[slot].ev_text_n) % LANG_EVQ;
+    slots[slot].ev_text_q[i] = ch;
+    slots[slot].ev_text_n++;
+}
+
+int lang_slot_take_key(int slot) {
+    int k;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return 0;
+    }
+    if (slots[slot].ev_key_n <= 0) {
+        return 0;
+    }
+    k = slots[slot].ev_key_q[slots[slot].ev_key_r];
+    slots[slot].ev_key_r = (slots[slot].ev_key_r + 1) % LANG_EVQ;
+    slots[slot].ev_key_n--;
+    return k;
+}
+
+int lang_slot_take_text(int slot) {
+    int c;
+    if (slot < 0 || slot >= LANG_VM_SLOTS || !slots[slot].used) {
+        return 0;
+    }
+    if (slots[slot].ev_text_n <= 0) {
+        return 0;
+    }
+    c = slots[slot].ev_text_q[slots[slot].ev_text_r];
+    slots[slot].ev_text_r = (slots[slot].ev_text_r + 1) % LANG_EVQ;
+    slots[slot].ev_text_n--;
+    return c;
+}
+
+void lang_slot_request_close(int slot) {
+    if (slot < 0 || slot >= LANG_VM_SLOTS) {
+        return;
+    }
+    serial_puts("close: request slot=");
+    serial_write_u64((uint64_t)(uint32_t)slot);
+    serial_puts("\n");
+    slots[slot].dying = 1;
+}
+
 void lang_write_map(const char *clv_path, const ChrisResult *r) {
     char mapn[LANG_NAME_MAX];
     char buf[8192];
     int n = 0;
     int i;
-    int k;
     if (!clv_path || !r)
         return;
-    k = 0;
-    while (clv_path[k] && k + 1 < LANG_NAME_MAX)
-        mapn[k] = clv_path[k], ++k;
-    mapn[k] = 0;
-    if (k > 4) {
-        mapn[k - 3] = 'M';
-        mapn[k - 2] = 'A';
-        mapn[k - 1] = 'P';
-    }
+    clv_to_map(clv_path, mapn);
     buf[0] = 0;
     for (i = 0; i < r->map_n && n + 32 < (int)sizeof(buf); ++i) {
         unsigned v = r->map[i].pc;
@@ -1069,6 +2182,20 @@ void lang_write_map(const char *clv_path, const ChrisResult *r) {
             while (d--)
                 tmp[t++] = dec[d];
         }
+        tmp[t++] = ' ';
+        {
+            unsigned x = r->map[i].file_id;
+            char dec[8];
+            int d = 0;
+            if (x == 0)
+                dec[d++] = '0';
+            while (x && d < 8) {
+                dec[d++] = (char)('0' + (x % 10));
+                x /= 10;
+            }
+            while (d--)
+                tmp[t++] = dec[d];
+        }
         tmp[t++] = '\n';
         tmp[t] = 0;
         {
@@ -1077,25 +2204,77 @@ void lang_write_map(const char *clv_path, const ChrisResult *r) {
                 buf[n++] = tmp[c];
         }
     }
+    for (i = 0; i < r->nexports && n + 40 < (int)sizeof(buf); ++i) {
+        int c;
+        buf[n++] = 'F';
+        buf[n++] = ' ';
+        for (c = 0; r->export_name[i][c] && n + 8 < (int)sizeof(buf); ++c)
+            buf[n++] = r->export_name[i][c];
+        buf[n++] = ' ';
+        {
+            unsigned x = r->export_pc[i];
+            char dec[12];
+            int d = 0;
+            if (x == 0)
+                dec[d++] = '0';
+            while (x && d < 12) {
+                dec[d++] = (char)('0' + (x % 10));
+                x /= 10;
+            }
+            while (d && n + 2 < (int)sizeof(buf))
+                buf[n++] = dec[--d];
+        }
+        buf[n++] = '\n';
+    }
     buf[n] = 0;
     if (n > 0)
         (void)fs_write(mapn, buf, n);
+    {
+        char dbgn[LANG_NAME_MAX];
+        int cap = cdbg_bound(r);
+        uint8_t *blob;
+        int wrote;
+        clv_to_cdbg(clv_path, dbgn);
+        if (dbgn[0] && cap > 0) {
+            blob = (uint8_t *)kmalloc((size_t)cap);
+            if (blob) {
+                wrote = cdbg_from_result(blob, cap, r, 0, 0, 0);
+                if (wrote > 0)
+                    (void)fs_write(dbgn, blob, wrote);
+                kfree(blob);
+            }
+        }
+    }
 }
 
 void lang_debug_enable(int on) {
     g_want_debug = on;
 }
 
-void lang_debug_step(void) {
+static void lang_begin_step(int mode) {
     int i;
     for (i = 0; i < LANG_VM_SLOTS; ++i) {
         if (slots[i].used && slots[i].debug_on) {
             slots[i].last_line = lang_line_at(&slots[i], slots[i].vm.pc);
+            slots[i].step_mode = mode;
+            slots[i].step_depth = (int)slots[i].vm.csp;
             slots[i].step_line = 1;
             slots[i].step_one = 0;
             slots[i].paused = 0;
         }
     }
+}
+
+void lang_debug_step(void) {
+    lang_begin_step(DBG_STEP_IN);
+}
+
+void lang_debug_step_over(void) {
+    lang_begin_step(DBG_STEP_OVER);
+}
+
+void lang_debug_step_out(void) {
+    lang_begin_step(DBG_STEP_OUT);
 }
 
 void lang_debug_continue(void) {
@@ -1104,6 +2283,8 @@ void lang_debug_continue(void) {
         if (slots[i].used && slots[i].debug_on) {
             slots[i].paused = 0;
             slots[i].step_one = 0;
+            slots[i].step_line = 0;
+            slots[i].step_mode = DBG_STEP_NONE;
         }
     }
 }
@@ -1126,6 +2307,77 @@ uint32_t lang_debug_pc(void) {
     return 0;
 }
 
+uint32_t lang_debug_call(int depth) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on) {
+            if (depth < 0 || depth >= (int)slots[s].vm.csp)
+                return 0;
+            return slots[s].vm.calls[slots[s].vm.csp - 1 - depth];
+        }
+    }
+    return 0;
+}
+
+const char *lang_debug_fn(uint32_t pc) {
+    int s;
+    int i;
+    int best = -1;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (!slots[s].used || !slots[s].debug_on)
+            continue;
+        for (i = 0; i < slots[s].fn_n; ++i) {
+            if (slots[s].fn_pc[i] <= pc &&
+                (best < 0 || slots[s].fn_pc[i] >= slots[s].fn_pc[best]))
+                best = i;
+        }
+        if (best >= 0)
+            return slots[s].fn_name[best];
+    }
+    return "";
+}
+
+void lang_debug_set_watch(uint32_t addr) {
+    int s;
+    g_pend_watch = addr;
+    g_pend_watch_set = 1;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on)
+            slots[s].watch = addr;
+    }
+}
+
+uint32_t lang_debug_watch(void) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on)
+            return slots[s].watch;
+    }
+    return 0;
+}
+
+int lang_debug_sys(int index, int *id) {
+    int slot = -1;
+    int sys = 0;
+    clvm_sys_trace(index, &sys, &slot);
+    if (id)
+        *id = sys;
+    return slot;
+}
+
+int lang_debug_fault(uint64_t *cr2, int *pid, uint64_t *rip) {
+    const ProcFault *f = proc_last_fault();
+    if (!f || !f->valid)
+        return 0;
+    if (cr2)
+        *cr2 = f->cr2;
+    if (pid)
+        *pid = f->pid;
+    if (rip)
+        *rip = f->rip;
+    return 1;
+}
+
 int64_t lang_debug_stack(int i) {
     int s;
     for (s = 0; s < LANG_VM_SLOTS; ++s) {
@@ -1142,15 +2394,83 @@ int32_t lang_debug_mem(uint32_t addr) {
     int s;
     for (s = 0; s < LANG_VM_SLOTS; ++s) {
         if (slots[s].used && slots[s].debug_on) {
-            const uint8_t *m = slots[s].vm.memory;
-            if (!m || (uint64_t)addr + 4u > slots[s].vm.mem_size)
+            int prev = proc_current();
+            int32_t v;
+            const uint8_t *m;
+            if (slots[s].user_ram)
+                proc_switch(slots[s].proc_id);
+            m = slots[s].vm.memory;
+            if (!m || (uint64_t)addr + 4u > slots[s].vm.mem_size) {
+                proc_switch(prev);
                 return 0;
-            return (int32_t)((uint32_t)m[addr] | ((uint32_t)m[addr + 1] << 8) |
-                             ((uint32_t)m[addr + 2] << 16) |
-                             ((uint32_t)m[addr + 3] << 24));
+            }
+            v = (int32_t)((uint32_t)m[addr] | ((uint32_t)m[addr + 1] << 8) |
+                          ((uint32_t)m[addr + 2] << 16) |
+                          ((uint32_t)m[addr + 3] << 24));
+            proc_switch(prev);
+            return v;
         }
     }
     return 0;
+}
+
+static int lang_dbg_slot(void) {
+    int s;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (slots[s].used && slots[s].debug_on)
+            return s;
+    }
+    return -1;
+}
+
+static int lang_pend_has(int line) {
+    int i;
+    for (i = 0; i < g_pend_n; ++i) {
+        if (g_pend_line[i] == line)
+            return 1;
+    }
+    return 0;
+}
+
+static void lang_pend_toggle(int line) {
+    int i;
+    for (i = 0; i < g_pend_n; ++i) {
+        if (g_pend_line[i] == line) {
+            g_pend_line[i] = g_pend_line[g_pend_n - 1];
+            g_pend_n--;
+            return;
+        }
+    }
+    if (g_pend_n < LANG_PEND_BP)
+        g_pend_line[g_pend_n++] = line;
+}
+
+static void lang_arm_line(LangSlot *s, int line, int on) {
+    uint32_t pc = 0;
+    int found = 0;
+    int i;
+    if (!s)
+        return;
+    for (i = 0; i < s->map_n; ++i) {
+        if ((int)s->map_line[i] == line) {
+            pc = s->map_pc[i];
+            found = 1;
+            break;
+        }
+    }
+    if (!found)
+        return;
+    for (i = 0; i < s->nbreak; ++i) {
+        if (s->breakpoints[i] == pc) {
+            if (!on) {
+                s->breakpoints[i] = s->breakpoints[s->nbreak - 1];
+                s->nbreak--;
+            }
+            return;
+        }
+    }
+    if (on && s->nbreak < 32)
+        s->breakpoints[s->nbreak++] = pc;
 }
 
 int lang_bp_add(uint32_t pc) {
@@ -1175,34 +2495,307 @@ uint16_t lang_debug_line(void) {
 
 int lang_bp_toggle_line(int line) {
     int s;
-    int i;
-    uint32_t pc = 0;
-    int found = 0;
+    int on;
     if (line < 1)
         return 0;
+    lang_pend_toggle(line);
+    on = lang_pend_has(line);
     for (s = 0; s < LANG_VM_SLOTS; ++s) {
-        if (!slots[s].used)
-            continue;
-        for (i = 0; i < slots[s].map_n; ++i) {
-            if ((int)slots[s].map_line[i] == line) {
-                pc = slots[s].map_pc[i];
-                found = 1;
-                break;
-            }
-        }
-        if (!found)
+        if (slots[s].used)
+            lang_arm_line(&slots[s], line, on);
+    }
+    return on;
+}
+
+int lang_bp_has(int line) {
+    int s;
+    int i;
+    int j;
+    if (lang_pend_has(line))
+        return 1;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (!slots[s].used || !slots[s].debug_on)
             continue;
         for (i = 0; i < slots[s].nbreak; ++i) {
-            if (slots[s].breakpoints[i] == pc) {
-                slots[s].breakpoints[i] = slots[s].breakpoints[slots[s].nbreak - 1];
-                slots[s].nbreak--;
-                return 0;
+            for (j = 0; j < slots[s].map_n; ++j) {
+                if (slots[s].map_pc[j] == slots[s].breakpoints[i] &&
+                    (int)slots[s].map_line[j] == line)
+                    return 1;
             }
         }
-        if (slots[s].nbreak < 32) {
-            slots[s].breakpoints[slots[s].nbreak++] = pc;
-            return 1;
-        }
     }
-    return -1;
+    return 0;
+}
+
+int lang_debug_on(void) {
+    return lang_dbg_slot() >= 0;
+}
+
+void lang_debug_detach(void) {
+    int s;
+    g_want_debug = 0;
+    for (s = 0; s < LANG_VM_SLOTS; ++s) {
+        if (!slots[s].used || !slots[s].debug_on)
+            continue;
+        slots[s].debug_on = 0;
+        slots[s].paused = 0;
+        slots[s].step_one = 0;
+        slots[s].step_line = 0;
+        slots[s].step_mode = DBG_STEP_NONE;
+    }
+}
+
+static int lang_debug_bytes(uint32_t addr, uint8_t *dst, int n) {
+    int s = lang_dbg_slot();
+    int prev;
+    int i;
+    const uint8_t *m;
+    if (s < 0 || !dst || n <= 0)
+        return 0;
+    prev = proc_current();
+    if (slots[s].user_ram)
+        proc_switch(slots[s].proc_id);
+    m = slots[s].vm.memory;
+    if (!m || (uint64_t)addr >= slots[s].vm.mem_size) {
+        proc_switch(prev);
+        return 0;
+    }
+    if ((uint64_t)n > slots[s].vm.mem_size - (uint64_t)addr)
+        n = (int)(slots[s].vm.mem_size - (uint64_t)addr);
+    for (i = 0; i < n; ++i)
+        dst[i] = m[addr + (uint32_t)i];
+    proc_switch(prev);
+    return n;
+}
+
+static void dbg_app(char *d, int *n, int cap, const char *s) {
+    int i = 0;
+    while (s[i] && *n + 1 < cap) {
+        d[*n] = s[i];
+        *n += 1;
+        i++;
+    }
+}
+
+static void dbg_dec(char *d, int *n, int cap, unsigned v) {
+    char tmp[12];
+    int t = 0;
+    if (v == 0)
+        tmp[t++] = '0';
+    while (v && t < 12) {
+        tmp[t++] = (char)('0' + (v % 10u));
+        v /= 10u;
+    }
+    while (t > 0 && *n + 1 < cap) {
+        t--;
+        d[*n] = tmp[t];
+        *n += 1;
+    }
+}
+
+static void dbg_hex(char *d, int *n, int cap, uint32_t v, int digits) {
+    char tmp[8];
+    int i;
+    if (digits > 8)
+        digits = 8;
+    for (i = digits - 1; i >= 0; --i) {
+        tmp[i] = "0123456789abcdef"[v & 15u];
+        v >>= 4;
+    }
+    for (i = 0; i < digits; ++i) {
+        if (*n + 1 >= cap)
+            return;
+        d[*n] = tmp[i];
+        *n += 1;
+    }
+}
+
+static void dbg_hex_row(char *dst, int cap, int row) {
+    uint32_t addr = lang_debug_watch() + (uint32_t)row * 8u;
+    uint8_t b[8];
+    int got;
+    int n = 0;
+    int i;
+    if (cap < 2) {
+        if (cap > 0)
+            dst[0] = 0;
+        return;
+    }
+    dbg_hex(dst, &n, cap, addr, 8);
+    dbg_app(dst, &n, cap, " ");
+    got = lang_debug_bytes(addr, b, 8);
+    for (i = 0; i < 8; ++i) {
+        if (i < got)
+            dbg_hex(dst, &n, cap, b[i], 2);
+        else
+            dbg_app(dst, &n, cap, "--");
+        dbg_app(dst, &n, cap, " ");
+    }
+    dst[n] = 0;
+}
+
+int lang_debug_ctl(int op, int arg) {
+    int s;
+    uint64_t cr2 = 0;
+    uint64_t rip = 0;
+    int pid = 0;
+    int id = 0;
+    switch (op) {
+    case 0:
+        return lang_debug_paused();
+    case 1:
+        lang_debug_enable(arg ? 1 : 0);
+        return g_want_debug;
+    case 2:
+        lang_debug_step();
+        return 1;
+    case 3:
+        lang_debug_step_over();
+        return 1;
+    case 4:
+        lang_debug_step_out();
+        return 1;
+    case 5:
+        lang_debug_continue();
+        return 1;
+    case 6:
+        lang_debug_detach();
+        return 0;
+    case 7:
+        return lang_bp_toggle_line(arg);
+    case 8:
+        lang_debug_set_watch((uint32_t)arg);
+        return (int)lang_debug_watch();
+    case 9:
+        return (int)lang_debug_pc();
+    case 10:
+        return (int)lang_debug_line();
+    case 11:
+        s = lang_dbg_slot();
+        return s < 0 ? 0 : (int)slots[s].vm.sp;
+    case 12:
+        return (int)lang_debug_stack(arg);
+    case 13:
+        return (int)lang_debug_call(arg);
+    case 14:
+        return (int)lang_debug_mem((uint32_t)arg);
+    case 15: {
+        uint8_t b = 0;
+        if (lang_debug_bytes((uint32_t)arg, &b, 1) != 1)
+            return -1;
+        return (int)b;
+    }
+    case 16:
+        if (lang_debug_sys(arg, &id) < 0 && id == 0)
+            return -1;
+        return id;
+    case 17:
+        return lang_debug_fault(&cr2, &pid, &rip);
+    case 18:
+        if (!lang_debug_fault(&cr2, &pid, &rip))
+            return 0;
+        return (int)(uint32_t)rip;
+    case 19:
+        s = lang_dbg_slot();
+        if (s < 0)
+            return 0;
+        if (slots[s].vm.mem_size > 0x7fffffffull)
+            return 0x7fffffff;
+        return (int)slots[s].vm.mem_size;
+    case 20:
+        return (int)lang_debug_watch();
+    default:
+        return -1;
+    }
+}
+
+int lang_debug_text(int kind, char *dst, int cap) {
+    int n = 0;
+    int s;
+    int i;
+    const char *fn;
+    if (!dst || cap < 2)
+        return 0;
+    dst[0] = 0;
+    if (kind == 2 || kind == 3) {
+        dbg_hex_row(dst, cap, kind - 2);
+        while (dst[n])
+            n++;
+        return n;
+    }
+    if (kind == 0) {
+        uint64_t cr2 = 0;
+        uint64_t rip = 0;
+        int pid = 0;
+        dbg_app(dst, &n, cap, "L");
+        dbg_dec(dst, &n, cap, lang_debug_line());
+        dbg_app(dst, &n, cap, " pc ");
+        dbg_hex(dst, &n, cap, lang_debug_pc(), 8);
+        fn = lang_debug_fn(lang_debug_pc());
+        if (fn && fn[0]) {
+            dbg_app(dst, &n, cap, " ");
+            dbg_app(dst, &n, cap, fn);
+        }
+        dbg_app(dst, &n, cap, " sp ");
+        s = lang_dbg_slot();
+        dbg_dec(dst, &n, cap, s < 0 ? 0u : slots[s].vm.sp);
+        dbg_app(dst, &n, cap, " bp ");
+        dbg_dec(dst, &n, cap, (unsigned)g_pend_n);
+        if (lang_debug_fault(&cr2, &pid, &rip))
+            dbg_app(dst, &n, cap, " FAULT");
+        else if (!lang_debug_on())
+            dbg_app(dst, &n, cap, " idle");
+        else if (lang_debug_paused())
+            dbg_app(dst, &n, cap, " paused");
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 1) {
+        dbg_app(dst, &n, cap, "stk");
+        for (i = 0; i < 4; ++i) {
+            dbg_app(dst, &n, cap, " ");
+            dbg_hex(dst, &n, cap, (uint32_t)lang_debug_stack(i), 8);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 4) {
+        dbg_app(dst, &n, cap, "bp");
+        for (i = 0; i < g_pend_n && i < 8; ++i) {
+            dbg_app(dst, &n, cap, " ");
+            dbg_dec(dst, &n, cap, (unsigned)g_pend_line[i]);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 5) {
+        int id = 0;
+        dbg_app(dst, &n, cap, "sys");
+        for (i = 0; i < 6; ++i) {
+            if (lang_debug_sys(i, &id) < 0 && id == 0)
+                break;
+            dbg_app(dst, &n, cap, " ");
+            dbg_dec(dst, &n, cap, (unsigned)id);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    if (kind == 6) {
+        uint64_t cr2 = 0;
+        uint64_t rip = 0;
+        int pid = 0;
+        if (!lang_debug_fault(&cr2, &pid, &rip)) {
+            dbg_app(dst, &n, cap, "no fault");
+        } else {
+            dbg_app(dst, &n, cap, "fault pc ");
+            dbg_hex(dst, &n, cap, (uint32_t)rip, 8);
+            dbg_app(dst, &n, cap, " cr2 ");
+            dbg_hex(dst, &n, cap, (uint32_t)cr2, 8);
+        }
+        dst[n] = 0;
+        return n;
+    }
+    dbg_app(dst, &n, cap, "dbg");
+    dst[n] = 0;
+    return n;
 }

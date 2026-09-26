@@ -2,6 +2,11 @@
 #include <stdint.h>
 #include "port.h"
 #include "ata_pio.h"
+#include "pci.h"
+#include "irq.h"
+#include "pmm.h"
+#include "bootinfo.h"
+#include "serial.h"
 
 #define ATA_REG_DATA       0u
 #define ATA_REG_COUNT      2u
@@ -21,6 +26,125 @@
 #define ATA_CMD_WRITE      0x30u
 #define ATA_CMD_FLUSH      0xe7u
 #define ATA_CMD_IDENTIFY   0xecu
+#define ATA_CMD_READ_DMA   0xc8u
+#define ATA_CMD_WRITE_DMA  0xcau
+
+static volatile int g_ide_irq;
+static uint16_t g_bm_io;
+
+static void ide_irq(struct irq_frame *frame) {
+    uint8_t st;
+    (void)frame;
+    g_ide_irq = 1;
+    if (g_bm_io != 0) {
+        st = inb((uint16_t)(g_bm_io + 2u));
+        outb((uint16_t)(g_bm_io + 2u), st);
+    }
+}
+
+static void ata_program(const AtaPio *a, uint32_t lba,
+                        uint8_t count, uint8_t command);
+static void ata_soft_reset_port(uint16_t ctrl);
+static int ata_wait_not_busy(const AtaPio *a);
+
+static int ata_dma_wait(const AtaPio *a) {
+    uint32_t i;
+    uint16_t bm = a->bm;
+    /* The status bit is cleared before the engine starts. A transfer can
+     * finish before the first poll, which is common when other CPUs keep
+     * the BSP off the port. Requiring the bit to be observed low first
+     * turned every one of those completions into a full timeout. */
+    for (i = 0; i < 200000u; ++i) {
+        uint8_t st = inb((uint16_t)(bm + 2u));
+        uint8_t drv = inb((uint16_t)(a->io + ATA_REG_STATUS));
+        if (g_ide_irq || (st & 0x04u)) {
+            if (drv & ATA_SR_BSY)
+                continue;
+            if (st & 0x02u)
+                return BD_EIO;
+            return BD_OK;
+        }
+        if ((i & 63u) == 0)
+            (void)inb(0x80);
+    }
+    return BD_ETIMEOUT;
+}
+
+static void ata_dma_abort(AtaPio *a) {
+    if (a->bm != 0)
+        outb(a->bm, 0);
+    ata_soft_reset_port(a->ctrl);
+    (void)ata_wait_not_busy(a);
+}
+
+/* Device-local bounce. The IDE command registers are single-owner, so one
+ * buffer for the life of the driver is the same exclusion as the port itself.
+ * Allocating a fresh PRDT on every 512-byte install read did not finish
+ * before the install gate gave up. */
+static uint64_t g_ata_dma_phys;
+static uint64_t g_ata_prdt_phys;
+
+static int ata_dma_acquire(uint8_t **dst_out, uint32_t **prdt_out) {
+    uint64_t pages = (8192ull + PMM_PAGE - 1ull) / PMM_PAGE;
+    if (!g_ata_dma_phys) {
+        uint64_t phys = pmm_alloc_contig(pages);
+        uint64_t prdt = pmm_alloc();
+        if (phys == 0 || prdt == 0 || phys > 0xffffffffull ||
+            prdt > 0xffffffffull) {
+            if (phys)
+                pmm_free_contig(phys, pages);
+            if (prdt)
+                pmm_free(prdt);
+            return -1;
+        }
+        g_ata_dma_phys = phys;
+        g_ata_prdt_phys = prdt;
+    }
+    *dst_out = (uint8_t *)(uintptr_t)bootinfo_phys_to_virt(g_ata_dma_phys);
+    *prdt_out = (uint32_t *)(uintptr_t)bootinfo_phys_to_virt(g_ata_prdt_phys);
+    return 0;
+}
+
+static int ata_dma_xfer(AtaPio *a, uint32_t lba, uint8_t count,
+                        uint8_t *buf, int write) {
+    uint32_t bytes;
+    uint8_t *dst;
+    uint32_t *prdt;
+    uint8_t cmd;
+    int rc;
+
+    if (!a->dma || a->bm == 0 || count == 0 || count > 16u) {
+        return BD_ENODEV;
+    }
+    bytes = (uint32_t)count * 512u;
+    if (ata_dma_acquire(&dst, &prdt) != 0)
+        return BD_EIO;
+    if (write) {
+        uint32_t i;
+        for (i = 0; i < bytes; ++i) {
+            dst[i] = buf[i];
+        }
+    }
+    prdt[0] = (uint32_t)g_ata_dma_phys;
+    prdt[1] = bytes | 0x80000000u;
+    outb((uint16_t)(a->bm + 0u), 0);
+    outl((uint16_t)(a->bm + 4u), (uint32_t)g_ata_prdt_phys);
+    outb((uint16_t)(a->bm + 2u), 0x06u);
+    cmd = write ? 0x00u : 0x08u;
+    outb((uint16_t)(a->bm + 0u), cmd);
+    g_ide_irq = 0;
+    ata_program(a, lba, count, write ? ATA_CMD_WRITE_DMA : ATA_CMD_READ_DMA);
+    outb((uint16_t)(a->bm + 0u), (uint8_t)(cmd | 0x01u));
+    rc = ata_dma_wait(a);
+    outb((uint16_t)(a->bm + 0u), 0);
+    if (rc == BD_OK && !write) {
+        uint32_t i;
+        for (i = 0; i < bytes; ++i) {
+            buf[i] = dst[i];
+        }
+    }
+    return rc;
+}
 
 static uint16_t ata_inw(uint16_t port) {
     uint16_t v;
@@ -56,10 +180,22 @@ static int ata_wait_not_busy(const AtaPio *a) {
 static int ata_poll(const AtaPio *a, int need_drq) {
     uint32_t i;
     uint8_t s;
+    uint32_t idle = 0;
+    int saw_bsy = 0;
     for (i = 0; i < a->poll_limit; i++) {
         s = inb((uint16_t)(a->io + ATA_REG_STATUS));
         if (s == 0xffu)
             return BD_ENODEV;
+        if (s & ATA_SR_BSY)
+            saw_bsy = 1;
+        /* An empty bus stays 0 and never raises BSY. Burning poll_limit
+         * here kept the no-disk boot inside identify until the gate timed out. */
+        if (s == 0 && !saw_bsy) {
+            if (++idle > 256u)
+                return BD_ENODEV;
+        } else {
+            idle = 0;
+        }
         if (s & (ATA_SR_ERR | ATA_SR_DF))
             return BD_EIO;
         if (!(s & ATA_SR_BSY)) {
@@ -135,8 +271,13 @@ static int ata_bd_read(void *ctx, uint32_t lba,
     AtaPio *a = ctx;
     uint8_t *p = dst;
     while (count) {
-        uint8_t n = (uint8_t)(count > 255u ? 255u : count);
-        int rc = ata_read_chunk(a, lba, n, p);
+        uint8_t n = (uint8_t)(count > 16u ? 16u : count);
+        int rc = ata_dma_xfer(a, lba, n, p, 0);
+        if (rc != BD_OK) {
+            ata_dma_abort(a);
+            n = (uint8_t)(count > 255u ? 255u : count);
+            rc = ata_read_chunk(a, lba, n, p);
+        }
         if (rc != BD_OK)
             return rc;
         lba += n;
@@ -151,8 +292,13 @@ static int ata_bd_write(void *ctx, uint32_t lba,
     AtaPio *a = ctx;
     const uint8_t *p = src;
     while (count) {
-        uint8_t n = (uint8_t)(count > 255u ? 255u : count);
-        int rc = ata_write_chunk(a, lba, n, p);
+        uint8_t n = (uint8_t)(count > 16u ? 16u : count);
+        int rc = ata_dma_xfer(a, lba, n, (uint8_t *)p, 1);
+        if (rc != BD_OK) {
+            ata_dma_abort(a);
+            n = (uint8_t)(count > 255u ? 255u : count);
+            rc = ata_write_chunk(a, lba, n, p);
+        }
         if (rc != BD_OK)
             return rc;
         lba += n;
@@ -172,6 +318,8 @@ void ata_pio_configure(AtaPio *a, uint32_t sectors) {
     a->drive = 0u;
     a->sectors = sectors;
     a->poll_limit = 1000000u;
+    a->bm = 0;
+    a->dma = 0;
 }
 
 static void ata_soft_reset_port(uint16_t ctrl) {
@@ -217,7 +365,32 @@ static int ata_try_identify(AtaPio *a, uint32_t *reported_sectors) {
         return BD_EIO;
     }
     *reported_sectors = (uint32_t)id[60] | ((uint32_t)id[61] << 16);
-    return *reported_sectors ? BD_OK : BD_EIO;
+    /* Word 83 bit 10: LBA48. Words 100-101 are the low 32 bits of the
+       real sector count; words 60-61 saturate near 128 GiB. */
+    if ((id[83] & (1u << 10)) != 0) {
+        uint32_t hi = (uint32_t)id[102] | ((uint32_t)id[103] << 16);
+        uint32_t lo = (uint32_t)id[100] | ((uint32_t)id[101] << 16);
+        if (hi != 0u) {
+            serial_puts("ata disk too large\n");
+            return BD_EIO;
+        }
+        if (lo >= 2048u)
+            *reported_sectors = lo;
+    }
+    if ((id[49] & (1u << 8)) != 0) {
+        uint16_t bm = 0;
+        if (pci_find_ide(&bm)) {
+            a->bm = bm;
+            a->dma = 1;
+            g_bm_io = bm;
+            irq_set_handler(14, ide_irq);
+            pic_set_mask(14, false);
+            serial_puts("ata dma bm=");
+            serial_write_hex(bm);
+            serial_puts("\n");
+        }
+    }
+    return BD_OK;
 }
 
 int ata_pio_identify(AtaPio *a, uint32_t *reported_sectors) {

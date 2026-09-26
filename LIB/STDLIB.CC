@@ -53,6 +53,10 @@ float atof(char *s) {
 
 void exit(int c) {
     c = c;
+    printf("exit %d\n", c);
+    for (;;) {
+        wait(60);
+    }
 }
 
 void abort() {

@@ -1,6 +1,22 @@
 /* LEARN:WS64-W05 */
 #include <stdint.h>
 #include "cfs.h"
+#include "fs_lock.h"
+
+FsLock g_cfs_lock;
+
+#ifdef __freestanding__
+#include "smp.h"
+
+uint32_t fs_lock_holder(void) {
+    return smp_current_cpu() + 1u;
+}
+#else
+uint32_t fs_lock_holder(void) __attribute__((weak));
+uint32_t fs_lock_holder(void) {
+    return 1u;
+}
+#endif
 
 #ifdef __freestanding__
 #include "heap.h"
@@ -134,6 +150,8 @@ static int parse_path(const char *path, PathParts *p) {
 static void cache_reset(Cfs *fs) {
     uint32_t i;
     fs->clock = 0u;
+    fs->cache_hits = 0u;
+    fs->cache_misses = 0u;
     for (i = 0; i < CFS_CACHE_LINES; i++) {
         fs->cache[i].valid = 0u;
         fs->cache[i].lba = 0u;
@@ -173,6 +191,7 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
         }
     }
     if (best) {
+        fs->cache_hits++;
         for (i = 0; i < CFS_CACHE_LINES; i++) {
             line = &fs->cache[i];
             if (line != best && line->valid && line->lba == lba) {
@@ -183,6 +202,7 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
         bytes_copy(out, best->data, 512u);
         return CFS_OK;
     }
+    fs->cache_misses++;
     cache_drop_lba(fs, lba);
     line = cache_victim(fs);
     if (bd_read(fs->dev, lba, 1u, line->data) != BD_OK)
@@ -192,6 +212,16 @@ static int cache_read(Cfs *fs, uint32_t lba, uint8_t out[512]) {
     line->age = ++fs->clock;
     bytes_copy(out, line->data, 512u);
     return CFS_OK;
+}
+
+uint64_t cfs_cache_hits(const Cfs *fs) {
+    CFS_LOCK();
+    return fs ? fs->cache_hits : 0u;
+}
+
+uint64_t cfs_cache_misses(const Cfs *fs) {
+    CFS_LOCK();
+    return fs ? fs->cache_misses : 0u;
 }
 
 static int cache_write_raw(Cfs *fs, uint32_t lba, const uint8_t in[512]) {
@@ -223,13 +253,17 @@ static int jnl_write_hdr(Cfs *fs, uint32_t state, uint32_t seq, uint32_t nrec) {
     cfs_put32(s + 8, state);
     cfs_put32(s + 12, nrec);
     cfs_put32(s + 16, cfs_checksum(s, 16u));
-    return cache_write_raw(fs, CFS_JOURNAL_LBA, s);
+    return cache_write_raw(fs, fs->super.journal_lba, s);
 }
 
 int jnl_begin(Jnl *j, Cfs *fs) {
+    uint8_t sector[STOR_SECTOR_SIZE];
     j->fs = fs;
     j->seq = fs->super.generation;
     j->nrec = 0u;
+    fs->super.clean = 0u;
+    cfs_super_encode(sector, &fs->super);
+    (void)cache_write_raw(fs, CFS_SUPER_LBA, sector);
     return jnl_write_hdr(fs, JNL_BEGIN, j->seq, 0u);
 }
 
@@ -237,7 +271,7 @@ int jnl_log(Jnl *j, uint32_t lba, const uint8_t data[512]) {
     uint8_t s[STOR_SECTOR_SIZE];
     uint32_t slot;
     if (j->nrec >= JNL_MAX_REC) return CFS_ENOSPC;
-    slot = CFS_JOURNAL_LBA + 1u + j->nrec * 2u;
+    slot = j->fs->super.journal_lba + 1u + j->nrec * 2u;
     cfs_zero(s, STOR_SECTOR_SIZE);
     cfs_put32(s + 0, lba);
     cfs_put32(s + 4, cfs_checksum(data, 512u));
@@ -248,9 +282,14 @@ int jnl_log(Jnl *j, uint32_t lba, const uint8_t data[512]) {
 }
 
 int jnl_commit(Jnl *j) {
+    uint8_t sector[STOR_SECTOR_SIZE];
     int rc = jnl_write_hdr(j->fs, JNL_COMMIT, j->seq, j->nrec);
     if (rc != CFS_OK) return rc;
-    return jnl_write_hdr(j->fs, JNL_EMPTY, j->seq + 1u, 0u);
+    rc = jnl_write_hdr(j->fs, JNL_EMPTY, j->seq + 1u, 0u);
+    if (rc != CFS_OK) return rc;
+    j->fs->super.clean = 1u;
+    cfs_super_encode(sector, &j->fs->super);
+    return cache_write_raw(j->fs, CFS_SUPER_LBA, sector);
 }
 
 int jnl_replay(Cfs *fs, uint32_t *replayed) {
@@ -259,7 +298,7 @@ int jnl_replay(Cfs *fs, uint32_t *replayed) {
     uint8_t data[STOR_SECTOR_SIZE];
     uint32_t magic, state, nrec, i, slot, lba, sum;
     if (replayed) *replayed = 0u;
-    if (cache_read(fs, CFS_JOURNAL_LBA, hdr) != CFS_OK) return CFS_EIO;
+    if (cache_read(fs, fs->super.journal_lba, hdr) != CFS_OK) return CFS_EIO;
     magic = cfs_get32(hdr + 0);
     if (!magic) return CFS_OK;
     if (magic != JNL_MAGIC) return CFS_ECORRUPT;
@@ -269,11 +308,11 @@ int jnl_replay(Cfs *fs, uint32_t *replayed) {
     if (state == JNL_EMPTY) return CFS_OK;
     if (state == JNL_BEGIN) {
         cfs_zero(hdr, STOR_SECTOR_SIZE);
-        return cache_write_raw(fs, CFS_JOURNAL_LBA, hdr);
+        return cache_write_raw(fs, fs->super.journal_lba, hdr);
     }
     if (state != JNL_COMMIT) return CFS_ECORRUPT;
     for (i = 0; i < nrec && i < JNL_MAX_REC; i++) {
-        slot = CFS_JOURNAL_LBA + 1u + i * 2u;
+        slot = fs->super.journal_lba + 1u + i * 2u;
         if (cache_read(fs, slot, meta) != CFS_OK) return CFS_EIO;
         if (cache_read(fs, slot + 1u, data) != CFS_OK) return CFS_EIO;
         lba = cfs_get32(meta + 0);
@@ -286,7 +325,7 @@ int jnl_replay(Cfs *fs, uint32_t *replayed) {
     cfs_put32(hdr + 0, JNL_MAGIC);
     cfs_put32(hdr + 8, JNL_EMPTY);
     cfs_put32(hdr + 16, cfs_checksum(hdr, 16u));
-    return cache_write_raw(fs, CFS_JOURNAL_LBA, hdr);
+    return cache_write_raw(fs, fs->super.journal_lba, hdr);
 }
 
 static void jnl_serial_mount(uint32_t state, uint32_t replayed) {
@@ -306,16 +345,20 @@ static void jnl_serial_mount(uint32_t state, uint32_t replayed) {
 #endif
 }
 
-static int data_lba_valid(uint32_t lba) {
-    return lba >= CFS_DATA_LBA &&
-           lba < CFS_DATA_LBA + CFS_DATA_SECTORS;
+/* Contiguous file reads. Touched only while g_cfs_lock is held. */
+#define CFS_READAHEAD 16u
+static uint8_t g_cfs_ra[CFS_READAHEAD * 512u];
+
+static int data_lba_valid(const Cfs *fs, uint32_t lba) {
+    return lba >= fs->super.data_lba &&
+           lba < fs->super.data_lba + fs->super.data_sectors;
 }
 
 static int inode_read(Cfs *fs, uint32_t id, CfsInode *out) {
     uint32_t per_sector = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
     uint32_t lba, off;
-    if (id >= CFS_INODE_COUNT) return CFS_ECORRUPT;
-    lba = CFS_INODE_LBA + id / per_sector;
+    if (id >= fs->super.inode_count) return CFS_ECORRUPT;
+    lba = fs->super.inode_lba + id / per_sector;
     off = (id % per_sector) * CFS_INODE_SIZE;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
     if (cfs_inode_decode(out, fs->sector + off) != 0)
@@ -326,8 +369,8 @@ static int inode_read(Cfs *fs, uint32_t id, CfsInode *out) {
 static int inode_write(Cfs *fs, uint32_t id, const CfsInode *in) {
     uint32_t per_sector = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
     uint32_t lba, off;
-    if (id >= CFS_INODE_COUNT) return CFS_ECORRUPT;
-    lba = CFS_INODE_LBA + id / per_sector;
+    if (id >= fs->super.inode_count) return CFS_ECORRUPT;
+    lba = fs->super.inode_lba + id / per_sector;
     off = (id % per_sector) * CFS_INODE_SIZE;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
     cfs_inode_encode(fs->sector + off, in);
@@ -336,8 +379,8 @@ static int inode_write(Cfs *fs, uint32_t id, const CfsInode *in) {
 
 static int bitmap_set(Cfs *fs, uint32_t index, int used) {
     uint32_t lba, byte, bit;
-    if (index >= CFS_DATA_SECTORS) return CFS_ECORRUPT;
-    lba = CFS_BITMAP_LBA + index / (STOR_SECTOR_SIZE * 8u);
+    if (index >= fs->super.data_sectors) return CFS_ECORRUPT;
+    lba = fs->super.bitmap_lba + index / (STOR_SECTOR_SIZE * 8u);
     byte = (index / 8u) % STOR_SECTOR_SIZE;
     bit = index % 8u;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
@@ -350,8 +393,8 @@ static int bitmap_set(Cfs *fs, uint32_t index, int used) {
 
 static int bitmap_get(Cfs *fs, uint32_t index, int *used) {
     uint32_t lba, byte, bit;
-    if (index >= CFS_DATA_SECTORS) return CFS_ECORRUPT;
-    lba = CFS_BITMAP_LBA + index / (STOR_SECTOR_SIZE * 8u);
+    if (index >= fs->super.data_sectors) return CFS_ECORRUPT;
+    lba = fs->super.bitmap_lba + index / (STOR_SECTOR_SIZE * 8u);
     byte = (index / 8u) % STOR_SECTOR_SIZE;
     bit = index % 8u;
     if (cache_read(fs, lba, fs->sector) != CFS_OK) return CFS_EIO;
@@ -360,21 +403,29 @@ static int bitmap_get(Cfs *fs, uint32_t index, int *used) {
 }
 
 static int block_alloc(Cfs *fs, uint32_t *lba) {
-    uint32_t i;
+    uint32_t n;
+    uint32_t start;
     int used, rc;
-    for (i = 0; i < CFS_DATA_SECTORS; i++) {
+    start = fs->alloc_hint;
+    if (start >= fs->super.data_sectors)
+        start = 0u;
+    for (n = 0; n < fs->super.data_sectors; n++) {
+        uint32_t i = start + n;
+        if (i >= fs->super.data_sectors)
+            i -= fs->super.data_sectors;
         rc = bitmap_get(fs, i, &used);
         if (rc != CFS_OK) return rc;
         if (!used) {
             rc = bitmap_set(fs, i, 1);
             if (rc != CFS_OK) return rc;
             bytes_zero(fs->sector, STOR_SECTOR_SIZE);
-            rc = cache_write(fs, CFS_DATA_LBA + i, fs->sector);
+            rc = cache_write(fs, fs->super.data_lba + i, fs->sector);
             if (rc != CFS_OK) {
                 (void)bitmap_set(fs, i, 0);
                 return rc;
             }
-            *lba = CFS_DATA_LBA + i;
+            fs->alloc_hint = i + 1u;
+            *lba = fs->super.data_lba + i;
             return CFS_OK;
         }
     }
@@ -382,8 +433,12 @@ static int block_alloc(Cfs *fs, uint32_t *lba) {
 }
 
 static int block_free(Cfs *fs, uint32_t lba) {
-    if (!data_lba_valid(lba)) return CFS_ECORRUPT;
-    return bitmap_set(fs, lba - CFS_DATA_LBA, 0);
+    uint32_t index;
+    if (!data_lba_valid(fs, lba)) return CFS_ECORRUPT;
+    index = lba - fs->super.data_lba;
+    if (index < fs->alloc_hint)
+        fs->alloc_hint = index;
+    return bitmap_set(fs, index, 0);
 }
 
 static int ptr_block_get(Cfs *fs, uint32_t lba, uint32_t index, uint32_t *out) {
@@ -404,12 +459,26 @@ static int ptr_block_set(Cfs *fs, uint32_t lba, uint32_t index, uint32_t val) {
     return cache_write(fs, lba, fs->sector);
 }
 
+static uint64_t g_cfs_clock = 1;
+
+void cfs_set_now(uint64_t now) {
+    CFS_LOCK();
+    if (now != 0)
+        g_cfs_clock = now;
+}
+
+static void inode_stamp(CfsInode *n) {
+    g_cfs_clock++;
+    n->mtime_lo = (uint32_t)g_cfs_clock;
+    n->mtime_hi = (uint32_t)(g_cfs_clock >> 32);
+}
+
 static int file_lba(Cfs *fs, CfsInode *n, uint32_t block, uint32_t *lba,
                     int alloc) {
     uint32_t idx, mid, leaf, t;
     int rc;
 
-    if (block >= CFS_MAX_BLOCKS) {
+    if (block >= CFS_MAX_BLOCKS_V4 || block >= fs->super.data_sectors) {
         return alloc ? CFS_ENOSPC : CFS_ECORRUPT;
     }
     if (block < CFS_DIRECT_COUNT) {
@@ -441,6 +510,51 @@ static int file_lba(Cfs *fs, CfsInode *n, uint32_t block, uint32_t *lba,
         return CFS_OK;
     }
     idx -= CFS_PTRS_PER_BLOCK;
+    if (idx >= (uint32_t)CFS_PTRS_PER_BLOCK * (uint32_t)CFS_PTRS_PER_BLOCK) {
+        uint32_t tri = idx - (uint32_t)CFS_PTRS_PER_BLOCK * (uint32_t)CFS_PTRS_PER_BLOCK;
+        uint32_t span = (uint32_t)CFS_PTRS_PER_BLOCK * (uint32_t)CFS_PTRS_PER_BLOCK;
+        uint32_t hi = tri / span;
+        uint32_t rest = tri % span;
+        uint32_t mid2 = rest / CFS_PTRS_PER_BLOCK;
+        uint32_t leaf2 = rest % CFS_PTRS_PER_BLOCK;
+        uint32_t l1 = 0;
+        uint32_t l2 = 0;
+        uint32_t data = 0;
+        if (!n->triple_indirect) {
+            if (!alloc) return CFS_ECORRUPT;
+            rc = block_alloc(fs, &n->triple_indirect);
+            if (rc != CFS_OK) return rc;
+        }
+        rc = ptr_block_get(fs, n->triple_indirect, hi, &l1);
+        if (rc != CFS_OK) return rc;
+        if (!l1) {
+            if (!alloc) return CFS_ECORRUPT;
+            rc = block_alloc(fs, &l1);
+            if (rc != CFS_OK) return rc;
+            rc = ptr_block_set(fs, n->triple_indirect, hi, l1);
+            if (rc != CFS_OK) return rc;
+        }
+        rc = ptr_block_get(fs, l1, mid2, &l2);
+        if (rc != CFS_OK) return rc;
+        if (!l2) {
+            if (!alloc) return CFS_ECORRUPT;
+            rc = block_alloc(fs, &l2);
+            if (rc != CFS_OK) return rc;
+            rc = ptr_block_set(fs, l1, mid2, l2);
+            if (rc != CFS_OK) return rc;
+        }
+        rc = ptr_block_get(fs, l2, leaf2, &data);
+        if (rc != CFS_OK) return rc;
+        if (!data) {
+            if (!alloc) return CFS_ECORRUPT;
+            rc = block_alloc(fs, &data);
+            if (rc != CFS_OK) return rc;
+            rc = ptr_block_set(fs, l2, leaf2, data);
+            if (rc != CFS_OK) return rc;
+        }
+        *lba = data;
+        return CFS_OK;
+    }
     mid = idx / CFS_PTRS_PER_BLOCK;
     leaf = idx % CFS_PTRS_PER_BLOCK;
     if (!n->double_indirect) {
@@ -473,8 +587,26 @@ static int file_lba(Cfs *fs, CfsInode *n, uint32_t block, uint32_t *lba,
     }
 }
 
+static int free_ptr_levels(Cfs *fs, uint32_t lba, int levels) {
+    uint8_t buf[STOR_SECTOR_SIZE];
+    uint32_t i;
+    int rc;
+    if (!lba) return CFS_OK;
+    if (levels <= 1) return block_free(fs, lba);
+    rc = cache_read(fs, lba, buf);
+    if (rc != CFS_OK) return rc;
+    for (i = 0; i < CFS_PTRS_PER_BLOCK; i++) {
+        uint32_t child = cfs_get32(buf + i * 4u);
+        if (!child) continue;
+        rc = free_ptr_levels(fs, child, levels - 1);
+        if (rc != CFS_OK) return rc;
+    }
+    return block_free(fs, lba);
+}
+
 static int inode_ptr_free(Cfs *fs, CfsInode *n) {
     uint32_t k, mid;
+    uint8_t dbl[STOR_SECTOR_SIZE];
     int rc;
     if (n->indirect) {
         rc = block_free(fs, n->indirect);
@@ -482,10 +614,11 @@ static int inode_ptr_free(Cfs *fs, CfsInode *n) {
         n->indirect = 0u;
     }
     if (n->double_indirect) {
-        rc = cache_read(fs, n->double_indirect, fs->sector);
+        /* Local copy: block_free/bitmap_set clobber fs->sector. */
+        rc = cache_read(fs, n->double_indirect, dbl);
         if (rc != CFS_OK) return rc;
         for (k = 0; k < CFS_PTRS_PER_BLOCK; k++) {
-            mid = cfs_get32(fs->sector + k * 4u);
+            mid = cfs_get32(dbl + k * 4u);
             if (mid) {
                 rc = block_free(fs, mid);
                 if (rc != CFS_OK) return rc;
@@ -495,11 +628,17 @@ static int inode_ptr_free(Cfs *fs, CfsInode *n) {
         if (rc != CFS_OK) return rc;
         n->double_indirect = 0u;
     }
+    if (n->triple_indirect) {
+        rc = free_ptr_levels(fs, n->triple_indirect, 3);
+        if (rc != CFS_OK) return rc;
+        n->triple_indirect = 0u;
+    }
     return CFS_OK;
 }
 
 static int inode_ptr_prune(Cfs *fs, CfsInode *n, uint32_t need) {
     uint32_t i, idx, mid_idx, leaf_idx, mid, k;
+    uint8_t dbl[STOR_SECTOR_SIZE];
     int rc;
 
     for (i = need; i < CFS_DIRECT_COUNT; i++)
@@ -516,10 +655,10 @@ static int inode_ptr_prune(Cfs *fs, CfsInode *n, uint32_t need) {
             }
         }
         if (n->double_indirect) {
-            rc = cache_read(fs, n->double_indirect, fs->sector);
+            rc = cache_read(fs, n->double_indirect, dbl);
             if (rc != CFS_OK) return rc;
             for (k = 0; k < CFS_PTRS_PER_BLOCK; k++) {
-                mid = cfs_get32(fs->sector + k * 4u);
+                mid = cfs_get32(dbl + k * 4u);
                 if (mid) {
                     rc = block_free(fs, mid);
                     if (rc != CFS_OK) return rc;
@@ -540,31 +679,39 @@ static int inode_ptr_prune(Cfs *fs, CfsInode *n, uint32_t need) {
     }
     mid_idx = idx / CFS_PTRS_PER_BLOCK;
     leaf_idx = idx % CFS_PTRS_PER_BLOCK;
-    rc = cache_read(fs, n->double_indirect, fs->sector);
+    /* Keep double-indirect table in a local buffer — helpers reuse fs->sector. */
+    rc = cache_read(fs, n->double_indirect, dbl);
     if (rc != CFS_OK) return rc;
     for (i = mid_idx + 1u; i < CFS_PTRS_PER_BLOCK; i++) {
-        mid = cfs_get32(fs->sector + i * 4u);
+        mid = cfs_get32(dbl + i * 4u);
         if (mid) {
             rc = block_free(fs, mid);
             if (rc != CFS_OK) return rc;
-            cfs_put32(fs->sector + i * 4u, 0u);
+            cfs_put32(dbl + i * 4u, 0u);
         }
     }
-    mid = cfs_get32(fs->sector + mid_idx * 4u);
+    mid = cfs_get32(dbl + mid_idx * 4u);
     if (mid) {
-        for (k = leaf_idx; k < CFS_PTRS_PER_BLOCK; k++) {
-            uint32_t data;
-            rc = ptr_block_get(fs, mid, k, &data);
+        if (leaf_idx == 0u) {
+            /* Entire mid block unused: free it and drop the pointer. */
+            rc = block_free(fs, mid);
             if (rc != CFS_OK) return rc;
-            if (data) {
-                rc = block_free(fs, data);
+            cfs_put32(dbl + mid_idx * 4u, 0u);
+        } else {
+            for (k = leaf_idx; k < CFS_PTRS_PER_BLOCK; k++) {
+                uint32_t data;
+                rc = ptr_block_get(fs, mid, k, &data);
                 if (rc != CFS_OK) return rc;
-                rc = ptr_block_set(fs, mid, k, 0u);
-                if (rc != CFS_OK) return rc;
+                if (data) {
+                    rc = block_free(fs, data);
+                    if (rc != CFS_OK) return rc;
+                    rc = ptr_block_set(fs, mid, k, 0u);
+                    if (rc != CFS_OK) return rc;
+                }
             }
         }
     }
-    return cache_write(fs, n->double_indirect, fs->sector);
+    return cache_write(fs, n->double_indirect, dbl);
 }
 
 static int inode_alloc(Cfs *fs, uint32_t *id) {
@@ -629,7 +776,7 @@ static int dir_find(Cfs *fs, uint32_t dir_id, const char *name,
         if (rc != CFS_OK) {
             continue;
         }
-        if (!data_lba_valid(lba)) {
+        if (!data_lba_valid(fs, lba)) {
             return CFS_ECORRUPT;
         }
         rc = cache_read(fs, lba, fs->sector);
@@ -835,23 +982,27 @@ static int walk_full(Cfs *fs, const PathParts *p, uint32_t *id_out) {
 }
 
 int cfs_format(BlockDevice *dev) {
+    CFS_LOCK();
     uint8_t sector[STOR_SECTOR_SIZE];
     CfsSuper super;
     CfsInode inode;
     uint32_t lba, i, j;
     uint32_t per_sector = STOR_SECTOR_SIZE / CFS_INODE_SIZE;
 
-    if (!dev || dev->sector_size != STOR_SECTOR_SIZE ||
-        dev->sector_count < STOR_DISK_SECTORS || !dev->writable)
+    if (!dev || dev->sector_size != STOR_SECTOR_SIZE || !dev->writable)
         return CFS_EINVAL;
+    bytes_zero(&super, (uint32_t)sizeof(super));
+    if (cfs_geom_for_count(dev->sector_count, &super) != 0)
+        return CFS_EINVAL;
+    super.clean = 1u;
+    super.generation = 1u;
 
     bytes_zero(sector, STOR_SECTOR_SIZE);
-    for (lba = CFS_SUPER_LBA;
-         lba < CFS_DATA_LBA; lba++)
+    for (lba = CFS_SUPER_LBA; lba < super.data_lba; lba++)
         if (bd_write(dev, lba, 1u, sector) != BD_OK) return CFS_EIO;
 
     sector[0] = 1u;
-    if (bd_write(dev, CFS_BITMAP_LBA, 1u, sector) != BD_OK)
+    if (bd_write(dev, super.bitmap_lba, 1u, sector) != BD_OK)
         return CFS_EIO;
 
     bytes_zero(&inode, (uint32_t)sizeof(inode));
@@ -862,23 +1013,19 @@ int cfs_format(BlockDevice *dev) {
         if (i == 0u) {
             inode.type = CFS_INODE_DIR;
             inode.generation = 1u;
-            inode.direct[0] = CFS_DATA_LBA;
+            inode.direct[0] = super.data_lba;
             inode_init_acl(&inode);
             cfs_inode_encode(sector, &inode);
             bytes_zero(&inode, (uint32_t)sizeof(inode));
         }
-        if (bd_write(dev, CFS_INODE_LBA + i, 1u, sector) != BD_OK)
+        if (bd_write(dev, super.inode_lba + i, 1u, sector) != BD_OK)
             return CFS_EIO;
     }
 
     bytes_zero(sector, STOR_SECTOR_SIZE);
-    if (bd_write(dev, CFS_DATA_LBA, 1u, sector) != BD_OK)
+    if (bd_write(dev, super.data_lba, 1u, sector) != BD_OK)
         return CFS_EIO;
 
-    super.clean = 1u;
-    super.generation = 1u;
-    super.journal_lba = CFS_JOURNAL_LBA;
-    super.journal_sectors = CFS_JOURNAL_SECTORS;
     cfs_super_encode(sector, &super);
     if (bd_write(dev, CFS_SUPER_LBA, 1u, sector) != BD_OK)
         return CFS_EIO;
@@ -887,19 +1034,20 @@ int cfs_format(BlockDevice *dev) {
     cfs_put32(sector + 0, JNL_MAGIC);
     cfs_put32(sector + 8, JNL_EMPTY);
     cfs_put32(sector + 16, cfs_checksum(sector, 16u));
-    if (bd_write(dev, CFS_JOURNAL_LBA, 1u, sector) != BD_OK)
+    if (bd_write(dev, super.journal_lba, 1u, sector) != BD_OK)
         return CFS_EIO;
     return io_error(bd_flush(dev));
 }
 
 int cfs_mount(Cfs *fs, BlockDevice *dev) {
+    CFS_LOCK();
     CfsInode root;
     uint8_t jhdr[STOR_SECTOR_SIZE];
     uint32_t jstate = JNL_EMPTY;
     uint32_t replayed = 0u;
     int rc;
     if (!fs || !dev || dev->sector_size != STOR_SECTOR_SIZE ||
-        dev->sector_count < STOR_DISK_SECTORS)
+        dev->sector_count == 0u)
         return CFS_EINVAL;
     bytes_zero(fs, (uint32_t)sizeof(*fs));
     fs->dev = dev;
@@ -907,9 +1055,11 @@ int cfs_mount(Cfs *fs, BlockDevice *dev) {
         return CFS_EIO;
     if (cfs_super_decode(&fs->super, fs->sector) != 0)
         return CFS_EFORMAT;
+    if (dev->sector_count < fs->super.total_sectors)
+        return CFS_EINVAL;
     cache_reset(fs);
     fs->mounted = 1u;
-    if (bd_read(dev, CFS_JOURNAL_LBA, 1u, jhdr) == BD_OK &&
+    if (bd_read(dev, fs->super.journal_lba, 1u, jhdr) == BD_OK &&
         cfs_get32(jhdr + 0) == JNL_MAGIC &&
         cfs_get32(jhdr + 16) == cfs_checksum(jhdr, 16u))
         jstate = cfs_get32(jhdr + 8);
@@ -933,11 +1083,13 @@ int cfs_mount(Cfs *fs, BlockDevice *dev) {
 }
 
 int cfs_sync(Cfs *fs) {
+    CFS_LOCK();
     if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
     return io_error(bd_flush(fs->dev));
 }
 
 int cfs_create(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id, existing;
     CfsInode empty;
@@ -971,6 +1123,7 @@ int cfs_create(Cfs *fs, const char *path) {
 }
 
 int cfs_mkdir(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id, existing;
     CfsInode node;
@@ -1017,6 +1170,7 @@ mkdir_out:
 }
 
 int cfs_rmdir(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id, n;
     CfsInode node;
@@ -1053,6 +1207,7 @@ int cfs_rmdir(Cfs *fs, const char *path) {
 }
 
 int cfs_unlink(Cfs *fs, const char *path) {
+    CFS_LOCK();
     PathParts p;
     uint32_t parent, leaf, id;
     CfsInode node;
@@ -1092,6 +1247,7 @@ unlink_out:
 }
 
 int cfs_rename(Cfs *fs, const char *old_path, const char *new_path) {
+    CFS_LOCK();
     PathParts a, b;
     uint32_t pa, pb, la, lb, id, clash;
     CfsInode node;
@@ -1134,6 +1290,7 @@ int cfs_rename(Cfs *fs, const char *old_path, const char *new_path) {
 }
 
 int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     CfsInode inode;
@@ -1151,9 +1308,11 @@ int cfs_stat(Cfs *fs, const char *path, uint32_t *size, uint16_t *type) {
     return CFS_OK;
 }
 
-int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
+int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
+                uint32_t capacity) {
+    CFS_LOCK();
     PathParts p;
-    uint32_t id, done = 0u, amount, block;
+    uint32_t id, done = 0u, amount, block, sector_off;
     uint8_t *dst = out;
     CfsInode inode;
     int rc;
@@ -1169,24 +1328,65 @@ int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
     if (inode.type != CFS_INODE_FILE) return CFS_EISDIR;
     rc = cfs_perm_need(&inode, CFS_PERM_READ);
     if (rc != CFS_OK) return rc;
-    if (inode.size > CFS_MAX_FILE_SIZE) return CFS_ECORRUPT;
-    amount = inode.size < capacity ? inode.size : capacity;
-    for (block = 0; done < amount; block++) {
+    if (inode.size > CFS_MAX_FILE_BYTES) return CFS_ECORRUPT;
+    if (offset >= inode.size)
+        return 0;
+    amount = inode.size - offset;
+    if (amount > capacity)
+        amount = capacity;
+    block = offset / STOR_SECTOR_SIZE;
+    sector_off = offset % STOR_SECTOR_SIZE;
+    while (done < amount) {
         uint32_t take = amount - done;
         uint32_t lba;
-        if (take > STOR_SECTOR_SIZE) take = STOR_SECTOR_SIZE;
+        uint32_t available = STOR_SECTOR_SIZE - sector_off;
+        uint32_t run;
+        uint32_t bi;
+        if (sector_off == 0u && take >= STOR_SECTOR_SIZE) {
+            rc = file_lba(fs, &inode, block, &lba, 0);
+            if (rc != CFS_OK) return rc;
+            if (!data_lba_valid(fs, lba)) return CFS_ECORRUPT;
+            run = 1u;
+            while (run < CFS_READAHEAD &&
+                   done + (run + 1u) * STOR_SECTOR_SIZE <= amount) {
+                uint32_t next = 0;
+                int nrc = file_lba(fs, &inode, block + run, &next, 0);
+                if (nrc != CFS_OK || !data_lba_valid(fs, next) || next != lba + run)
+                    break;
+                run++;
+            }
+            if (run > 1u) {
+                if (bd_read(fs->dev, lba, run, g_cfs_ra) != BD_OK)
+                    return CFS_EIO;
+                for (bi = 0; bi < run; bi++)
+                    cache_drop_lba(fs, lba + bi);
+                bytes_copy(dst + done, g_cfs_ra, run * STOR_SECTOR_SIZE);
+                done += run * STOR_SECTOR_SIZE;
+                block += run;
+                continue;
+            }
+        }
+        if (take > available) take = available;
         rc = file_lba(fs, &inode, block, &lba, 0);
         if (rc != CFS_OK) return rc;
-        if (!data_lba_valid(lba)) return CFS_ECORRUPT;
+        if (!data_lba_valid(fs, lba)) return CFS_ECORRUPT;
         rc = cache_read(fs, lba, fs->sector);
         if (rc != CFS_OK) return rc;
-        bytes_copy(dst + done, fs->sector, take);
+        bytes_copy(dst + done, fs->sector + sector_off, take);
         done += take;
+        block++;
+        sector_off = 0u;
     }
     return (int)done;
 }
 
+int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity) {
+    CFS_LOCK();
+    return cfs_read_at(fs, path, 0u, out, capacity);
+}
+
 int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size) {
+    CFS_LOCK();
     CfsInode old_inode, inode;
     PathParts p;
     uint32_t id, need, old_count, i, done, lba;
@@ -1244,6 +1444,7 @@ int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size) {
     if (rc != CFS_OK) goto out;
 
     inode.size = size;
+    inode_stamp(&inode);
     inode.generation++;
     fs->jnl_data = 0u;
     rc = inode_write(fs, id, &inode);
@@ -1258,7 +1459,98 @@ out:
     return (int)size;
 }
 
+int cfs_mtime(Cfs *fs, const char *path, uint64_t *out) {
+    CFS_LOCK();
+    PathParts p;
+    uint32_t id;
+    CfsInode inode;
+    int rc;
+    if (!fs || !fs->mounted || !out) return CFS_EINVAL;
+    rc = parse_path(path, &p);
+    if (rc != CFS_OK) return rc;
+    rc = walk_full(fs, &p, &id);
+    if (rc != CFS_OK) return rc;
+    rc = inode_read(fs, id, &inode);
+    if (rc != CFS_OK) return rc;
+    *out = (uint64_t)inode.mtime_lo | ((uint64_t)inode.mtime_hi << 32);
+    return CFS_OK;
+}
+
+int cfs_write_at(Cfs *fs, const char *path, uint32_t offset,
+                 const void *data, uint32_t size) {
+    CFS_LOCK();
+    PathParts p;
+    uint32_t id, done, block, sector_off, end;
+    const uint8_t *src = data;
+    CfsInode inode;
+    int rc;
+    if (!fs || !fs->mounted) return CFS_ENOTMOUNTED;
+    if (!data && size) return CFS_EINVAL;
+    if (size > CFS_MAX_FILE_BYTES || offset > CFS_MAX_FILE_BYTES - size)
+        return CFS_EFBIG;
+    rc = parse_path(path, &p);
+    if (rc != CFS_OK) return rc;
+    if (p.ncomp == 0) return CFS_EINVAL;
+    rc = walk_full(fs, &p, &id);
+    if (rc == CFS_ENOENT) {
+        rc = cfs_create(fs, path);
+        if (rc < 0) return rc;
+        id = (uint32_t)rc;
+    } else if (rc != CFS_OK) {
+        return rc;
+    }
+    rc = inode_read(fs, id, &inode);
+    if (rc != CFS_OK) return rc;
+    if (inode.type != CFS_INODE_FILE) return CFS_EISDIR;
+    rc = cfs_perm_need(&inode, CFS_PERM_WRITE);
+    if (rc != CFS_OK) return rc;
+    end = offset + size;
+    if (end > inode.size)
+        inode.size = end;
+    inode_stamp(&inode);
+    rc = jnl_begin(&fs->jnl, fs);
+    if (rc != CFS_OK) return rc;
+    fs->jnl_active = 1u;
+    fs->jnl_data = 1u;
+    block = offset / STOR_SECTOR_SIZE;
+    sector_off = offset % STOR_SECTOR_SIZE;
+    done = 0u;
+    while (done < size) {
+        uint32_t take = size - done;
+        uint32_t lba;
+        uint32_t room = STOR_SECTOR_SIZE - sector_off;
+        uint32_t k;
+        if (take > room) take = room;
+        rc = file_lba(fs, &inode, block, &lba, 1);
+        if (rc != CFS_OK) {
+            fs->jnl_active = 0u;
+            return rc;
+        }
+        rc = cache_read(fs, lba, fs->sector);
+        if (rc != CFS_OK) {
+            fs->jnl_active = 0u;
+            return rc;
+        }
+        for (k = 0; k < take; k++)
+            fs->sector[sector_off + k] = src[done + k];
+        rc = cache_write(fs, lba, fs->sector);
+        if (rc != CFS_OK) {
+            fs->jnl_active = 0u;
+            return rc;
+        }
+        done += take;
+        block++;
+        sector_off = 0u;
+    }
+    fs->jnl_data = 0u;
+    rc = inode_write(fs, id, &inode);
+    fs->jnl_active = 0u;
+    if (rc != CFS_OK) return rc;
+    return jnl_commit(&fs->jnl) == CFS_OK ? (int)size : CFS_EIO;
+}
+
 int cfs_truncate(Cfs *fs, const char *path, uint32_t size) {
+    CFS_LOCK();
     uint32_t old_size;
     uint32_t i;
     uint16_t type;
@@ -1333,6 +1625,7 @@ static int list_dir_inode(Cfs *fs, uint32_t dir_id, CfsListFn fn, void *ctx) {
 }
 
 int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     int rc;
@@ -1347,10 +1640,12 @@ int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx) {
 }
 
 int cfs_list(Cfs *fs, CfsListFn fn, void *ctx) {
+    CFS_LOCK();
     return cfs_list_at(fs, "", fn, ctx);
 }
 
 int cfs_perm(Cfs *fs, const char *path, uint32_t bit) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     CfsInode inode;
@@ -1368,6 +1663,7 @@ int cfs_perm(Cfs *fs, const char *path, uint32_t bit) {
 }
 
 int cfs_chmod(Cfs *fs, const char *path, uint32_t mode) {
+    CFS_LOCK();
     PathParts p;
     uint32_t id;
     CfsInode inode;

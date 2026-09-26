@@ -16,11 +16,13 @@ void fs_init(void);
 int fs_backend(void);
 int fs_write(const char *path, const void *data, int n);
 int fs_read(const char *path, void *out, int out_cap);
+int fs_read_at(const char *path, uint32_t offset, void *out, int out_cap);
 int fs_mkdir(const char *path);
 int fs_rmdir(const char *path);
 int fs_unlink(const char *path);
 int fs_rename(const char *old_path, const char *new_path);
 int fs_stat(const char *path, uint32_t *size, uint16_t *type);
+int fs_mtime(const char *path, uint64_t *out);
 typedef int (*FsListFn)(void *ctx, const char *name, uint32_t size,
                         uint16_t type);
 int fs_list(FsListFn fn, void *ctx);

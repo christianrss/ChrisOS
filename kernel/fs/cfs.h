@@ -64,10 +64,16 @@ typedef struct Cfs {
     CfsCacheLine cache[CFS_CACHE_LINES];
     uint8_t sector[STOR_SECTOR_SIZE];
     uint32_t clock;
+    uint64_t cache_hits;
+    uint64_t cache_misses;
     uint8_t mounted;
     Jnl jnl;
     uint8_t jnl_active;
     uint8_t jnl_data;
+    /* Next bitmap index to try. block_alloc used to rescan from zero, so
+     * copying a multi-megabyte file was quadratic and the install gate
+     * never left the BOOT tree. */
+    uint32_t alloc_hint;
 } Cfs;
 
 typedef int (*CfsListFn)(void *ctx, const char *name,
@@ -82,7 +88,13 @@ int cfs_rmdir(Cfs *fs, const char *path);
 int cfs_unlink(Cfs *fs, const char *path);
 int cfs_rename(Cfs *fs, const char *old_path, const char *new_path);
 int cfs_read(Cfs *fs, const char *path, void *out, uint32_t capacity);
+int cfs_read_at(Cfs *fs, const char *path, uint32_t offset, void *out,
+                uint32_t capacity);
 int cfs_write(Cfs *fs, const char *path, const void *data, uint32_t size);
+int cfs_mtime(Cfs *fs, const char *path, uint64_t *out);
+int cfs_write_at(Cfs *fs, const char *path, uint32_t offset,
+                 const void *data, uint32_t size);
+void cfs_set_now(uint64_t now);
 int cfs_truncate(Cfs *fs, const char *path, uint32_t size);
 int cfs_list(Cfs *fs, CfsListFn fn, void *ctx);
 int cfs_list_at(Cfs *fs, const char *path, CfsListFn fn, void *ctx);
@@ -96,5 +108,7 @@ int jnl_commit(Jnl *j);
 int jnl_replay(Cfs *fs, uint32_t *replayed);
 int cfs_perm(Cfs *fs, const char *path, uint32_t bit);
 int cfs_chmod(Cfs *fs, const char *path, uint32_t mode);
+uint64_t cfs_cache_hits(const Cfs *fs);
+uint64_t cfs_cache_misses(const Cfs *fs);
 
 #endif

@@ -4,6 +4,14 @@
 
 #include "jit.h"
 
+/* Stubs for kernel serial / GC pulled in by jit_compile.c */
+#ifndef JIT_HOST_EXTERNAL_SERIAL
+void serial_puts(const char *text) { (void)text; }
+void serial_write_u64(uint64_t value) { (void)value; }
+void serial_write_hex(uint64_t value) { (void)value; }
+#endif
+void gc_poll(void) {}
+
 int jit_emit(JitBuf *buf, const uint8_t *bytes, uint32_t n) {
     uint32_t i;
 
@@ -18,11 +26,16 @@ int jit_emit(JitBuf *buf, const uint8_t *bytes, uint32_t n) {
 
 int jit_alloc(JitBuf *buf) {
     void *page;
+    size_t n;
 
     if (buf == NULL) {
         return -1;
     }
-    page = mmap(NULL, JIT_MAX, PROT_READ | PROT_WRITE,
+    if (buf->pages == 0 || buf->pages > JIT_PAGES) {
+        buf->pages = JIT_PAGES;
+    }
+    n = (size_t)buf->pages * 4096u;
+    page = mmap(NULL, n, PROT_READ | PROT_WRITE,
                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (page == MAP_FAILED) {
         return -1;
@@ -31,8 +44,7 @@ int jit_alloc(JitBuf *buf) {
     buf->w = (uint8_t *)page;
     buf->x = (uint8_t *)page;
     buf->used = 0;
-    buf->cap = JIT_MAX;
-    buf->pages = JIT_PAGES;
+    buf->cap = (uint32_t)n;
     return 0;
 }
 
@@ -40,14 +52,15 @@ void jit_seal(JitBuf *buf) {
     if (buf == NULL || buf->x == NULL) {
         return;
     }
-    mprotect(buf->x, JIT_MAX, PROT_READ | PROT_WRITE | PROT_EXEC);
+    mprotect(buf->x, buf->cap ? buf->cap : JIT_MAX,
+             PROT_READ | PROT_WRITE | PROT_EXEC);
 }
 
 void jit_free(JitBuf *buf) {
     if (buf == NULL || buf->w == NULL) {
         return;
     }
-    munmap(buf->w, JIT_MAX);
+    munmap(buf->w, buf->cap ? buf->cap : JIT_MAX);
     buf->w = NULL;
     buf->x = NULL;
     buf->used = 0;

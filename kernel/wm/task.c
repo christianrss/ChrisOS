@@ -1,8 +1,26 @@
 #include "task.h"
+#include "graphics.h"
 
 static Task g_tasks[TASK_MAX];
 static uint32_t g_next_z;
 static int g_focused_id;
+
+static void mark_task_frame(const TaskRect *frame) {
+    if (!frame)
+        return;
+    gfx_mark_dirty(frame->x, frame->y, frame->width,
+                   frame->body_height + TASK_TITLE_HEIGHT);
+}
+
+static void erase_task_frame(const TaskRect *frame) {
+    int h;
+    if (!frame)
+        return;
+    h = frame->body_height + TASK_TITLE_HEIGHT;
+    if (h < 1)
+        h = 1;
+    gfx_fill_rect(frame->x, frame->y, frame->width, h, CHRIS_DESKTOP_COLOR);
+}
 
 static void clear_task(Task *task, int id) {
     int i;
@@ -91,6 +109,8 @@ int task_spawn(TaskType type, TaskRect frame, TaskRunner runner) {
     task->active = true;
     task->type = type;
     task->frame = frame;
+    task->window.mode = TASK_WINDOW_NORMAL;
+    task->window.restore = frame;
     task->run = runner;
     task->z = g_next_z++;
 
@@ -132,6 +152,7 @@ void task_close(int task_id) {
     if (task == 0) {
         return;
     }
+    erase_task_frame(&task->frame);
     clear_task(task, task_id);
     if (g_focused_id == task_id) {
         g_focused_id = -1;
@@ -143,22 +164,99 @@ void task_raise(int task_id) {
     if (task == 0) {
         return;
     }
+    if (task->window.mode == TASK_WINDOW_MINIMIZED) {
+        task->window.mode = TASK_WINDOW_NORMAL;
+        mark_task_frame(&task->frame);
+    }
     task->z = g_next_z++;
     g_focused_id = task_id;
 }
 
+void task_move(int task_id, int x, int y) {
+    Task *task = task_get(task_id);
+    TaskRect old;
+    if (!task)
+        return;
+    old = task->frame;
+    erase_task_frame(&old);
+    task->frame.x = x;
+    task->frame.y = y;
+    if (task->window.mode == TASK_WINDOW_MAXIMIZED)
+        task->window.mode = TASK_WINDOW_NORMAL;
+    mark_task_frame(&task->frame);
+}
+
+void task_resize(int task_id, int width, int body_height) {
+    Task *task = task_get(task_id);
+    TaskRect old;
+    if (!task || width <= 0 || body_height <= 0)
+        return;
+    old = task->frame;
+    erase_task_frame(&old);
+    task->frame.width = width;
+    task->frame.body_height = body_height;
+    if (task->window.mode == TASK_WINDOW_MAXIMIZED)
+        task->window.mode = TASK_WINDOW_NORMAL;
+    mark_task_frame(&task->frame);
+}
+
+void task_minimize(int task_id) {
+    Task *task = task_get(task_id);
+    if (!task || task->window.mode == TASK_WINDOW_MINIMIZED)
+        return;
+    erase_task_frame(&task->frame);
+    task->window.mode = TASK_WINDOW_MINIMIZED;
+    task->window.dragging = false;
+    if (g_focused_id == task_id)
+        g_focused_id = -1;
+}
+
+void task_maximize(int task_id, TaskRect bounds) {
+    Task *task = task_get(task_id);
+    TaskRect old;
+    if (!task || bounds.width <= 0 || bounds.body_height <= 0)
+        return;
+    old = task->frame;
+    erase_task_frame(&old);
+    if (task->window.mode != TASK_WINDOW_MAXIMIZED)
+        task->window.restore = old;
+    task->frame = bounds;
+    task->window.mode = TASK_WINDOW_MAXIMIZED;
+    task->window.dragging = false;
+    mark_task_frame(&task->frame);
+}
+
+void task_restore(int task_id) {
+    Task *task = task_get(task_id);
+    TaskRect old;
+    if (!task)
+        return;
+    old = task->frame;
+    erase_task_frame(&old);
+    if (task->window.mode == TASK_WINDOW_MAXIMIZED)
+        task->frame = task->window.restore;
+    task->window.mode = TASK_WINDOW_NORMAL;
+    mark_task_frame(&task->frame);
+}
+
+TaskWindowMode task_window_mode(const Task *task) {
+    if (!task)
+        return TASK_WINDOW_NORMAL;
+    return task->window.mode;
+}
+
 bool task_point_inside(const Task *task, int x, int y) {
-    if (task == 0 || !task->active) {
+    if (task == 0 || !task->active ||
+        task->window.mode == TASK_WINDOW_MINIMIZED) {
         return false;
     }
     return x >= task->frame.x &&
            x < task->frame.x + task->frame.width &&
            y >= task->frame.y &&
-           y < task->frame.y + TASK_TITLE_HEIGHT +
-               task->frame.body_height;
+           y < task->frame.y + task->frame.body_height;
 }
 
-int task_focus_at(int x, int y) {
+int task_id_at(int x, int y) {
     int i;
     int best_id = -1;
     uint32_t best_z = 0;
@@ -171,9 +269,22 @@ int task_focus_at(int x, int y) {
             best_z = task->z;
         }
     }
+    return best_id;
+}
+
+int task_focus_at(int x, int y) {
+    int best_id = task_id_at(x, y);
 
     if (best_id >= 0) {
-        task_raise(best_id);
+        Task *best = &g_tasks[best_id];
+        int wallpaper = best->frame.x <= 0 && best->frame.y <= 0 &&
+                        best->frame.width >= g_gfx.width &&
+                        best->frame.body_height >= g_gfx.height;
+        if (wallpaper) {
+            g_focused_id = best_id;
+        } else {
+            task_raise(best_id);
+        }
     } else {
         g_focused_id = -1;
     }
@@ -229,7 +340,9 @@ void task_run_all(uint64_t ticks) {
 
         for (i = 0; i < TASK_MAX; ++i) {
             Task *candidate = &g_tasks[i];
-            if (!candidate->active || candidate->z <= after_z) {
+            if (!candidate->active ||
+                candidate->window.mode == TASK_WINDOW_MINIMIZED ||
+                candidate->z <= after_z) {
                 continue;
             }
             if (next == 0 || candidate->z < next->z) {

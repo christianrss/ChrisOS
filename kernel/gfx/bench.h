@@ -6,6 +6,8 @@
 void bench_frame_tick(void);
 uint32_t bench_fps_estimate(void);
 uint32_t bench_frame_ms(void);
+uint32_t bench_frame_p50_ms(void);
+uint32_t bench_frame_p95_ms(void);
 void bench_clear_begin(void);
 uint32_t bench_clear_end_ms(void);
 

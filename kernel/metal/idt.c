@@ -18,6 +18,7 @@ struct __attribute__((packed)) idt_pointer {
 };
 
 extern void (*isr_stub_table[256])(void);
+extern void nmi_entry(void);
 
 static struct idt_gate idt[256] __attribute__((aligned(16)));
 
@@ -57,5 +58,6 @@ void idt_init(void) {
     for (vector = 0; vector < 256; ++vector) {
         idt_set_gate(vector, isr_stub_table[vector]);
     }
+    idt_set_gate(2u, nmi_entry);
     idt_load();
 }

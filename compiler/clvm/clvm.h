@@ -81,7 +81,10 @@ enum ClvmOpcode {
     CL_OP_STFLD = 0x41,
     CL_OP_CALLT = 0x42,
     CL_OP_LDSTR = 0x43,
-    CL_OP_SAFEPOINT = 0x44
+    CL_OP_SAFEPOINT = 0x44,
+    CL_OP_ULE = 0x45,
+    CL_OP_UGT = 0x46,
+    CL_OP_UGE = 0x47
 };
 
 typedef enum ClvmLoadError {

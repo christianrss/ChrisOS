@@ -1,8 +1,12 @@
 #include "job.h"
+#include "apic.h"
+#include "bootinfo.h"
+#include "mm.h"
 #include "panic.h"
 #include "serial.h"
 #include "smp.h"
 #include "spin.h"
+#include "tlb_proto.h"
 
 typedef struct {
     JobFn fn;
@@ -47,6 +51,12 @@ int job_submit(JobFn fn, void *arg) {
 void job_worker_once(uint32_t cpu_index) {
     Job job;
 
+    if (tlb_runtime_is_fenced(cpu_index)) {
+        mm_tlb_poll_cpu(cpu_index);
+        tlb_runtime_mark_halted(cpu_index);
+        return;
+    }
+    mm_tlb_poll_cpu(cpu_index);
     job.fn = 0;
     job.arg = 0;
     spin_lock(&g_q_lock);
@@ -63,8 +73,30 @@ void job_worker_once(uint32_t cpu_index) {
     }
 }
 
+static volatile uint32_t g_ap_irq_enable;
+
+void smp_release_ap_irqs(void) {
+    g_ap_irq_enable = 1u;
+}
+
 void job_worker_forever(uint32_t cpu_index) {
+    int irqs = 0;
     for (;;) {
+        if (tlb_runtime_is_fenced(cpu_index)) {
+            mm_tlb_poll_cpu(cpu_index);
+            tlb_runtime_mark_halted(cpu_index);
+            for (;;) {
+                __asm__ volatile ("cli");
+                __asm__ volatile ("hlt");
+            }
+        }
+        if (!irqs && g_ap_irq_enable) {
+            if (!bootflag_noapic()) {
+                apic_enable_local();
+            }
+            __asm__ volatile ("sti");
+            irqs = 1;
+        }
         job_worker_once(cpu_index);
         __asm__ volatile ("pause");
     }
@@ -99,8 +131,12 @@ void smp_job_selftest(void) {
         return;
     }
     for (i = 0; i < 16u; ++i) {
-        if (!job_submit(add_one, 0)) {
-            panic("job_submit failed");
+        uint32_t spins = 0u;
+        while (!job_submit(add_one, 0)) {
+            job_worker_once(0);
+            if (++spins > 1000000u) {
+                panic("job_submit failed");
+            }
         }
     }
     job_wait_idle();
@@ -113,8 +149,12 @@ void smp_job_selftest(void) {
     for (wave = 0u; wave < 32u; ++wave) {
         g_job_sum = 0u;
         for (i = 0u; i < 128u; ++i) {
-            if (!job_submit(add_one, 0)) {
-                panic("job_submit failed");
+            uint32_t spins = 0u;
+            while (!job_submit(add_one, 0)) {
+                job_worker_once(0);
+                if (++spins > 1000000u) {
+                    panic("job_submit failed");
+                }
             }
         }
         job_wait_idle();

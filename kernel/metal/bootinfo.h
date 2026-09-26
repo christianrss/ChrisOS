@@ -20,6 +20,16 @@ struct bootinfo {
 
 void bootinfo_init(void);
 const struct bootinfo *bootinfo_get(void);
+int bootflag_safe(void);
+int bootflag_nosmp(void);
+int bootflag_noapic(void);
+int bootflag_noac97(void);
+int bootflag_nonet(void);
+int bootflag_nojit(void);
+int bootflag_gfx_fb(void);
+int bootflag_gfx3d(void);
+int bootflag_gfx_stress(void);
+int bootflag_gfx_debug(void);
 uint64_t bootinfo_phys_to_virt(uint64_t phys);
 uint64_t bootinfo_memmap_count(void);
 int bootinfo_memmap_entry(uint64_t index, uint64_t *base, uint64_t *length, uint64_t *type);

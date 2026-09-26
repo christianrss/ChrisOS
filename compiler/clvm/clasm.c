@@ -1,7 +1,7 @@
 #include "clasm.h"
 #include "clvm.h"
 
-typedef enum ArgKind { ARG_NONE, ARG_I32, ARG_LABEL } ArgKind;
+typedef enum ArgKind { ARG_NONE, ARG_I32, ARG_LABEL, ARG_U8 } ArgKind;
 typedef struct OpInfo { const char *name; uint8_t op, size; ArgKind arg; } OpInfo;
 typedef struct Label { char name[CLASM_NAME_MAX]; uint32_t address; } Label;
 typedef struct Context {
@@ -49,7 +49,14 @@ static const OpInfo ops[] = {
     {"FDIV",CL_OP_FDIV,1,ARG_NONE},{"FNEG",CL_OP_FNEG,1,ARG_NONE},
     {"FTOI",CL_OP_FTOI,1,ARG_NONE},{"ITOF",CL_OP_ITOF,1,ARG_NONE},
     {"FEQ",CL_OP_FEQ,1,ARG_NONE},{"FLT",CL_OP_FLT,1,ARG_NONE},
-    {"FLE",CL_OP_FLE,1,ARG_NONE}
+    {"FLE",CL_OP_FLE,1,ARG_NONE},
+    {"ULE",CL_OP_ULE,1,ARG_NONE},{"UGT",CL_OP_UGT,1,ARG_NONE},
+    {"UGE",CL_OP_UGE,1,ARG_NONE},
+    {"LDFLD",CL_OP_LDFLD,5,ARG_I32},{"STFLD",CL_OP_STFLD,5,ARG_I32},
+    {"NEWOBJ",CL_OP_NEWOBJ,5,ARG_I32},{"CALLT",CL_OP_CALLT,5,ARG_I32},
+    {"LDSTR",CL_OP_LDSTR,5,ARG_I32},
+    {"LDARG",CL_OP_LDARG,2,ARG_U8},{"LDLOC",CL_OP_LDLOC,2,ARG_U8},
+    {"STLOC",CL_OP_STLOC,2,ARG_U8}
 };
 
 static int upper(int c) { return c >= 'a' && c <= 'z' ? c - 32 : c; }
@@ -216,6 +223,16 @@ static int parse_line(Context *c, const char *line, size_t n,
                 emit32(c->out + c->pc + 1, (uint32_t)rel);
             }
         }
+    } else if (op->arg == ARG_U8) {
+        arg_col = (int)at + 1;
+        if (!number(line, n, &at, &immediate))
+            return error(c, line_no, arg_col, "expected u8");
+        if (immediate < 0 || immediate > 255)
+            return error(c, line_no, arg_col, "u8 out of range");
+        if (!tail_empty(line, n, at))
+            return error(c, line_no, (int)at + 1, "extra text after operand");
+        if (pass == 2)
+            c->out[c->pc + 1] = (uint8_t)immediate;
     } else if (!tail_empty(line, n, at)) {
         return error(c, line_no, (int)at + 1, "instruction takes no operand");
     }

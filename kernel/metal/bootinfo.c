@@ -39,12 +39,127 @@ static volatile struct limine_mp_request mp_request = {
     .flags = 0
 };
 
+__attribute__((used, section(".limine_requests")))
+static volatile struct limine_executable_cmdline_request cmdline_request = {
+    .id = LIMINE_EXECUTABLE_CMDLINE_REQUEST,
+    .revision = 0,
+    .response = 0
+};
+
 __attribute__((used, section(".limine_requests_end")))
 static volatile LIMINE_REQUESTS_END_MARKER;
 
 static struct bootinfo info;
 static struct limine_memmap_response *memmap_response;
 static int bootinfo_ready;
+static int g_safe;
+static int g_nosmp;
+static int g_noapic;
+static int g_noac97;
+static int g_nonet;
+static int g_nojit;
+static int g_gfx_fb;
+static int g_gfx3d;
+static int g_gfx_stress;
+static int g_gfx_debug;
+
+static int boot_prefix(const char *s, uint32_t n, const char *lit, uint32_t *rest) {
+    uint32_t i = 0u;
+    while (lit[i] != 0) {
+        if (i >= n || s[i] != lit[i]) {
+            return 0;
+        }
+        i++;
+    }
+    *rest = n - i;
+    return 1;
+}
+
+static int boot_tok(const char *s, uint32_t n, const char *lit) {
+    uint32_t i = 0u;
+    while (lit[i] != 0) {
+        if (i >= n || s[i] != lit[i]) {
+            return 0;
+        }
+        i++;
+    }
+    return i == n;
+}
+
+static void bootflag_parse(const char *cmd) {
+    const char *p;
+    if (cmd == 0) {
+        return;
+    }
+    p = cmd;
+    while (*p != 0) {
+        const char *start;
+        uint32_t n;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (*p == 0) {
+            break;
+        }
+        start = p;
+        while (*p != 0 && *p != ' ' && *p != '\t') {
+            p++;
+        }
+        n = (uint32_t)(p - start);
+        if (boot_tok(start, n, "safe")) {
+            g_safe = 1;
+            g_nosmp = 1;
+            g_noapic = 1;
+            g_noac97 = 1;
+            g_nonet = 1;
+            g_nojit = 1;
+        } else if (boot_tok(start, n, "nosmp")) {
+            g_nosmp = 1;
+        } else if (boot_tok(start, n, "noapic")) {
+            g_noapic = 1;
+        } else if (boot_tok(start, n, "noac97")) {
+            g_noac97 = 1;
+        } else if (boot_tok(start, n, "nonet")) {
+            g_nonet = 1;
+        } else if (boot_tok(start, n, "nojit")) {
+            g_nojit = 1;
+        } else if (boot_tok(start, n, "gfx.stress")) {
+            g_gfx_stress = 1;
+        } else if (boot_tok(start, n, "gfx.virgl.debug")) {
+            g_gfx_debug = 1;
+        } else {
+            uint32_t rest = 0;
+            if (boot_prefix(start, n, "gfx.backend=", &rest)) {
+                const char *v = start + (n - rest);
+                if (boot_tok(v, rest, "framebuffer")) {
+                    g_gfx_fb = 1;
+                } else if (boot_tok(v, rest, "virtio")) {
+                    g_gfx_fb = 0;
+                }
+            } else if (boot_prefix(start, n, "gfx.3d=", &rest)) {
+                const char *v = start + (n - rest);
+                if (boot_tok(v, rest, "auto")) {
+                    g_gfx3d = 0;
+                } else if (boot_tok(v, rest, "software")) {
+                    g_gfx3d = 1;
+                } else if (boot_tok(v, rest, "virgl")) {
+                    g_gfx3d = 2;
+                }
+            }
+        }
+    }
+}
+
+int bootflag_safe(void) { return g_safe; }
+int bootflag_nosmp(void) { return g_nosmp; }
+int bootflag_noapic(void) { return g_noapic; }
+int bootflag_noac97(void) { return g_noac97; }
+int bootflag_nonet(void) { return g_nonet; }
+int bootflag_nojit(void) { return g_nojit; }
+int bootflag_gfx_fb(void) { return g_gfx_fb; }
+int bootflag_gfx3d(void) { return g_gfx3d; }
+int bootflag_gfx_stress(void) { return g_gfx_stress; }
+int bootflag_gfx_debug(void) { return g_gfx_debug; }
 
 static const char *memmap_type_name(uint64_t type) {
     switch (type) {
@@ -164,6 +279,10 @@ void bootinfo_init(void) {
     info.bsp_lapic_id = mp->bsp_lapic_id;
     memmap_response = memmap;
     bootinfo_ready = 1;
+    if (cmdline_request.response != 0 &&
+        cmdline_request.response->cmdline != 0) {
+        bootflag_parse(cmdline_request.response->cmdline);
+    }
 
     serial_puts("ChrisOS: bootinfo revision 3\n");
     serial_puts("HHDM offset=");

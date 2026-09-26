@@ -13,10 +13,16 @@
 #include "pit.h"
 #include "net.h"
 #include "elf.h"
+#include "proc.h"
 #include "user_enter.h"
 #include "chrisbuild.h"
+#include "chrismake.h"
+#include "sock.h"
 #include "port.h"
 #include "heap.h"
+#include "klog.h"
+#include "meminfo.h"
+#include "pmm.h"
 #include "kcc.h"
 #include "chrisasm.h"
 #include "chrisld.h"
@@ -28,6 +34,8 @@
 #define SH_ROWS 24
 #define SH_HIST 8
 #define SH_LINE 512
+
+static int g_cmd_ok;
 
 static char g_lines[SH_ROWS][SH_COLS];
 static int g_nlines;
@@ -77,6 +85,9 @@ static void sh_emit(const char *s) {
     sh_copy(g_lines[g_nlines], SH_COLS, s);
     g_nlines++;
 }
+
+static void sh_emit_prefixed(const char *pfx, const char *path);
+static void sh_exec(const char *line);
 
 static void join_cwd(const char *name, char *out, int cap) {
     if (!name || !name[0] || (name[0] == '/' && !name[1])) {
@@ -142,13 +153,65 @@ static int ls_cb(void *ctx, const char *name, uint32_t size, uint16_t type) {
     return 0;
 }
 
+static void cmd_dmesg(void) {
+    static char buf[2048];
+    uint32_t n;
+    uint32_t i = 0u;
+
+    n = klog_copy(buf, (uint32_t)sizeof buf);
+    while (i < n) {
+        char line[SH_COLS];
+        int col = 0;
+        while (i < n && buf[i] != '\n' && col < SH_COLS - 1) {
+            if (buf[i] != '\r') {
+                line[col++] = buf[i];
+            }
+            i++;
+        }
+        if (i < n && buf[i] == '\n') {
+            i++;
+        }
+        line[col] = 0;
+        if (col > 0) {
+            sh_emit(line);
+        }
+    }
+}
+
+static void cmd_meminfo(void) {
+    char text[256];
+    int i = 0;
+    int n;
+
+    n = mem_format(text, sizeof text, pmm_used_pages(), pmm_free_pages(),
+                   heap_used_bytes(), heap_free_bytes(), task_count());
+    if (n < 0) {
+        sh_emit("meminfo fail");
+        return;
+    }
+    while (i < n) {
+        char line[SH_COLS];
+        int col = 0;
+        while (i < n && text[i] != '\n' && col < SH_COLS - 1) {
+            line[col++] = text[i++];
+        }
+        if (i < n && text[i] == '\n') {
+            i++;
+        }
+        line[col] = 0;
+        if (col > 0) {
+            sh_emit(line);
+        }
+    }
+}
+
 static void cmd_help(void) {
     sh_emit("help ls cd pwd cat mkdir rmdir");
-    sh_emit("rm mv ed cc kcc as mk reboot");
+    sh_emit("rm mv ed cc kcc as mk make");
     sh_emit("run jit runelf ps kill clear");
-    sh_emit("cc .CC/.CVA jit .CVA run .CLV");
-    sh_emit("as .S kcc .C runelf .ELF");
-    sh_emit("ticks net bench");
+    sh_emit("cc .CC/.LST jit .CVA run .CLV");
+    sh_emit("make -f Makefile  as .S kcc .C");
+    sh_emit("ticks net bench reboot dmesg meminfo");
 }
 
 static void cmd_ls(void) {
@@ -234,6 +297,45 @@ static void cmd_ed(const char *arg) {
     editor_window_open_path(path);
 }
 
+static int path_is_lst(const char *path) {
+    int a = 0;
+    while (path[a]) {
+        a++;
+    }
+    if (a < 4) {
+        return 0;
+    }
+    return sh_lower(path[a - 4]) == '.' && sh_lower(path[a - 3]) == 'l' &&
+           sh_lower(path[a - 2]) == 's' && sh_lower(path[a - 1]) == 't';
+}
+
+static void cc_fail(const char *fallback) {
+    const char *e = lang_last_error();
+    g_cmd_ok = 0;
+    sh_emit(e && e[0] ? e : fallback);
+}
+
+static void cc_ok(int run_after) {
+    const char *clv = lang_last_clv();
+    if (!clv || !clv[0]) {
+        sh_emit("compiled");
+        return;
+    }
+    sh_emit_prefixed("compiled ", clv);
+    if (lang_hot_reload(clv)) {
+        sh_emit("reloaded");
+    }
+    if (!run_after) {
+        return;
+    }
+    ed_init(&g_sh_ed);
+    ed_set_name(&g_sh_ed, clv);
+    if (!lang_run(&g_sh_ed, clv)) {
+        sh_emit(g_sh_ed.status);
+        g_cmd_ok = 0;
+    }
+}
+
 static void cmd_cc(const char *arg) {
     static char raw[32][FS_PATH];
     static char path[32][FS_PATH];
@@ -241,7 +343,7 @@ static void cmd_cc(const char *arg) {
     int n = 0;
     int i = 0;
     int j;
-    int a;
+    int run_after = 1;
     while (arg[i] && n < 32) {
         j = 0;
         while (arg[i] == ' ')
@@ -251,44 +353,49 @@ static void cmd_cc(const char *arg) {
         while (arg[i] && arg[i] != ' ' && j < FS_PATH - 1)
             raw[n][j++] = arg[i++];
         raw[n][j] = 0;
+        if (n == 0 && raw[n][0] == '-' && raw[n][1] == 'c' &&
+            raw[n][2] == 0) {
+            run_after = 0;
+            continue;
+        }
         join_cwd(raw[n], path[n], FS_PATH);
         pp[n] = path[n];
         n++;
     }
     if (n == 0) {
+        g_cmd_ok = 0;
         sh_emit("cc: files");
         return;
     }
-    a = 0;
-    while (path[0][a])
-        a++;
-    if (n == 1 && a >= 4 &&
-        ((path[0][a - 4] == '.' && (path[0][a - 3] == 'L' || path[0][a - 3] == 'l') &&
-          (path[0][a - 2] == 'S' || path[0][a - 2] == 's') &&
-          (path[0][a - 1] == 'T' || path[0][a - 1] == 't')))) {
-        if (!lang_compile_list(path[0]))
-            sh_emit("cc lst fail");
-        else
-            sh_emit("compiled");
+    if (n == 1 && path_is_lst(path[0])) {
+        if (!lang_compile_list(path[0])) {
+            cc_fail("cc lst fail");
+            return;
+        }
+        cc_ok(run_after);
         return;
     }
     if (n == 1) {
         ed_init(&g_sh_ed);
         ed_set_name(&g_sh_ed, path[0]);
         if (ed_open(&g_sh_ed) != CFS_OK) {
+            g_cmd_ok = 0;
             sh_emit("cc open");
             return;
         }
-        if (!lang_compile(&g_sh_ed))
+        if (!lang_compile(&g_sh_ed)) {
+            g_cmd_ok = 0;
             sh_emit(g_sh_ed.status);
-        else
-            sh_emit("compiled");
+            return;
+        }
+        cc_ok(run_after);
         return;
     }
-    if (!lang_compile_many(pp, n))
-        sh_emit("cc fail");
-    else
-        sh_emit("compiled");
+    if (!lang_compile_many(pp, n)) {
+        cc_fail("cc fail");
+        return;
+    }
+    cc_ok(run_after);
 }
 
 static void cmd_run(const char *arg) {
@@ -296,7 +403,10 @@ static void cmd_run(const char *arg) {
     join_cwd(arg, path, FS_PATH);
     ed_init(&g_sh_ed);
     ed_set_name(&g_sh_ed, path);
-    if (!lang_run(&g_sh_ed, path)) sh_emit(g_sh_ed.status);
+    if (!lang_run(&g_sh_ed, path)) {
+        g_cmd_ok = 0;
+        sh_emit(g_sh_ed.status);
+    }
 }
 
 static void cmd_jit(const char *arg) {
@@ -305,10 +415,12 @@ static void cmd_jit(const char *arg) {
     ed_init(&g_sh_ed);
     ed_set_name(&g_sh_ed, path);
     if (ed_open(&g_sh_ed) != CFS_OK) {
+        g_cmd_ok = 0;
         sh_emit("jit open");
         return;
     }
     if (!lang_compile_run_jit(&g_sh_ed)) {
+        g_cmd_ok = 0;
         sh_emit(g_sh_ed.status);
     } else {
         sh_emit("jit running");
@@ -340,6 +452,7 @@ static void cmd_runelf(const char *arg) {
     }
     kfree(buf);
     enter_user(entry, 0x400FF8ull);
+    proc_switch(0);
     sh_emit("runelf done");
 }
 
@@ -414,27 +527,32 @@ static void cmd_kcc(const char *arg) {
     int n;
 
     if (!arg[0]) {
+        g_cmd_ok = 0;
         sh_emit("kcc: path");
         return;
     }
     src_buf = (char *)kmalloc(65536u);
     if (!src_buf) {
+        g_cmd_ok = 0;
         sh_emit("kcc nomem");
         return;
     }
     join_cwd(arg, path, FS_PATH);
     n = fs_read(path, src_buf, 65535);
     if (n < 0) {
+        g_cmd_ok = 0;
         sh_emit("kcc open");
         goto done;
     }
     src_buf[n] = 0;
-    if (kcc_compile_source(src_buf, &img) != 0) {
-        sh_emit("kcc fail");
-        goto done;
-    }
+        if (kcc_compile_source(src_buf, &img) != 0) {
+            g_cmd_ok = 0;
+            sh_emit("kcc fail");
+            goto done;
+        }
     native_elf_path(path, out_path, FS_PATH);
     if (native_link_write_elf(&img, out_path) < 0) {
+        g_cmd_ok = 0;
         sh_emit("kcc link");
         native_image_free(&img);
         goto done;
@@ -511,6 +629,7 @@ static void cmd_mk(const char *arg) {
             sh_emit("mk kernel ok");
         } else {
             sh_emit("mk kernel fail");
+            g_cmd_ok = 0;
         }
         return;
     }
@@ -530,9 +649,128 @@ static void cmd_mk(const char *arg) {
     sh_emit("mk kernel|clean|install");
 }
 
+static int make_stamp(void *user, const char *path, uint64_t *mtime) {
+    char full[FS_PATH];
+    (void)user;
+    if (!path || !mtime) {
+        return -1;
+    }
+    join_cwd(path, full, FS_PATH);
+    if (fs_mtime(full, mtime) == CFS_OK) {
+        return 0;
+    }
+    if (fs_mtime(path, mtime) == CFS_OK) {
+        return 0;
+    }
+    return -1;
+}
+
+static int make_recipe(void *user, const char *recipe, char *err, int err_cap) {
+    (void)user;
+    g_cmd_ok = 1;
+    sh_exec(recipe);
+    if (g_cmd_ok) {
+        return 1;
+    }
+    {
+        const char *e = lang_last_error();
+        if (e && e[0]) {
+            sh_copy(err, err_cap, e);
+        } else if (g_sh_ed.status[0]) {
+            sh_copy(err, err_cap, g_sh_ed.status);
+        } else {
+            sh_copy(err, err_cap, "make: recipe fail");
+        }
+    }
+    return 0;
+}
+
+static void cmd_make(const char *arg) {
+    char mkpath[FS_PATH];
+    char target[SH_LINE];
+    static char text[16384];
+    char err[CHRISMAKE_MSG];
+    const char *p = arg;
+    int n;
+    uint32_t sz;
+    uint16_t ty;
+
+    mkpath[0] = 0;
+    target[0] = 0;
+    while (*p) {
+        int j = 0;
+        char tok[FS_PATH];
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        if (p[0] == '-' && p[1] == 'f') {
+            const char *fp;
+            p += 2;
+            if (*p == ' ' || *p == '\t' || !*p) {
+                while (*p == ' ' || *p == '\t') {
+                    p++;
+                }
+                fp = p;
+                j = 0;
+                while (*p && *p != ' ' && *p != '\t' && j < FS_PATH - 1) {
+                    tok[j++] = *p++;
+                }
+                tok[j] = 0;
+                (void)fp;
+            } else {
+                j = 0;
+                while (*p && *p != ' ' && *p != '\t' && j < FS_PATH - 1) {
+                    tok[j++] = *p++;
+                }
+                tok[j] = 0;
+            }
+            if (!tok[0]) {
+                g_cmd_ok = 0;
+                sh_emit("make: -f path");
+                return;
+            }
+            join_cwd(tok, mkpath, FS_PATH);
+            continue;
+        }
+        j = 0;
+        while (*p && *p != ' ' && *p != '\t' && j < SH_LINE - 1) {
+            target[j++] = *p++;
+        }
+        target[j] = 0;
+    }
+    if (!mkpath[0]) {
+        join_cwd("Makefile", mkpath, FS_PATH);
+        if (fs_stat(mkpath, &sz, &ty) != CFS_OK) {
+            join_cwd("makefile", mkpath, FS_PATH);
+        }
+    }
+    n = fs_read(mkpath, text, (int)sizeof(text) - 1);
+    if (n < 0) {
+        g_cmd_ok = 0;
+        sh_emit("make: no Makefile");
+        return;
+    }
+    text[n] = 0;
+    if (!chrismake_run_stamped(text, target, make_recipe, make_stamp, 0, err,
+                               (int)sizeof(err))) {
+        g_cmd_ok = 0;
+        sh_emit(err[0] ? err : "make fail");
+        return;
+    }
+    sh_emit("make ok");
+}
+
 static void cmd_reboot(void) {
     sh_emit("rebooting");
     machine_reboot();
+}
+
+static void cmd_rebuild(void) {
+    host_rebuild_start();
+    sh_emit("rebuild asked");
 }
 
 static void cmd_bench(void) {
@@ -575,6 +813,7 @@ static void cmd_ticks(void) {
 static void sh_exec(const char *line) {
     char cmd[16], arg[SH_LINE];
     if (!tok1(line, cmd, 16, arg, SH_LINE)) return;
+    g_cmd_ok = 1;
     if (sh_eq(cmd, "help")) cmd_help();
     else if (sh_eq(cmd, "ls")) cmd_ls();
     else if (sh_eq(cmd, "cd")) cmd_cd(arg);
@@ -589,6 +828,8 @@ static void sh_exec(const char *line) {
     else if (sh_eq(cmd, "kcc")) cmd_kcc(arg);
     else if (sh_eq(cmd, "as")) cmd_as(arg);
     else if (sh_eq(cmd, "mk")) cmd_mk(arg);
+    else if (sh_eq(cmd, "make")) cmd_make(arg);
+    else if (sh_eq(cmd, "rebuild")) cmd_rebuild();
     else if (sh_eq(cmd, "reboot")) cmd_reboot();
     else if (sh_eq(cmd, "run")) cmd_run(arg);
     else if (sh_eq(cmd, "jit")) cmd_jit(arg);
@@ -599,7 +840,9 @@ static void sh_exec(const char *line) {
     else if (sh_eq(cmd, "ticks")) cmd_ticks();
     else if (sh_eq(cmd, "bench")) cmd_bench();
     else if (sh_eq(cmd, "net")) cmd_net();
-    else sh_emit("unknown");
+    else if (sh_eq(cmd, "dmesg")) cmd_dmesg();
+    else if (sh_eq(cmd, "meminfo")) cmd_meminfo();
+    else sh_emit("unknown"), g_cmd_ok = 0;
 }
 
 static void shell_run(Task *task, uint64_t ticks) {

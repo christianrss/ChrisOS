@@ -1,7 +1,10 @@
 #include "irq.h"
 #include "apic.h"
+#include "mm.h"
 #include "panic.h"
 #include "port.h"
+#include "proc.h"
+#include "serial.h"
 #include "syscall.h"
 
 #define PIC1_COMMAND 0x20
@@ -11,6 +14,7 @@
 #define PIC_EOI      0x20
 
 static irq_handler handlers[16];
+static uint32_t irq_hits[16];
 
 void pic_init(void) {
     unsigned int index;
@@ -86,19 +90,40 @@ void irq_dispatch(struct irq_frame *frame) {
         syscall_dispatch(frame);
         return;
     }
-    if (frame->vector == 14u && (frame->cs & 3u) != 0u) {
+    if (frame->vector == 14u) {
         uint64_t cr2;
         __asm__ volatile ("mov %%cr2, %0" : "=r"(cr2));
-        panic_user_fault(frame, cr2);
+        if (proc_fault_demand(proc_current(), cr2)) {
+            return;
+        }
+        if ((frame->cs & 3u) != 0u) {
+            panic_user_fault(frame, cr2);
+            return;
+        }
     }
     if (frame->vector < 32) {
         panic_exception(frame->vector, frame->error, frame->rip);
+    }
+    /* TLB shootdown IPI. Above the PIC range, so it must be acknowledged
+     * on the LAPIC before the generic high-vector return. */
+    if (frame->vector == 0xF0u) {
+        mm_tlb_poll();
+        apic_eoi();
+        return;
     }
     if (frame->vector >= 48) {
         return;
     }
 
     irq = (uint8_t)(frame->vector - 32);
+    /* IRQ 0 is the 60 Hz timer. Counting it out would stop the desktop. */
+    if (irq > 0 && irq < 16 && ++irq_hits[irq] == 10000u) {
+        /* A line that never drops livelocks the boot before the desktop. */
+        pic_set_mask(irq, true);
+        serial_puts("irq storm ");
+        serial_write_u64(irq);
+        serial_puts("\n");
+    }
     if (handlers[irq] != 0) {
         handlers[irq](frame);
     }

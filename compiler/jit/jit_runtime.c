@@ -306,6 +306,22 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
     case CL_OP_SHR:
     case CL_OP_SAR:
         return jit_rt_binop(vm, op);
+    case CL_OP_UDIV:
+    case CL_OP_UMOD:
+    case CL_OP_ULT: {
+        int32_t r;
+        if (jit_rt_pop(vm, &b) != 0 || jit_rt_pop(vm, &a) != 0)
+            return -1;
+        if ((op == CL_OP_UDIV || op == CL_OP_UMOD) && b == 0)
+            return fault(vm, CLVM_FAULT_DIV_ZERO, vm->pc);
+        if (op == CL_OP_UDIV)
+            r = (int32_t)((uint32_t)a / (uint32_t)b);
+        else if (op == CL_OP_UMOD)
+            r = (int32_t)((uint32_t)a % (uint32_t)b);
+        else
+            r = ((uint32_t)a < (uint32_t)b);
+        return jit_rt_push(vm, r);
+    }
     case CL_OP_NEG:
         if (jit_rt_pop(vm, &a) != 0)
             return -1;
@@ -322,6 +338,9 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
         vm->stack[vm->sp - 2u] = a;
         return 0;
     case CL_OP_DROP:
+        if (vm->sp > 0)
+            vm->sp--;
+        return 0;
     case CL_OP_PRINT:
         return jit_rt_pop(vm, &a);
     case CL_OP_CALL:
@@ -331,6 +350,19 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
             return fault(vm, CLVM_FAULT_CALL_OVERFLOW, vm->pc);
         vm->calls[vm->csp++] = vm->pc;
         return jump_rel(vm, rel);
+    case CL_OP_CALLI: {
+        int64_t t;
+        if (vm->sp == 0)
+            return fault(vm, CLVM_FAULT_STACK_UNDERFLOW, vm->pc);
+        t = vm->stack[--vm->sp];
+        if (t < 0 || (uint64_t)t >= vm->code_size)
+            return fault(vm, CLVM_FAULT_BAD_JUMP, vm->pc);
+        if (vm->csp >= CLVM_CALL_MAX)
+            return fault(vm, CLVM_FAULT_CALL_OVERFLOW, vm->pc);
+        vm->calls[vm->csp++] = vm->pc;
+        vm->pc = (uint32_t)t;
+        return 0;
+    }
     case CL_OP_RET:
         if (vm->csp == 0u)
             return fault(vm, CLVM_FAULT_CALL_UNDERFLOW, vm->pc);
@@ -406,6 +438,26 @@ static int jit_rt_exec_op(ClvmVm *vm, uint8_t op) {
         return jump_rel(vm, rel);
     case CL_OP_SYS:
         return jit_rt_sys(vm);
+    case CL_OP_LDARG:
+    case CL_OP_LDLOC:
+    case CL_OP_STLOC: {
+        uint8_t slot;
+        if (vm->pc >= vm->code_size)
+            return fault(vm, CLVM_FAULT_TRUNCATED, vm->pc);
+        slot = vm->code[vm->pc++];
+        if ((op == CL_OP_LDARG && slot >= 16) ||
+            (op != CL_OP_LDARG && slot >= 32))
+            return fault(vm, CLVM_FAULT_OPCODE, vm->pc);
+        if (op == CL_OP_STLOC) {
+            if (jit_rt_pop(vm, &a) != 0)
+                return -1;
+            vm->il_loc[slot] = a;
+            return 0;
+        }
+        if (op == CL_OP_LDARG)
+            return jit_rt_push(vm, (int32_t)vm->il_arg[slot]);
+        return jit_rt_push(vm, (int32_t)vm->il_loc[slot]);
+    }
     case CL_OP_HALT:
         vm->state = CLVM_HALTED;
         return 1;
