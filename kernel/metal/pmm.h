@@ -11,6 +11,10 @@ void pmm_init(void);
 void pmm_selftest(void);
 uint64_t pmm_alloc(void);
 uint64_t pmm_alloc_contig(uint64_t pages);
+/* Pages reserved below 4GB for UHCI. VirtIO can use high RAM; UHCI cannot. */
+uint64_t pmm_alloc_dma32(uint64_t pages);
+void pmm_free_dma32(uint64_t phys, uint64_t pages);
+int pmm_dma32_owns(uint64_t phys);
 void pmm_free(uint64_t phys);
 void pmm_free_contig(uint64_t phys, uint64_t pages);
 void pmm_foreach_free_run(int (*cb)(uint64_t phys, uint64_t pages, void *user),

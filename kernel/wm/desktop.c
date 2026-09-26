@@ -104,7 +104,7 @@ void desktop_frame(uint64_t ticks) {
     btn = (mouse.left_down ? 1 : 0) | (mouse.right_down ? 2 : 0) |
           (mouse.middle_down ? 4 : 0);
     if (last_x < 0 || mouse.x != last_x || mouse.y != last_y || btn != last_btn) {
-        if (logged < 12 || btn != last_btn) {
+        if (logged < 8 || (btn != last_btn && logged < 24)) {
             serial_puts("mouse ");
             serial_write_u64((uint64_t)mouse.x);
             serial_puts(",");

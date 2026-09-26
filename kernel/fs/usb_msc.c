@@ -84,6 +84,10 @@ static uint32_t page_phys(void) {
 }
 
 static void td_write(uint32_t at, uint32_t link, uint32_t token, uint32_t buf) {
+    /* Bit 2 is depth-first. Without it the HC finishes the SETUP TD and
+     * returns to the queue head, so the status stage never runs. */
+    if ((link & 1u) == 0u)
+        link |= 4u;
     hw_dma_w32(g_usb.pages, at, link);
     hw_dma_w32(g_usb.pages, at + 4u, 0x18800000u);
     hw_dma_w32(g_usb.pages, at + 8u, token);
@@ -109,8 +113,9 @@ static int td_wait(uint32_t at) {
             prev = fr;
             frames++;
         } else if ((guard & 31) == 0) {
-            /* COM1 exits KVM long enough for the UHCI frame timer. */
-            serial_putc(0);
+            /* A port read exits KVM long enough for the UHCI frame timer.
+             * serial_putc(0) did the same and filled the log with NULs. */
+            (void)inb(0x80);
         }
         if (frames > 200 || ++guard > 100000)
             return -2;
@@ -335,9 +340,11 @@ static int hid_in(uint8_t *data, int len) {
             prev = fr;
             frames++;
         } else if ((guard & 31) == 0) {
-            serial_putc(0);
+            (void)inb(0x80);
         }
-        if (frames > 4 || ++guard > 20000) {
+        /* Full-speed interrupt interval is 10ms. Stopping at 4 frames
+         * aborts the IN before the tablet can post a report. */
+        if (frames > 16 || ++guard > 20000) {
             uhci_halt();
             return 0;
         }
@@ -461,12 +468,15 @@ int usb_msc_probe(void) {
                 pci_write((uint8_t)bus, (uint8_t)dev, (uint8_t)fn, 4,
                           pci_read((uint8_t)bus, (uint8_t)dev, (uint8_t)fn, 4) | 5u);
                 g_usb.io = (uint16_t)(bar & ~3u);
-                g_usb.pages = hw_dma_alloc(4);
+                g_usb.pages = hw_dma_alloc_low(4);
                 if (g_usb.pages < 0) {
                     serial_puts("usb dma miss\n");
                     return 0;
                 }
-                serial_puts("usb uhci\n");
+                serial_puts("usb uhci dma=");
+                serial_write_hex(((uint64_t)hw_dma_hi(g_usb.pages) << 32) |
+                                 hw_dma_lo(g_usb.pages));
+                serial_puts("\n");
                 uhci_reset();
                 for (i = 0; i < 1024; ++i)
                     hw_dma_w32(g_usb.pages, (uint32_t)i * 4u, page_phys() + 4096u + 2u);
@@ -580,6 +590,8 @@ int usb_msc_probe(void) {
                         uhci_halt();
                         if (g_hid.live)
                             serial_puts("usb hid\n");
+                        else
+                            serial_puts("usb no hid\n");
                         if (g_ready) {
                             serial_puts("usb msc sectors=");
                             serial_write_u64(g_usb.sectors);

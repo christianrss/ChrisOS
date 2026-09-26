@@ -202,13 +202,12 @@ int hw_mmio_w16(int win, uint32_t off, uint32_t val) {
     return 0;
 }
 
-int hw_dma_alloc(int pages) {
+static int dma_slot(uint64_t phys, int pages) {
     int i;
-    uint64_t phys;
     uint8_t *virt;
     int n;
 
-    if (pages < 1 || pages > HW_DMA_PAGES) {
+    if (phys == 0) {
         return -1;
     }
     for (i = 0; i < HW_DMA; ++i) {
@@ -217,10 +216,6 @@ int hw_dma_alloc(int pages) {
         }
     }
     if (i == HW_DMA) {
-        return -1;
-    }
-    phys = pmm_alloc_contig((uint64_t)pages);
-    if (phys == 0) {
         return -1;
     }
     virt = ram_virt(phys);
@@ -234,10 +229,40 @@ int hw_dma_alloc(int pages) {
     return i;
 }
 
+int hw_dma_alloc(int pages) {
+    uint64_t phys;
+
+    if (pages < 1 || pages > HW_DMA_PAGES) {
+        return -1;
+    }
+    phys = pmm_alloc_contig((uint64_t)pages);
+    {
+        int id = dma_slot(phys, pages);
+        if (id < 0 && phys != 0) {
+            pmm_free_contig(phys, (uint64_t)pages);
+        }
+        return id;
+    }
+}
+
+int hw_dma_alloc_low(int pages) {
+    uint64_t phys;
+
+    if (pages < 1 || pages > HW_DMA_PAGES) {
+        return -1;
+    }
+    phys = pmm_alloc_dma32((uint64_t)pages);
+    return dma_slot(phys, pages);
+}
+
 int hw_dma_free(int id) {
     if (id < 0 || id >= HW_DMA || !g_dma[id].used)
         return -1;
-    pmm_free_contig(g_dma[id].phys, (uint64_t)g_dma[id].pages);
+    if (pmm_dma32_owns(g_dma[id].phys)) {
+        pmm_free_dma32(g_dma[id].phys, (uint64_t)g_dma[id].pages);
+    } else {
+        pmm_free_contig(g_dma[id].phys, (uint64_t)g_dma[id].pages);
+    }
     g_dma[id].used = 0;
     g_dma[id].virt = 0;
     g_dma[id].phys = 0;

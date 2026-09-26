@@ -510,22 +510,20 @@ void ui_draw_cursor(void) {
     int col;
     int x = mouse.x;
     int y = mouse.y;
-    int hardware;
 
-    hardware = vgpu_cursor_active() && vgpu_cursor_move(x, y) == 0;
+    /* The virtio-gpu sprite is accepted and then not shown by this QEMU
+     * display, which also suppresses the pixels in the scanout. Always paint
+     * the pointer into the framebuffer so it stays on the desktop. */
+    if (vgpu_cursor_active()) {
+        (void)vgpu_cursor_move(x, y);
+    }
     if (!logged) {
         logged = 1;
-        serial_puts(hardware ? "cursor hw " : "cursor sw ");
+        serial_puts("cursor sw ");
         serial_write_u64((uint64_t)x);
         serial_puts(",");
         serial_write_u64((uint64_t)y);
         serial_puts("\n");
-    }
-    if (hardware) {
-        if (g_cur_saved) {
-            ui_undraw_cursor();
-        }
-        return;
     }
     ui_undraw_cursor();
     for (row = 0; row < UI_CURSOR_H; ++row) {
