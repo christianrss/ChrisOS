@@ -4,12 +4,10 @@ ChrisOS is an experimental systems project. Contributions should preserve reprod
 
 ## Read first
 
-- [Repository documentation index](docs/README.md)
-- [Architecture overview](docs/architecture/overview.md)
+- **Canonical technical documentation:** https://os.christiansoftware.org/
+- [Repository operational documentation](docs/README.md)
 - [Development workflow](docs/development/workflow.md)
 - [Testing and evidence](docs/development/testing.md)
-
-Also read the architecture/status documents for the subsystem being modified.
 
 ## Setup
 
@@ -58,9 +56,11 @@ If a relevant gate cannot be run, state that explicitly in the pull request.
 
 ## Documentation expectations
 
-Update documentation when a change modifies build requirements, commands, public ABIs/formats/protocols, subsystem boundaries or capability evidence.
+The canonical documentation source is `christianrss/chrisos_site`, published at https://os.christiansoftware.org/.
 
-The long-form site is https://os.christiansoftware.org/. Repository-local guides are authoritative for commands coupled to this source tree.
+Do **not** add architecture, status, audit, roadmap, specification, or subsystem-documentation files to this repository.
+
+Update repository-local documentation only for environment, build, run, test, and contribution mechanics. Changes to architecture, interfaces, subsystem behavior, implementation status, or project direction belong in `chrisos_site`.
 
 ## Pull request checklist
 
@@ -70,4 +70,4 @@ The long-form site is https://os.christiansoftware.org/. Repository-local guides
 - [ ] Relevant QEMU/ChrisVM gates pass or are explicitly listed as not run
 - [ ] Architecture/ABI implications are documented
 - [ ] Capability claims match the evidence level
-- [ ] User/developer documentation is updated when required
+- [ ] Canonical documentation in `chrisos_site` is updated when required
