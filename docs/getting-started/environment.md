@@ -1,6 +1,6 @@
 # Development environment
 
-This guide describes the reference host environment used to build and test ChrisOS.
+This guide describes the reference host environment used to build and test ChrisOS. The canonical, expanded setup documentation is the [Developer Guide](https://os.christiansoftware.org/en/17-developer-guide/), including dedicated [Linux](https://os.christiansoftware.org/en/17-developer-guide/linux-development-environment/) and [Windows/WSL2](https://os.christiansoftware.org/en/17-developer-guide/windows-wsl-development-environment/) paths.
 
 ## Reference platform
 
