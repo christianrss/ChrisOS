@@ -5,6 +5,7 @@ ChrisOS is an experimental systems project. Contributions should preserve reprod
 ## Read first
 
 - **Canonical technical documentation:** https://os.christiansoftware.org/
+- **Developer Guide:** https://os.christiansoftware.org/en/17-developer-guide/
 - [Repository operational documentation](docs/README.md)
 - [Development workflow](docs/development/workflow.md)
 - [Testing and evidence](docs/development/testing.md)
@@ -18,7 +19,7 @@ cd ChrisOS
 make
 ~~~
 
-The reference host is Debian/Ubuntu Linux. See [development environment](docs/getting-started/environment.md).
+The reference host is Debian/Ubuntu Linux. Windows contributors should use WSL2. See [development environment](docs/getting-started/environment.md) and the canonical [Developer Guide](https://os.christiansoftware.org/en/17-developer-guide/).
 
 ## Branches and commits
 
