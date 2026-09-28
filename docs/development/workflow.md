@@ -69,17 +69,15 @@ make qemu-gates
 
 Use [testing.md](testing.md) to choose the evidence level appropriate to the claim.
 
-## Update documentation with code
+## Documentation ownership
 
-Update a guide when commands or setup change.
+There is one canonical technical documentation tree: **https://os.christiansoftware.org/**, sourced from `christianrss/chrisos_site`.
 
-Update architecture/specification documentation when a contract changes.
+Update this repository's `docs/` only when setup, build, run, testing, or contribution mechanics change.
 
-Update current-status documentation when new evidence changes what can be claimed.
+Update `chrisos_site` when a change affects architecture, subsystem behavior, interfaces/formats, ChrisVM/ChrisCPU, drivers, graphics, filesystem, toolchain behavior, capability status, roadmaps, research, or educational material.
 
-Do not rewrite a historical audit merely to make it match newer code. Preserve the audit and update the current-state layer.
-
-The public documentation site is https://os.christiansoftware.org/. Repository-local instructions remain the source of truth for commands coupled to this tree.
+Do not recreate status reports, audits, plans, specifications, or architecture documents inside this repository.
 
 ## Keep generated output out of Git
 

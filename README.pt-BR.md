@@ -14,7 +14,7 @@
 
 ChrisOS é um projeto de pesquisa e educação em sistemas operacionais centrado em um kernel x86-64 higher-half, desktop nativo, drivers, ChrisFS, ChrisC/CLVM, toolchain nativa, experimentos gráficos e a pilha de virtualização ChrisVM/ChrisCPU em desenvolvimento.
 
-O repositório contém a implementação. A **documentação extensa e o corpus educacional canônico** ficam em **https://os.christiansoftware.org/**. A documentação versionada neste repositório cobre montagem do ambiente, build, execução, contratos de arquitetura, estado de implementação, evidências de testes e fluxo de contribuição.
+O repositório contém a implementação. A **documentação canônica do ChrisOS** fica em **https://os.christiansoftware.org/**. Este repositório mantém apenas documentação operacional de ambiente, build, execução, testes e contribuição.
 
 > **Estado do projeto:** ChrisOS é experimental. QEMU é o principal ambiente de integração. Hardware físico ainda não é um alvo de implantação amplamente suportado.
 
@@ -75,7 +75,7 @@ flowchart TB
     end
 ~~~
 
-A visão detalhada está em [docs/architecture/overview.md](docs/architecture/overview.md).
+Este diagrama é apenas uma orientação de alto nível. A arquitetura mantida está no [site oficial do ChrisOS](https://os.christiansoftware.org/).
 
 ## Comandos principais
 
@@ -93,11 +93,15 @@ A visão detalhada está em [docs/architecture/overview.md](docs/architecture/ov
 | Bring-up RISC-V | <code>make riscv</code> / <code>make run-riscv</code> |
 | Limpar artefatos | <code>make clean</code> |
 
-## Onde ler
+## Documentação
 
-O índice principal do repositório é [docs/README.md](docs/README.md). A documentação extensa, em inglês e português, está em [os.christiansoftware.org](https://os.christiansoftware.org/).
+Documentação operacional local:
+- [Ambiente de desenvolvimento](docs/getting-started/environment.md)
+- [Build e execução](docs/getting-started/build-and-run.md)
+- [Fluxo de desenvolvimento](docs/development/workflow.md)
+- [Testes](docs/development/testing.md)
 
-Para estado técnico verificável, consulte [CURRENT_CAPABILITIES.md](docs/CURRENT_CAPABILITIES.md), [HARDWARE_COMPATIBILITY.md](docs/HARDWARE_COMPATIBILITY.md) e os relatórios/auditorias indexados em <code>docs/</code>.
+Arquitetura, especificações, status, roadmaps, ChrisVM/ChrisCPU, toolchain, gráficos, filesystem, drivers, hardware, pesquisa e material educacional pertencem ao **https://os.christiansoftware.org/**.
 
 ## Licença
 
