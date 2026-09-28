@@ -57,9 +57,7 @@ make chrisvm
 make chrisvm-test
 ~~~
 
-ChrisVM is an independent virtual-machine implementation in this repository. It does not yet replace QEMU as the complete ChrisOS boot environment.
-
-See [ChrisVM specification](../chrisvm-spec-v1.md).
+ChrisVM is built and tested from this repository. Its maintained architecture and roadmap documentation lives at **https://os.christiansoftware.org/**.
 
 ## RISC-V bring-up
 
@@ -92,11 +90,13 @@ make send CFS_PATH=SYS/LIVE.C HOST_FILE=./LIVE.C
 
 The default transfer port is TCP 9016.
 
-## Installation
+## Installer integration gate
 
-ChrisOS contains an installer path that can construct GPT/ESP/ChrisFS layouts in the tested QEMU scenario. Read [INSTALLATION.md](../INSTALLATION.md) before using it.
+~~~bash
+make test-qemu-install
+~~~
 
-Do not infer general real-hardware readiness from the installer. Remaining hardware work is tracked in [REAL_HARDWARE_PLAN.md](../REAL_HARDWARE_PLAN.md) and [HARDWARE_COMPATIBILITY.md](../HARDWARE_COMPATIBILITY.md).
+Installer architecture, disk layout, limitations, and hardware implications are documented on **https://os.christiansoftware.org/** rather than duplicated here.
 
 ## Clean
 
