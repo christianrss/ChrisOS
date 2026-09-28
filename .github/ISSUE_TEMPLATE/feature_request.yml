@@ -1,0 +1,32 @@
+name: Design or feature proposal
+description: Propose a new capability or architectural change
+title: "[proposal] "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What limitation or research goal does this address?
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Existing architectural boundary
+      description: Which subsystem owns this today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed design
+      description: Describe interfaces, ownership and compatibility implications.
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Which host/QEMU/ChrisVM/hardware gates would demonstrate completion?
+    validations:
+      required: true
