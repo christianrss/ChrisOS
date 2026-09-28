@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible ChrisOS or build-system defect
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Include enough information to reproduce the failure from a specific commit.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit
+      description: Output of git rev-parse HEAD
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host environment
+      description: OS/distribution, CPU architecture and relevant virtualization details
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command or target
+      placeholder: make test-qemu-ata
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant output
+      description: Include the first meaningful error or serial/test markers. Remove secrets and unrelated logs.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I checked the repository documentation and existing issues.
+          required: true
+        - label: I am not attaching generated disk/ISO images unless specifically requested.
+          required: true

@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: ChrisOS documentation
+    url: https://os.christiansoftware.org/
+    about: Read the long-form architecture and systems documentation before opening a general usage question.
