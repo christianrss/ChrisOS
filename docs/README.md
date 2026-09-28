@@ -2,6 +2,8 @@
 
 The **canonical ChrisOS documentation is https://os.christiansoftware.org/**.
 
+For end-to-end workstation setup, Windows/WSL2, build/debug, testing and contribution guidance, use the **[Developer Guide](https://os.christiansoftware.org/en/17-developer-guide/)**.
+
 This directory is intentionally small. It contains only instructions that must stay close to the repository because they describe how to work with the current source tree.
 
 ## Kept here

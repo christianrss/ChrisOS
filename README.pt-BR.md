@@ -38,7 +38,7 @@ make run
 make test-qemu-ata
 ~~~
 
-Consulte [montagem do ambiente](docs/getting-started/environment.md) e [build e execução](docs/getting-started/build-and-run.md).
+Consulte o [Guia do desenvolvedor](https://os.christiansoftware.org/pt-br/17-developer-guide/), [montagem do ambiente](docs/getting-started/environment.md) e [build e execução](docs/getting-started/build-and-run.md).
 
 ## Componentes principais
 
@@ -100,6 +100,8 @@ Documentação operacional local:
 - [Build e execução](docs/getting-started/build-and-run.md)
 - [Fluxo de desenvolvimento](docs/development/workflow.md)
 - [Testes](docs/development/testing.md)
+
+Guia canônico de desenvolvimento e contribuição: **https://os.christiansoftware.org/pt-br/17-developer-guide/**.
 
 Arquitetura, especificações, status, roadmaps, ChrisVM/ChrisCPU, toolchain, gráficos, filesystem, drivers, hardware, pesquisa e material educacional pertencem ao **https://os.christiansoftware.org/**.
 

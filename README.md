@@ -44,7 +44,7 @@ make run
 make test-qemu-ata
 ~~~
 
-See [Development environment](docs/getting-started/environment.md) and [Build and run](docs/getting-started/build-and-run.md) before troubleshooting host-specific issues.
+See the canonical [Developer Guide](https://os.christiansoftware.org/en/17-developer-guide/), [Development environment](docs/getting-started/environment.md) and [Build and run](docs/getting-started/build-and-run.md) before troubleshooting host-specific issues.
 
 ## What is in ChrisOS?
 
@@ -137,7 +137,8 @@ Repository-local:
 - [Development workflow](docs/development/workflow.md)
 - [Testing](docs/development/testing.md)
 
-Canonical technical documentation: **https://os.christiansoftware.org/**.
+Canonical technical documentation: **https://os.christiansoftware.org/**.  
+Developer onboarding: **https://os.christiansoftware.org/en/17-developer-guide/**.
 
 The repository does not maintain a second copy of architecture, subsystem, specification, status, audit, roadmap, ChrisVM/ChrisCPU, toolchain, graphics, filesystem, driver, hardware, research, or educational documentation.
 
